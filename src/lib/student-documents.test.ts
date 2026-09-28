@@ -8,7 +8,9 @@ import {
   formatStudentDocumentSize,
   formatStudentDocumentUploadedAt,
   getStudentFileMeta,
+  buildChecklist,
   hasStudentDocumentNamed,
+  toggleChecklistEntry,
   MAX_STUDENT_DOCUMENT_BYTES,
   validateStudentFile,
 } from "./student-documents";
@@ -115,5 +117,31 @@ describe("formatStudentDocumentUploadedAt", () => {
   test("valid date '2025-06-01T00:00:00Z' → formatted string contains year", () => {
     const result = formatStudentDocumentUploadedAt("2025-06-01T00:00:00Z");
     expect(result).toContain("2025");
+  });
+});
+
+describe("checklist", () => {
+  test("default entries are listed open until handed in; custom ones follow", () => {
+    const list = buildChecklist(["sehtest", "Führungszeugnis"], ["Arztattest"]);
+    expect(list.find((e) => e.name === "Sehtest")).toMatchObject({ done: true });
+    expect(list.find((e) => e.name === "Passbild")).toMatchObject({ done: false });
+    expect(list.slice(-2)).toEqual([
+      { name: "Führungszeugnis", done: true, custom: true },
+      { name: "Arztattest", done: false, custom: true },
+    ]);
+  });
+
+  test("ticking moves an entry to handed in, unticking back to open", () => {
+    const done = toggleChecklistEntry([], ["Arztattest"], "Arztattest", true);
+    expect(done).toEqual({ documents: ["Arztattest"], openDocuments: [] });
+    expect(toggleChecklistEntry(done.documents, [], "Arztattest", false)).toEqual({
+      documents: [],
+      openDocuments: ["Arztattest"],
+    });
+    // Default entries need no open marker.
+    expect(toggleChecklistEntry(["Passbild"], [], "Passbild", false)).toEqual({
+      documents: [],
+      openDocuments: [],
+    });
   });
 });
