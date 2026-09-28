@@ -76,6 +76,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { toast } from "sonner";
 
 import { confirmDialog } from "@/components/confirm";
+import { queryClient } from "@/lib/query-client";
 import { Button } from "@/components/ui/button";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import {
@@ -1878,6 +1879,7 @@ export function Kalendar() {
         event={attestTarget}
         studentId={attestTarget?.studentId}
         onClose={() => setAttestTarget(null)}
+        onSaved={() => void queryClient.invalidateQueries({ queryKey: ["attestations"] })}
       />
 
       <AttendanceDialog

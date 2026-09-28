@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -25,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 
+import { fetchAttestationsForStudent } from "@/hooks/use-ausbildungsnachweis";
 import { CANCELLATION_KIND_LABELS } from "@/lib/cancellation";
 import { formatCents } from "@/lib/money";
 import { Button } from "@/components/ui/button";
@@ -149,8 +151,20 @@ export function CalendarEventInspector({
   // Billed lessons must be storniert before they can be cancelled.
   const canCancel =
     !cancelled && !(event.billedTransactionId != null && event.billedActive);
-  const canAttest =
-    onAttest && event.type === "Praktisch" && !cancelled && event.studentId != null;
+  const attestable =
+    onAttest != null &&
+    event.type === "Praktisch" &&
+    !cancelled &&
+    event.studentId != null;
+  // A lesson gets one Nachweis; offering a second one only ends in an error.
+  const attestations = useQuery({
+    queryKey: ["attestations", "student", event.studentId],
+    queryFn: () => fetchAttestationsForStudent(event.studentId!),
+    enabled: attestable,
+  });
+  const attested =
+    attestations.data?.some((a) => String(a.eventId) === String(event.id)) ?? false;
+  const canAttest = attestable && attestations.isSuccess && !attested;
   const canRecordAttendance = onAttendance && event.type === "Theorie" && !cancelled;
   const personal = event.type !== "Theorie" && event.type !== "Andere";
   const title = (personal && student) || event.title;
@@ -227,6 +241,12 @@ export function CalendarEventInspector({
               <ClipboardList data-icon="inline-start" />
               Nachweis erfassen
             </Button>
+          )}
+          {attestable && attested && (
+            <p className="col-span-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ClipboardList className="size-3.5" />
+              Nachweis erfasst
+            </p>
           )}
           {canRecordAttendance && (
             <Button
