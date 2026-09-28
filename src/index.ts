@@ -40,7 +40,10 @@ if (!demoMode) {
    demo mode). Datensicherung: off in demo mode. E-Mail: demo never sends
    (mails are only marked 'nicht_konfiguriert' so the UI shows them). */
 const { store: baseFileStore } = createFileStoreFromEnv({ demoMode });
-const backupConfig = demoMode ? null : backupConfigFromEnv();
+// Backup sets hold the database plus the documents from the file store.
+const backupConfig = demoMode
+  ? null
+  : backupConfigFromEnv(process.env, undefined, baseFileStore);
 const smtpConfig = demoMode ? null : smtpConfigFromEnv();
 const smsConfig = demoMode ? null : smsConfigFromEnv();
 

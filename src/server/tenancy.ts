@@ -26,7 +26,7 @@ import type { BackupConfig } from "./backups";
 import { type SchoolJobOptions, prepareSchoolDb, startSchoolJobs } from "./bootstrap";
 import { openDb } from "./db";
 import { ValidationError } from "./errors";
-import type { FileStore } from "./file-store";
+import { type FileStore, PrefixedFileStore } from "./file-store";
 import {
   clientIp,
   createRateLimiter,
@@ -392,6 +392,9 @@ export function tenantBackupConfig(base: BackupConfig, slug: string): BackupConf
     ...base,
     dir: join(base.dir, slug),
     files: base.files ? `${base.files}/${slug}` : base.files,
+    // Only this school's documents (TenantFileStore keeps them under <slug>/).
+    fileStore: base.fileStore ? new PrefixedFileStore(base.fileStore, `${slug}/`) : null,
+    tenant: slug,
     offsite: base.offsite
       ? {
           ...base.offsite,
@@ -417,6 +420,12 @@ export function contextBackupConfig(base: BackupConfig): BackupConfig {
     },
     get offsite() {
       return current().offsite;
+    },
+    get fileStore() {
+      return current().fileStore;
+    },
+    get tenant() {
+      return current().tenant;
     },
   };
 }
