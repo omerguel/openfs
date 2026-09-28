@@ -32,8 +32,8 @@ export const LESSON_KIND_BADGE: Record<
   Grundfahraufgaben: { label: "GFA", Icon: Waypoints },
 };
 
-/** The bottom strip that resizes the card — small on purpose, so a
-    grab anywhere else moves the Termin. */
+/** The top and bottom strips that resize the card — small on purpose,
+    so a grab anywhere else moves the Termin. */
 export const RESIZE_HANDLE_PX = 5;
 
 export function CalendarEventCard({
@@ -61,7 +61,10 @@ export function CalendarEventCard({
   /** Positioning plus `--ev` (the instructor colour). */
   style: CSSProperties;
   onPointerDown: (pointerEvent: ReactPointerEvent<HTMLButtonElement>) => void;
-  onResizeStart: (pointerEvent: ReactPointerEvent<HTMLElement>) => void;
+  onResizeStart: (
+    pointerEvent: ReactPointerEvent<HTMLElement>,
+    edge: "start" | "end",
+  ) => void;
   onSelect: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
@@ -103,7 +106,7 @@ export function CalendarEventCard({
           }}
           style={style}
           className={cn(
-            "absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
+            "group absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
             "h-[var(--card-h)] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
             isSelected
               ? "border-primary/70 ring-1 ring-primary/70 ring-inset"
@@ -174,17 +177,34 @@ export function CalendarEventCard({
               )}
             </div>
           )}
-          {!cancelled && (
-            <span
-              aria-hidden="true"
-              className="absolute inset-x-0 bottom-0 z-10 flex cursor-ns-resize justify-center"
-              style={{ height: RESIZE_HANDLE_PX }}
-              onPointerDown={(pointerEvent) => {
-                pointerEvent.stopPropagation();
-                onResizeStart(pointerEvent);
-              }}
-            />
-          )}
+          {!cancelled &&
+            (["start", "end"] as const).map((edge) => (
+              <span
+                key={edge}
+                aria-hidden="true"
+                className={cn(
+                  "absolute inset-x-0 z-10 flex max-h-[30%] cursor-ns-resize",
+                  edge === "start" ? "top-0 items-start" : "bottom-0 items-end",
+                )}
+                style={{ height: RESIZE_HANDLE_PX }}
+                onPointerDown={(pointerEvent) => {
+                  pointerEvent.stopPropagation();
+                  onResizeStart(pointerEvent, edge);
+                }}
+              >
+                <span
+                  className={cn(
+                    "mx-auto h-[3px] w-7 transition-colors",
+                    edge === "start" ? "rounded-b-full" : "rounded-t-full",
+                    isSelected
+                      ? "bg-primary/70"
+                      : hasConflict
+                        ? "bg-destructive/70"
+                        : "bg-[color-mix(in_oklab,var(--ev)_55%,var(--background))] group-hover:bg-[color-mix(in_oklab,var(--ev)_85%,var(--background))]",
+                  )}
+                />
+              </span>
+            ))}
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-44">

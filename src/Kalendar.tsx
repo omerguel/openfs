@@ -230,7 +230,7 @@ type DragState = {
 } & (
   | { mode: "move"; duration: number; pointerOffsetY: number }
   | {
-      mode: "resize-end";
+      mode: "resize-start" | "resize-end";
       /* Minutes between the pointer and the grabbed edge at drag start. */
       grabOffsetMinutes: number;
     }
@@ -267,12 +267,19 @@ function computeDragPosition(
     };
   }
 
+  const edgeMinutes = Math.round(rawPointerMinutes - dragging.grabOffsetMinutes);
+  if (dragging.mode === "resize-start") {
+    return {
+      date: dragging.date,
+      start: formatMinutes(
+        clamp(edgeMinutes, minMinutes, toMinutes(dragging.end) - SNAP_MINUTES),
+      ),
+      end: dragging.end,
+    };
+  }
+
   const startMinutes = toMinutes(dragging.start);
-  const nextEndMinutes = clamp(
-    Math.round(rawPointerMinutes - dragging.grabOffsetMinutes),
-    startMinutes + SNAP_MINUTES,
-    maxMinutes,
-  );
+  const nextEndMinutes = clamp(edgeMinutes, startMinutes + SNAP_MINUTES, maxMinutes);
   return {
     date: dragging.date,
     start: dragging.start,
@@ -322,6 +329,7 @@ const DayColumn = memo(
     onResizeStart: (
       event: CalEvent,
       pointerEvent: ReactPointerEvent<HTMLElement>,
+      edge: "start" | "end",
     ) => void;
     onSelect: (event: CalEvent) => void;
     onEdit: (event: CalEvent) => void;
@@ -366,7 +374,9 @@ const DayColumn = memo(
                 pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
                 onDragStart(event, pointerEvent);
               }}
-              onResizeStart={(pointerEvent) => onResizeStart(event, pointerEvent)}
+              onResizeStart={(pointerEvent, edge) =>
+                onResizeStart(event, pointerEvent, edge)
+              }
               onSelect={() => onSelect(event)}
               onEdit={() => onEdit(event)}
               onDelete={() => onDelete(event)}
@@ -739,6 +749,17 @@ export function Kalendar() {
           start: formatMinutes(startMinutes),
           end: formatMinutes(startMinutes + dragging.duration),
         };
+      } else if (preview && dragging.mode === "resize-start") {
+        dragResultRef.current = {
+          ...preview,
+          start: formatMinutes(
+            clamp(
+              snapMinutes(toMinutes(preview.start)),
+              grid.startHour * 60,
+              toMinutes(dragging.end) - SNAP_MINUTES,
+            ),
+          ),
+        };
       } else if (preview && dragging.mode === "resize-end") {
         dragResultRef.current = {
           ...preview,
@@ -857,11 +878,15 @@ export function Kalendar() {
   );
 
   const handleEventResizeStart = useCallback(
-    (event: CalEvent, pointerEvent: ReactPointerEvent<HTMLElement>) => {
+    (
+      event: CalEvent,
+      pointerEvent: ReactPointerEvent<HTMLElement>,
+      edge: "start" | "end",
+    ) => {
       if (pointerEvent.button !== 0) return;
       pointerEvent.preventDefault();
       pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
-      const edgeMinutes = toMinutes(event.end);
+      const edgeMinutes = toMinutes(edge === "start" ? event.start : event.end);
       const dayGrid = dayGridRef.current;
       const pointerMinutes = dayGrid
         ? ((pointerEvent.clientY - dayGrid.getBoundingClientRect().top) / HOUR_HEIGHT) *
@@ -876,7 +901,7 @@ export function Kalendar() {
         date: event.date,
         start: event.start,
         end: event.end,
-        mode: "resize-end",
+        mode: edge === "start" ? "resize-start" : "resize-end",
         grabOffsetMinutes: pointerMinutes - edgeMinutes,
       });
     },
