@@ -389,10 +389,10 @@ const ChannelChart = memo(function ChannelChart({
                         value={Math.round((channel.leads / maxLeads) * 100)}
                         className="h-1"
                       />
-                      <span className="w-20 text-right text-xs tabular-nums text-muted-foreground">
+                      <span className="w-28 text-right text-xs tabular-nums text-muted-foreground">
                         {channel.costPerLead === null
                           ? "–"
-                          : formatEuro(channel.costPerLead)}
+                          : `${formatEuro(channel.costPerLead)} / Lead`}
                       </span>
                     </div>
                   </div>

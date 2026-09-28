@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 
+import { useLegalInfo } from "@/hooks/use-legal-info";
 import { useSchoolProfile } from "@/hooks/use-school-profile";
 import { LegalLinks } from "@/components/legal/LegalPage";
 import { Button } from "@/components/ui/button";
@@ -91,6 +92,7 @@ const EMPTY_FORM: FormState = {
 
 export function Anfrage() {
   const { profile } = useSchoolProfile();
+  const legal = useLegalInfo();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -181,7 +183,7 @@ export function Anfrage() {
             {profile.slogan || "Terminanfrage"}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Fahrschule — Terminanfrage stellen
+            {legal.data?.name || "Fahrschule"} — Terminanfrage stellen
           </p>
         </div>
 
