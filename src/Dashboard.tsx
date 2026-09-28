@@ -27,6 +27,7 @@ import {
   addDays,
   type CalEvent,
   eventTypeShortLabel,
+  isCancelled,
   isFahrstunde,
   isSameDay,
   parseISODate,
@@ -454,7 +455,12 @@ function MonthCalendar({ events }: { events: CalEvent[] }) {
 /* ------------------------------------------------------------------ */
 
 export function Dashboard() {
-  const { events } = useCalendarEvents();
+  const { events: allEvents } = useCalendarEvents();
+  // Cancelled lessons stay in the calendar as history but are not work.
+  const events = useMemo(
+    () => allEvents.filter((event) => !isCancelled(event)),
+    [allEvents],
+  );
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <Navigation events={events} />
