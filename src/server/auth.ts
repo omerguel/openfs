@@ -21,7 +21,7 @@ import type { BunRequest } from "bun";
 import { ValidationError } from "./errors";
 import {
   clientIp,
-  createRateLimiter,
+  createFailureLimiter,
   err,
   handle,
   json,
@@ -593,7 +593,9 @@ function dbOf(fallback: Database): Database {
 }
 
 export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {}) {
-  const limited = createRateLimiter(
+  // Only failed attempts count; a successful login clears the counter, so
+  // staff signing in often (several devices, shared PC) is never locked out.
+  const failures = createFailureLimiter(
     options.loginRateLimit ?? { max: 10, windowMs: 15 * 60_000 },
   );
 
@@ -632,7 +634,7 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             password?: unknown;
           };
           const key = `${clientIp(req, server)}|${String(body.email ?? "").toLowerCase()}`;
-          if (limited(key)) {
+          if (failures.blocked(key)) {
             return err(
               "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.",
               429,
@@ -648,7 +650,11 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             status: user ? 200 : 401,
             ip: clientIp(req, server),
           });
-          if (!user) return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
+          if (!user) {
+            failures.fail(key);
+            return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
+          }
+          failures.reset(key);
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             headers: { "Content-Type": "application/json", "Set-Cookie": cookie },

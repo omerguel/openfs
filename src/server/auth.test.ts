@@ -148,6 +148,27 @@ describe("sessions", () => {
     await attempt();
     expect((await attempt()).status).toBe(429);
   });
+
+  test("only failed logins count; a successful login resets the counter", async () => {
+    await seedUsers();
+    start({ auth: { loginRateLimit: { max: 2, windowMs: 60_000 } } });
+    const attempt = (password: string) =>
+      fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        body: JSON.stringify({ email: "chefin@fs.de", password }),
+      });
+    // Many successful sign-ins never lock the account.
+    for (let i = 0; i < 5; i++) {
+      expect((await attempt("geheim-geheim")).status).toBe(200);
+    }
+    // One failure, then success resets: two more failures are still allowed.
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    expect((await attempt("geheim-geheim")).status).toBe(200);
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    // Now blocked — even the right password waits for the window to pass.
+    expect((await attempt("geheim-geheim")).status).toBe(429);
+  });
 });
 
 describe("roles", () => {
