@@ -75,8 +75,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 
 /* After signing in or out every cached query belongs to someone else. */
 async function resetSession() {
-  queryClient.clear();
-  await queryClient.invalidateQueries({ queryKey: ["auth"] });
+  queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "auth" });
+  await queryClient.refetchQueries({ queryKey: ["auth", "status"] });
 }
 
 export async function login(email: string, password: string) {

@@ -27,7 +27,10 @@ import {
   UNAUTHORIZED_EVENT,
   useAuthStatus,
 } from "@/hooks/use-auth";
+import { parseOrThrow } from "@/lib/api";
 import { parseEuroToCents } from "@/lib/money";
+import { useQuery } from "@tanstack/react-query";
+import { PlatformPage } from "./PlatformPage";
 import { queryClient } from "@/lib/query-client";
 
 installAuthFetchHook();
@@ -286,7 +289,54 @@ function SetupForm() {
   );
 }
 
+type PlatformInfo =
+  | { mode: "single" }
+  | { mode: "platform"; baseDomain: string; signup: boolean }
+  | { mode: "tenant"; slug: string; exists: boolean; active: boolean };
+
+/* Multi-tenant mode: the bare domain shows the platform page, unknown
+   or suspended schools a clear message instead of a sign-in form. */
 export function AuthGate({ children }: { children: ReactNode }) {
+  const platform = useQuery({
+    queryKey: ["auth", "platform"],
+    queryFn: async () => parseOrThrow<PlatformInfo>(await fetch("/api/platform/info")),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  if (platform.isPending) {
+    return (
+      <main className="grid min-h-svh place-items-center bg-sidebar">
+        <Spinner />
+      </main>
+    );
+  }
+  const info = platform.data ?? { mode: "single" };
+  if (info.mode === "platform") {
+    return <PlatformPage baseDomain={info.baseDomain} signup={info.signup} />;
+  }
+  if (info.mode === "tenant" && !info.exists) {
+    return (
+      <Shell
+        title="Fahrschule nicht gefunden"
+        description={`Unter „${info.slug}“ ist keine Fahrschule registriert. Bitte die Adresse prüfen.`}
+      >
+        <span />
+      </Shell>
+    );
+  }
+  if (info.mode === "tenant" && !info.active) {
+    return (
+      <Shell
+        title="Zugang gesperrt"
+        description="Der Zugang dieser Fahrschule ist derzeit gesperrt. Bitte wenden Sie sich an OpenFS."
+      >
+        <span />
+      </Shell>
+    );
+  }
+  return <SchoolGate>{children}</SchoolGate>;
+}
+
+function SchoolGate({ children }: { children: ReactNode }) {
   const status = useAuthStatus();
 
   // A 401 anywhere means the session ended — re-check who we are.
