@@ -16,14 +16,20 @@ import {
 } from "@/lib/legal";
 import {
   Address,
+  LabeledLine,
   LegalPage,
   LegalSection,
   MissingFieldsNotice,
+  StaffOnly,
   Value,
+  useIsStaffViewer,
 } from "@/components/legal/LegalPage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
+/* [Platzhalter] for the school to fill in — shown to signed-in staff
+   only; visitors get the text without them. */
 function Placeholder({ children }: { children: string }) {
+  if (!useIsStaffViewer()) return null;
   return <span className="text-muted-foreground italic">[{children}]</span>;
 }
 
@@ -41,17 +47,20 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
   const privacyEmail = privacyContactEmail(info);
   return (
     <div className="space-y-8">
-      <Alert>
-        <FileWarning />
-        <AlertTitle>Vorlage — von der Fahrschule zu prüfen</AlertTitle>
-        <AlertDescription>
-          Diese Datenschutzerklärung ist eine Vorlage, die beschreibt, welche Daten die
-          Software OpenFS auf den öffentlichen Seiten verarbeitet. Die Fahrschule ist als
-          Verantwortliche für den Inhalt zuständig und muss sie an ihre tatsächliche
-          Verarbeitung anpassen. Angaben in [eckigen Klammern] sind zu ergänzen. Die
-          Vorlage ersetzt keine Rechtsberatung.
-        </AlertDescription>
-      </Alert>
+      <StaffOnly>
+        <Alert>
+          <FileWarning />
+          <AlertTitle>Vorlage — von der Fahrschule zu prüfen</AlertTitle>
+          <AlertDescription>
+            Diese Datenschutzerklärung ist eine Vorlage, die beschreibt, welche Daten die
+            Software OpenFS auf den öffentlichen Seiten verarbeitet. Die Fahrschule ist
+            als Verantwortliche für den Inhalt zuständig und muss sie an ihre tatsächliche
+            Verarbeitung anpassen. Angaben in [eckigen Klammern] sind zu ergänzen. Die
+            Vorlage ersetzt keine Rechtsberatung. Diesen Hinweis und die Platzhalter sehen
+            nur angemeldete Mitarbeitende.
+          </AlertDescription>
+        </Alert>
+      </StaffOnly>
 
       <MissingFieldsNotice fields={missingDatenschutzFields(info)} />
 
@@ -61,27 +70,28 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           <span className="block font-medium">
             <Value value={info.name} label="Name der Fahrschule" />
           </span>
-          <span className="block">
-            Inhaber:in: <Value value={info.inhaber} label="Inhaber:in" />
-          </span>
+          <LabeledLine label="Inhaber:in" value={info.inhaber} />
           <Address address={info.address} />
           {info.phone && (
             <span className="block tabular-nums">Telefon: {info.phone}</span>
           )}
-          <span className="block">
-            E-Mail: <Value value={info.email} label="E-Mail" />
-          </span>
+          <LabeledLine label="E-Mail" value={info.email} />
         </p>
         <p>
-          Anfragen zum Datenschutz richten Sie bitte an:{" "}
           {privacyEmail ? (
-            <a href={`mailto:${privacyEmail}`} className="text-primary hover:underline">
-              {privacyEmail}
-            </a>
+            <>
+              Anfragen zum Datenschutz richten Sie bitte an:{" "}
+              <a href={`mailto:${privacyEmail}`} className="text-primary hover:underline">
+                {privacyEmail}
+              </a>
+              .{" "}
+            </>
           ) : (
-            <Placeholder>E-Mail für Datenschutzanfragen fehlt</Placeholder>
+            <StaffOnly>
+              Anfragen zum Datenschutz richten Sie bitte an:{" "}
+              <Placeholder>E-Mail für Datenschutzanfragen fehlt</Placeholder>.{" "}
+            </StaffOnly>
           )}
-          .{" "}
           <Placeholder>
             Falls ein Datenschutzbeauftragter benannt ist: Name und Kontakt ergänzen
           </Placeholder>
@@ -100,14 +110,21 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
         <p>
           Zweck ist die Auslieferung der Seiten und die Sicherheit des Betriebs.
           Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse an einem
-          sicheren, funktionsfähigen Angebot). Speicherdauer etwaiger Server-Logfiles beim
-          Hosting-Anbieter: <Placeholder>Speicherdauer ergänzen</Placeholder>.
+          sicheren, funktionsfähigen Angebot).
+          <StaffOnly>
+            {" "}
+            Speicherdauer etwaiger Server-Logfiles beim Hosting-Anbieter:{" "}
+            <Placeholder>Speicherdauer ergänzen</Placeholder>.
+          </StaffOnly>
         </p>
         <p>
-          Die Software wird betrieben von{" "}
-          <Placeholder>Name und Anschrift des Software-Anbieters</Placeholder> als
-          Auftragsverarbeiter nach Art. 28 DSGVO; Hosting durch{" "}
-          <Placeholder>Hosting-Anbieter und Serverstandort ergänzen</Placeholder>.
+          Die Software wird durch einen Auftragsverarbeiter nach Art. 28 DSGVO betrieben.
+          <StaffOnly>
+            {" "}
+            Betreiber:{" "}
+            <Placeholder>Name und Anschrift des Software-Anbieters</Placeholder>; Hosting
+            durch <Placeholder>Hosting-Anbieter und Serverstandort ergänzen</Placeholder>.
+          </StaffOnly>
         </p>
       </LegalSection>
 
@@ -133,7 +150,7 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
         <List
           items={[
             "Name (Pflichtangabe)",
-            "Telefonnummer und E-Mail-Adresse (freiwillig)",
+            "Telefonnummer und/oder E-Mail-Adresse (mindestens eine Angabe, damit wir Sie erreichen können)",
             "Terminart sowie Wunschdatum und Wunschuhrzeit (Pflichtangaben)",
             "Ihre Nachricht (freiwillig)",
           ]}
@@ -144,7 +161,11 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           Maßnahmen auf Ihre Anfrage). Wird ein Termin bestätigt oder abgelehnt und haben
           Sie eine E-Mail-Adresse angegeben, erhalten Sie darüber eine E-Mail. Anfragen
           werden gelöscht, sobald sie erledigt sind und keine Aufbewahrungspflicht
-          besteht: <Placeholder>Löschfrist ergänzen</Placeholder>.
+          besteht.
+          <StaffOnly>
+            {" "}
+            Löschfrist: <Placeholder>Löschfrist ergänzen</Placeholder>.
+          </StaffOnly>
         </p>
       </LegalSection>
 
@@ -169,10 +190,15 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           Benachrichtigungen im Rahmen der Ausbildung, insbesondere Terminbestätigungen
           und -absagen, Erinnerungen am Vortag eines Termins, den Zugangslink zum
           Schülerportal sowie individuelle Nachrichten. Rechtsgrundlage ist Art. 6 Abs. 1
-          lit. b DSGVO. Versand über: <Placeholder>E-Mail-Anbieter ergänzen</Placeholder>.
+          lit. b DSGVO.
+          <StaffOnly>
+            {" "}
+            Versand über: <Placeholder>E-Mail-Anbieter ergänzen</Placeholder>.
+          </StaffOnly>
         </p>
         <p>
-          OpenFS selbst versendet keine SMS.{" "}
+          Hat die Fahrschule den SMS-Versand eingerichtet, erhalten Sie
+          Termininformationen auch per SMS an die hinterlegte Mobilnummer.{" "}
           <Placeholder>
             Falls die Fahrschule SMS oder Messenger nutzt: Anbieter, Zweck und
             Rechtsgrundlage ergänzen
@@ -201,10 +227,12 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           empfangene und versandte Handels- und Geschäftsbriefe 6 Jahre. Buchungen werden
           in der Buchhaltung unveränderbar gespeichert.
         </p>
-        <p>
-          Aufbewahrung des Ausbildungsnachweises nach Fahrlehrerrecht:{" "}
-          <Placeholder>Frist ergänzen</Placeholder>.
-        </p>
+        <StaffOnly>
+          <p>
+            Aufbewahrung des Ausbildungsnachweises nach Fahrlehrerrecht:{" "}
+            <Placeholder>Frist ergänzen</Placeholder>.
+          </p>
+        </StaffOnly>
       </LegalSection>
 
       <LegalSection title="9. Ihre Rechte">
@@ -229,14 +257,20 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
         <p>
           Sie haben das Recht, sich bei einer Datenschutz-Aufsichtsbehörde zu beschweren
           (Art. 77 DSGVO), insbesondere in dem Bundesland Ihres Wohnorts oder des Sitzes
-          der Fahrschule. Zuständig für die Fahrschule:{" "}
-          <Placeholder>Landesdatenschutzbehörde ergänzen</Placeholder>.
+          der Fahrschule.
+          <StaffOnly>
+            {" "}
+            Zuständig für die Fahrschule:{" "}
+            <Placeholder>Landesdatenschutzbehörde ergänzen</Placeholder>.
+          </StaffOnly>
         </p>
       </LegalSection>
 
-      <p className="text-sm text-muted-foreground">
-        Stand: <Placeholder>Datum ergänzen</Placeholder>
-      </p>
+      <StaffOnly>
+        <p className="text-sm text-muted-foreground">
+          Stand: <Placeholder>Datum ergänzen</Placeholder>
+        </p>
+      </StaffOnly>
     </div>
   );
 }
