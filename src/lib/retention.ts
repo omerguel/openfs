@@ -145,7 +145,7 @@ export const RETENTION_DEFS: Record<RetentionCategory, RetentionCategoryDef> = {
     defaultMonths: 120,
     minMonths: 120,
     maxMonths: 132,
-    note: "Die Frist endet nicht, solange die steuerliche Festsetzungsfrist läuft (§ 147 Abs. 3 Satz 5 AO), z. B. bei einer Betriebsprüfung – dann „Aufbewahrung verlängern“.",
+    note: "Rechnungen allein wären nach 8 Jahren frei; weil derselbe Name im Buchungsjournal (10 Jahre) steht, gilt einheitlich die längere Frist. Die Frist endet nicht, solange die steuerliche Festsetzungsfrist noch läuft (Ablaufhemmung, § 147 Abs. 3 AO), z. B. bei einer Betriebsprüfung – dann „Aufbewahrung verlängern“. Bitte mit der Steuerberatung abstimmen.",
   },
 };
 

@@ -675,11 +675,11 @@ export function planErasure(
   const holds = activeHoldIds(db, today);
   const erase = [
     "Telefon, E-Mail-Adresse und Begleitperson",
-    `${c.files} hochgeladene Dokument(e)`,
-    `${c.threads} Chat-Unterhaltung(en)`,
-    `${c.outbox} E-Mail(s)/SMS im Versandprotokoll`,
+    c.files > 0 ? `${c.files} hochgeladene(s) Dokument(e)` : "",
+    c.threads > 0 ? `${c.threads} Chat-Unterhaltung(en)` : "",
+    c.outbox > 0 ? `${c.outbox} E-Mail(s)/SMS im Versandprotokoll` : "",
     "Schülerportal-Zugang und Terminanfragen",
-  ];
+  ].filter(Boolean);
   const retain: ErasurePlan["retain"] = [];
   if (c.attestations > 0) {
     retain.push({
