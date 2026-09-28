@@ -1,5 +1,6 @@
 /* ------------------------------------------------------------------ */
-/* Datensicherung — /api/admin/backups (list, create, download).       */
+/* Datensicherung — /api/admin/backups (list, create, download,        */
+/* verify).                                                            */
 /* ------------------------------------------------------------------ */
 
 import { useQuery } from "@tanstack/react-query";
@@ -8,9 +9,18 @@ import { parseOrThrow } from "@/lib/api";
 
 export type BackupItem = {
   name: string;
+  /** "set": database + documents + manifest; "legacy": a bare .db file. */
+  kind: "set" | "legacy";
+  /** Database + documents in bytes. */
   size: number;
   createdAt: string;
   offsite: boolean;
+  databaseSize: number;
+  fileCount: number;
+  fileBytes: number;
+  filesIncluded: boolean;
+  /** Documents that were already missing in the store at backup time. */
+  missingFiles: number;
 };
 
 export type BackupOverview =
@@ -27,6 +37,10 @@ export type BackupOverview =
         dbPath?: string;
         /** Where uploaded documents live. */
         files?: string | null;
+        /** Whether backups include the documents. */
+        filesIncluded?: boolean;
+        /** School slug in multi-tenant mode. */
+        tenant?: string | null;
       };
     }
   | { enabled: false; message: string; backups: BackupItem[] };
@@ -50,4 +64,12 @@ export function useBackups() {
 
 export async function createBackupNow(): Promise<BackupItem & { offsiteError?: string }> {
   return parseOrThrow(await fetch("/api/admin/backups", { method: "POST" }));
+}
+
+export async function verifyBackup(
+  name: string,
+): Promise<{ ok: boolean; problems: string[] }> {
+  return parseOrThrow(
+    await fetch(`${backupDownloadUrl(name)}/verify`, { method: "POST" }),
+  );
 }

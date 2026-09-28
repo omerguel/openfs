@@ -1,9 +1,9 @@
 /* ------------------------------------------------------------------ */
-/* Datensicherung — automatische SQLite-Sicherungen (data/backups,     */
-/* optional offsite in S3), manuelles „Jetzt sichern", Downloads, der  */
-/* ZIP-Datenexport, die .db-Kopie und eine Anleitung zur Wiederherstel-*/
-/* lung mit dem echten Datenbankpfad. Nur für Inhaber (Route-Guard).   */
-/* Daten kommen aus /api/admin/backups (use-backups).                  */
+/* Datensicherung — automatische Sicherungen (Datenbank + Dokumente,   */
+/* data/backups, optional offsite in S3), manuelles „Jetzt sichern",   */
+/* Prüfen, Download als Archiv (.tar), der ZIP-Datenexport, die .db-   */
+/* Kopie und die Wiederherstellung (bun run restore). Nur für Inhaber  */
+/* (Route-Guard). Daten kommen aus /api/admin/backups (use-backups).   */
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
@@ -14,6 +14,7 @@ import {
   FileArchive,
   HardDrive,
   Info,
+  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -22,6 +23,7 @@ import {
   backupDownloadUrl,
   createBackupNow,
   useBackups,
+  verifyBackup,
   type BackupItem,
 } from "@/hooks/use-backups";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -35,6 +37,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { describeBackupContents, missingFilesWarning } from "@/lib/backup-contents";
 import { formatStudentDocumentSize } from "@/lib/student-documents";
 
 const createdAtFormatter = new Intl.DateTimeFormat("de-DE", {
@@ -48,13 +51,39 @@ function formatCreatedAt(value: string): string {
 }
 
 function BackupRow({ backup }: { backup: BackupItem }) {
+  const [checking, setChecking] = useState(false);
+  const missing = missingFilesWarning(backup);
+  const isSet = backup.kind === "set";
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      const result = await verifyBackup(backup.name);
+      if (result.ok) {
+        toast.success("Sicherung ist vollständig und unbeschädigt", {
+          description: `${backup.name}: Prüfsummen und Datenbank-Integrität in Ordnung.`,
+        });
+      } else {
+        toast.error("Sicherung ist beschädigt", {
+          description: result.problems.slice(0, 3).join(" "),
+        });
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Prüfung fehlgeschlagen.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:items-center">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate font-mono text-[13px]">{backup.name}</span>
         <span className="text-xs text-muted-foreground tabular-nums">
-          {formatCreatedAt(backup.createdAt)} · {formatStudentDocumentSize(backup.size)}
+          {formatCreatedAt(backup.createdAt)} · {describeBackupContents(backup)} ·{" "}
+          {formatStudentDocumentSize(backup.size)}
         </span>
+        {missing ? <span className="text-xs text-destructive">{missing}</span> : null}
       </div>
       <div className="flex items-center justify-end gap-2">
         <Badge variant="outline" className="gap-1.5 font-normal">
@@ -70,10 +99,28 @@ function BackupRow({ backup }: { backup: BackupItem }) {
             </>
           )}
         </Badge>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={checking}
+          onClick={check}
+        >
+          <ShieldCheck data-icon="inline-start" />
+          {checking ? "Prüft …" : "Prüfen"}
+        </Button>
         <Button asChild variant="outline" size="sm">
-          <a href={backupDownloadUrl(backup.name)} download={backup.name}>
+          <a
+            href={backupDownloadUrl(backup.name)}
+            download={isSet ? `${backup.name}.tar` : backup.name}
+            title={
+              isSet
+                ? "Vollständiges Archiv: Datenbank, Dokumente und Prüfliste (manifest.json)"
+                : "Datenbank-Datei (älteres Format, ohne Dokumente)"
+            }
+          >
             <Download data-icon="inline-start" />
-            Download
+            {isSet ? "Archiv (.tar)" : ".db"}
           </a>
         </Button>
       </div>
@@ -148,9 +195,13 @@ export function Datensicherung() {
             </Alert>
           ) : config ? (
             <p className="text-sm text-pretty text-muted-foreground">
-              OpenFS sichert automatisch alle {config.intervalHours} Stunden; die neuesten{" "}
-              {config.keep} Sicherungen bleiben erhalten. Ablage auf dem Server:{" "}
-              <Code>{config.dir}</Code>
+              OpenFS sichert automatisch alle {config.intervalHours} Stunden{" "}
+              {config.filesIncluded === false
+                ? "die Datenbank (ohne Dokumente)"
+                : "die Datenbank und alle hochgeladenen Dokumente"}
+              ; die neuesten {config.keep} Sicherungen bleiben erhalten, ältere werden
+              samt ihrer Dokumente gelöscht. Jede Sicherung enthält eine Prüfliste mit
+              Prüfsummen. Ablage auf dem Server: <Code>{config.dir}</Code>
               {config.offsite ? (
                 <>
                   , zusätzlich außer Haus in <Code>{config.offsite}</Code>
@@ -225,8 +276,9 @@ export function Datensicherung() {
                   Datenbank-Sicherung (.db)
                 </span>
                 <p className="flex-1 text-xs text-pretty text-muted-foreground">
-                  Eine vollständige Kopie der Datenbank in diesem Moment — die Datei, mit
-                  der sich OpenFS wiederherstellen lässt. Ohne Dokumente.
+                  Eine Kopie der Datenbank in diesem Moment, ohne Dokumente. Für eine
+                  vollständige Sicherung laden Sie oben ein Archiv (.tar) herunter —
+                  Datenbank und alle Dokumente.
                 </p>
                 <Button asChild variant="outline" size="sm" className="w-fit">
                   <a href="/api/export/database" download>
@@ -242,33 +294,38 @@ export function Datensicherung() {
             <h2 className="text-sm font-medium">Wiederherstellen — so geht es</h2>
             <p className="text-sm text-pretty text-muted-foreground">
               Eine Wiederherstellung setzt OpenFS auf den Stand der gewählten Sicherung
-              zurück; alles, was danach eingegeben wurde, ist dann weg. Am besten erledigt
-              das die Person, die Ihren Server betreut:
+              zurück — Datenbank und Dokumente; alles, was danach eingegeben wurde, ist
+              dann weg. Das erledigt die Person, die Ihren Server betreut:
             </p>
             <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm text-pretty text-muted-foreground">
-              <li>OpenFS (den Server) beenden.</li>
               <li>
-                Die aktuelle Datenbank-Datei <Code>{dbPath}</Code> samt der Dateien{" "}
-                <Code>{dbPath}-wal</Code> und <Code>{dbPath}-shm</Code> (falls vorhanden)
-                beiseitelegen — nicht löschen.
+                OpenFS (den Server) beenden, z. B. <Code>systemctl stop openfs</Code>.
               </li>
               <li>
-                Die gewünschte Sicherung herunterladen (oder aus{" "}
-                <Code>{config?.dir ?? "data/backups"}</Code> nehmen) und unter genau
-                diesem Namen ablegen: <Code>{dbPath}</Code>.
+                Im OpenFS-Verzeichnis ausführen:{" "}
+                <Code>
+                  bun run restore restore{" "}
+                  {overview?.backups[0]?.name ?? "openfs-JJJJ-MM-TT-HHMMSS"}
+                  {config?.tenant ? ` --tenant ${config.tenant}` : ""}
+                </Code>{" "}
+                — oder statt des Namens den Pfad zu einem heruntergeladenen Archiv (.tar).
+                Das Skript prüft die Sicherung, verweigert die Arbeit, solange der Server
+                läuft, und legt die aktuelle Datenbank <Code>{dbPath}</Code> und die
+                Dokumente
+                {config?.files ? (
+                  <>
+                    {" "}
+                    (<Code>{config.files}</Code>)
+                  </>
+                ) : null}{" "}
+                mit der Endung <Code>.before-restore-…</Code> beiseite, statt sie zu
+                löschen.
               </li>
               <li>OpenFS wieder starten und kurz prüfen, ob die Daten stimmen.</li>
             </ol>
             <p className="text-xs text-pretty text-muted-foreground">
-              Hochgeladene Dokumente stecken nicht in der Datenbank, sondern im
-              Dateispeicher
-              {config?.files ? (
-                <>
-                  {" "}
-                  (<Code>{config.files}</Code>)
-                </>
-              ) : null}{" "}
-              — sichern Sie diesen Ordner zusätzlich, oder nutzen Sie den ZIP-Export.
+              Die ausführliche Anleitung (auch ohne Skript) steht in{" "}
+              <Code>docs/operations.md</Code>.
             </p>
           </section>
         </div>
