@@ -8,6 +8,7 @@
     "build": "rm -rf dist && bun scripts/build-renderer.ts",
     "start": "NODE_ENV=production bun src/index.ts",
     "test": "bun test",
+    "test:e2e": "bun scripts/e2e-smoke.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "biome check src scripts",
     "format": "biome format --write src scripts"
@@ -38,6 +39,7 @@
     "@types/react-dom": "^19",
     "agentation": "^3.0.2",
     "bun-plugin-tailwind": "^0.1.2",
+    "playwright": "1.56.1",
     "shadcn": "^4.11.0",
     "tailwindcss": "^4.3.0"
   },
