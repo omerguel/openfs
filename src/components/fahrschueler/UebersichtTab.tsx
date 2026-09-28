@@ -40,6 +40,9 @@ import {
 import { PortalLinkCard } from "./PortalLinkCard";
 import { useStudentFiles } from "@/hooks/use-student-files";
 import { getStudentFileMeta } from "@/lib/student-documents";
+import { ageInYears, allowsAccompaniedDriving } from "@/lib/license-classes";
+import { BALANCE_TONE_CLASS, describeBalance } from "@/lib/student-balance";
+import { cn } from "@/lib/utils";
 
 /** "11.08.1999" → "26 Jahre" (empty string when unparsable). */
 function formatAge(birthday: string): string {
@@ -60,11 +63,17 @@ export function UebersichtTab({
   student,
   instructorOptions,
   vehicleOptions,
+  canSeeMoney,
+  canEdit = true,
   onSave,
 }: {
   student: StudentRecord;
   instructorOptions: string[];
   vehicleOptions: string[];
+  /** false for Fahrlehrer/innen — no balances. */
+  canSeeMoney: boolean;
+  /** Fahrlehrer/innen cannot change student records. */
+  canEdit?: boolean;
   onSave: (updates: StudentEdit) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -86,10 +95,25 @@ export function UebersichtTab({
 
   const editValue = draft ?? student;
   // Balance and lessons are derived by the server (ledger + calendar).
-  const hasDebt = student.balance.startsWith("-");
+  const balance = describeBalance(student.balanceCents);
   const age = formatAge(editValue.birthday);
+  const years = ageInYears(editValue.birthday);
+  const showCompanion =
+    allowsAccompaniedDriving(editValue.classes) &&
+    ((years != null && years < 18) || Boolean(editValue.companion));
 
-  const updateDraft = (key: Exclude<keyof StudentEdit, "documents">, value: string) => {
+  const updateCompanion = (key: "name" | "phone", value: string) => {
+    setDraft((current) => {
+      const base = current ?? student;
+      const companion = { name: "", phone: "", ...(base.companion ?? {}), [key]: value };
+      return { ...base, companion };
+    });
+  };
+
+  const updateDraft = (
+    key: Exclude<keyof StudentEdit, "documents" | "companion">,
+    value: string,
+  ) => {
     setDraft((current) => ({ ...(current ?? student), [key]: value }));
   };
 
@@ -108,6 +132,7 @@ export function UebersichtTab({
       vehicle: student.vehicle,
       status: student.status,
       documents: student.documents,
+      companion: student.companion ?? null,
     });
     setEditing(true);
   };
@@ -171,7 +196,7 @@ export function UebersichtTab({
               Abbrechen
             </Button>
           </>
-        ) : (
+        ) : !canEdit ? null : (
           <Button type="button" variant="outline" size="sm" onClick={startEditing}>
             <Edit3 data-icon="inline-start" />
             Bearbeiten
@@ -253,7 +278,7 @@ export function UebersichtTab({
                   onChange={(value) => updateDraft("lastName", value)}
                 />
                 <EditableSelectField
-                  label="Bildungstyp"
+                  label="Klasse"
                   value={editValue.classes}
                   editing={editing}
                   options={classOptions}
@@ -277,6 +302,35 @@ export function UebersichtTab({
               </FieldGroup>
             </CardContent>
           </Card>
+
+          {showCompanion && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Begleitperson (BF17)</CardTitle>
+                <CardDescription>Begleitetes Fahren ab 17</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="gap-3">
+                  <EditableField
+                    id="student-companion-name"
+                    label="Name"
+                    value={
+                      editValue.companion?.name || (editing ? "" : "Nicht hinterlegt")
+                    }
+                    editing={editing}
+                    onChange={(value) => updateCompanion("name", value)}
+                  />
+                  <EditableField
+                    id="student-companion-phone"
+                    label="Telefon"
+                    value={editValue.companion?.phone || (editing ? "" : "–")}
+                    editing={editing}
+                    onChange={(value) => updateCompanion("phone", value)}
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Middle column — training progress, exams, assignments */}
@@ -311,7 +365,7 @@ export function UebersichtTab({
                       <TableRow key={lesson.label}>
                         <TableCell>{lesson.label}</TableCell>
                         <TableCell className="text-right text-muted-foreground">
-                          {lesson.done}
+                          {lesson.done.replace(/min$/, " Min.")}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -408,29 +462,41 @@ export function UebersichtTab({
 
         {/* Right column — balance, documents, theory */}
         <div className="flex flex-col gap-4">
+          {canSeeMoney && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Kontostand</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {balance.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-lg font-semibold tabular-nums",
+                      BALANCE_TONE_CLASS[balance.tone],
+                    )}
+                  >
+                    {balance.amount}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Aus der Buchhaltung: Zahlungen abzüglich abgerechneter Leistungen.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           <Card size="sm">
             <CardHeader>
-              <CardTitle>Beträge</CardTitle>
+              <CardTitle>Termine</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-xs font-medium text-muted-foreground">Bilanz</span>
-                <span
-                  className={
-                    hasDebt
-                      ? "text-lg font-semibold tabular-nums text-destructive"
-                      : "text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                  }
-                >
-                  {student.balance}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Aus der Buchhaltung (Zahlungen abzgl. abgerechneter Leistungen).
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Letzte Stunde {student.lastLesson} · Nächste Stunde {student.nextLesson}
-              </p>
+            <CardContent>
+              <FieldGroup className="gap-3">
+                <DetailItem label="Letzte Stunde" value={student.lastLesson} />
+                <DetailItem label="Nächste Stunde" value={student.nextLesson} />
+              </FieldGroup>
             </CardContent>
           </Card>
 

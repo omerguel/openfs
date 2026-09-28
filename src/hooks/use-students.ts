@@ -48,9 +48,12 @@ export async function updateStudent(
   );
 }
 
-export async function deleteStudent(id: number): Promise<void> {
+/** Archives the student (restorable from /archiv); `reason` is one of
+ *  abgeschlossen | abgebrochen | wechsel | sonstiges. */
+export async function deleteStudent(id: number, reason?: string): Promise<void> {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
   await parseOrThrow<{ ok: true }>(
-    await fetch(`/api/students/${id}`, { method: "DELETE" }),
+    await fetch(`/api/students/${id}${query}`, { method: "DELETE" }),
   );
 }
 
