@@ -336,7 +336,10 @@ export const router = createRouter({
   routeTree,
   context: { queryClient },
   defaultPreload: "intent",
-  scrollRestoration: true,
+  // Off on purpose: every page scrolls its own container, and the router's
+  // element restoration copied one page's scroll offset onto the next page
+  // (same DOM path). App.tsx resets the scroll on each navigation instead.
+  scrollRestoration: false,
 });
 
 declare module "@tanstack/react-router" {
