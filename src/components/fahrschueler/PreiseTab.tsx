@@ -210,7 +210,7 @@ export function PreiseTab({
               <TableBody>
                 {assignedPlan.components.map((component) => (
                   <TableRow key={component.label}>
-                    <TableCell>
+                    <TableCell className="whitespace-normal">
                       {component.label}
                       {component.durationMin != null && (
                         <span className="text-muted-foreground">

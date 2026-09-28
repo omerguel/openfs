@@ -163,20 +163,23 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
     {
       key: "date",
       label: "Datum",
-      className: "pl-4",
-      cellClassName: "pl-4 text-muted-foreground tabular-nums whitespace-nowrap",
+      className: "pl-4 max-sm:hidden",
+      cellClassName:
+        "pl-4 text-muted-foreground tabular-nums whitespace-nowrap max-sm:hidden",
       render: (row) => formatIsoDate(row.date),
     },
     {
       key: "description",
       label: "Beschreibung",
-      className: "min-w-56",
+      className: "max-sm:pl-3 sm:min-w-56",
+      cellClassName: "max-sm:pl-3",
       render: (row) => (
         <div className="flex flex-col">
           <span className={cn(row.storniert && "line-through")}>
             {row.description || row.typeLabel}
           </span>
           <span className="text-[11px] text-muted-foreground">
+            <span className="tabular-nums sm:hidden">{formatIsoDate(row.date)} · </span>
             {studentTypeLabel(row)}
             {row.belegNr && (
               <>
@@ -208,8 +211,8 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
     {
       key: "actions",
       label: "",
-      className: "w-16 pr-4",
-      cellClassName: "pr-4",
+      className: "w-16 pr-4 max-sm:pr-2",
+      cellClassName: "pr-4 max-sm:pr-2",
       render: (row) => (
         <div className="flex items-center justify-end gap-1">
           {row.printable && (
@@ -298,7 +301,7 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
         </Empty>
       ) : (
         <div className="overflow-x-auto rounded-lg border bg-card">
-          <Table className="min-w-[36rem] text-xs">
+          <Table className="text-xs sm:min-w-[36rem]">
             <TableHeader>
               <TableRow className="bg-background hover:bg-background">
                 {columns.map((column) => (
