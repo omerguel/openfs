@@ -26,6 +26,7 @@ import {
   User,
   UserPlus,
   Users,
+  FileSpreadsheet,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -94,6 +95,7 @@ const navGroups: {
       { label: "Fahrschüler", Icon: GraduationCap, route: "/fahrschueler" },
       { label: "Theorie Gruppen", Icon: BookOpen, route: "/theorie-gruppen" },
       { label: "Buchhaltung", Icon: Receipt, route: "/buchhaltung" },
+      { label: "Rechnungen", Icon: FileSpreadsheet, route: "/rechnungen" },
       { label: "Statistik", Icon: BarChart3, route: "/statistik" },
       { label: "Plaudern", Icon: MessageCircle, route: "/plaudern" },
       { label: "Verträge", Icon: FileText, route: "/vertraege" },

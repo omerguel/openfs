@@ -23,6 +23,7 @@ import { NeueSchueler } from "./NeueSchueler";
 import { Plaudern } from "./Plaudern";
 import { Preisangebot } from "./Preisangebot";
 import { Profil } from "./Profil";
+import { Rechnungen } from "./Rechnungen";
 import { Pruefungsplaner } from "./Pruefungsplaner";
 import { Schulprofil } from "./Schulprofil";
 import { Statistik } from "./Statistik";
@@ -193,6 +194,12 @@ const archiveRoute = createRoute({
   component: Archiv,
 });
 
+const invoicesRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/rechnungen",
+  component: Rechnungen,
+});
+
 const appointmentRequestRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/anfrage",
@@ -222,6 +229,7 @@ const portalRouteTree = portalRoute.addChildren([
   reviewsRoute,
   contractsRoute,
   archiveRoute,
+  invoicesRoute,
 ]);
 
 const routeTree = rootRoute.addChildren([portalRouteTree, appointmentRequestRoute]);
