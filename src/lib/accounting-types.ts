@@ -26,12 +26,13 @@ export type Account = {
   openingDate: string | null;
 };
 
-export type PaymentMethod = "bar" | "ueberweisung" | "ec";
+export type PaymentMethod = "bar" | "ueberweisung" | "ec" | "lastschrift";
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   bar: "Bar",
   ueberweisung: "Überweisung",
   ec: "EC-Karte",
+  lastschrift: "SEPA-Lastschrift",
 };
 
 export type TransactionType =

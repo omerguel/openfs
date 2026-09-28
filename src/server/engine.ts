@@ -116,7 +116,7 @@ function reconcilePaymentAccount(method: PaymentMethod, account: Account): void 
 
 /* --------------------------- validation --------------------------- */
 
-const PAYMENT_METHODS: PaymentMethod[] = ["bar", "ueberweisung", "ec"];
+const PAYMENT_METHODS: PaymentMethod[] = ["bar", "ueberweisung", "ec", "lastschrift"];
 
 function requireAmount(amountCents: unknown): number {
   if (
