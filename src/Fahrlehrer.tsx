@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { CalendarOff, GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -34,6 +35,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { RequiredLegend, RequiredMark } from "@/components/FormField";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -129,6 +131,28 @@ function InstructorDialog({
   onDelete?: () => void;
 }) {
   const { vehicleOptions } = useVehicleOptions();
+  const [submitted, setSubmitted] = useState(false);
+  useEffect(() => {
+    if (open) setSubmitted(false);
+  }, [open]);
+  const errors = {
+    firstName: draft.firstName.trim() ? null : "Bitte den Vornamen angeben.",
+    lastName: draft.lastName.trim() ? null : "Bitte den Nachnamen angeben.",
+    since: /^(\d{4}|\d{1,2}\/\d{4}|\d{4}-\d{2}(-\d{2})?)?$/.test(draft.since.trim())
+      ? null
+      : "Bitte als Jahr (z. B. 2019) oder MM/JJJJ angeben.",
+  };
+  const shown = submitted ? errors : { firstName: null, lastName: null, since: null };
+  const submit = () => {
+    setSubmitted(true);
+    if (!errors.firstName && !errors.lastName && !errors.since) onSave();
+  };
+  const errorText = (id: string, message: string | null) =>
+    message ? (
+      <span id={id} role="alert" className="text-xs text-destructive">
+        {message}
+      </span>
+    ) : null;
 
   function update<Key extends keyof InstructorInput>(
     key: Key,
@@ -147,20 +171,36 @@ function InstructorDialog({
 
         <FieldGroup className="grid gap-4 sm:grid-cols-2">
           <Field>
-            <FieldLabel htmlFor="instructor-first-name">Vorname</FieldLabel>
+            <FieldLabel htmlFor="instructor-first-name">
+              Vorname
+              <RequiredMark />
+            </FieldLabel>
             <Input
               id="instructor-first-name"
+              aria-required
+              aria-invalid={shown.firstName ? true : undefined}
+              aria-describedby={
+                shown.firstName ? "instructor-first-name-error" : undefined
+              }
               value={draft.firstName}
               onChange={(event) => update("firstName", event.target.value)}
             />
+            {errorText("instructor-first-name-error", shown.firstName)}
           </Field>
           <Field>
-            <FieldLabel htmlFor="instructor-last-name">Nachname</FieldLabel>
+            <FieldLabel htmlFor="instructor-last-name">
+              Nachname
+              <RequiredMark />
+            </FieldLabel>
             <Input
               id="instructor-last-name"
+              aria-required
+              aria-invalid={shown.lastName ? true : undefined}
+              aria-describedby={shown.lastName ? "instructor-last-name-error" : undefined}
               value={draft.lastName}
               onChange={(event) => update("lastName", event.target.value)}
             />
+            {errorText("instructor-last-name-error", shown.lastName)}
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-classes">Ausbildungsklassen</FieldLabel>
@@ -194,6 +234,7 @@ function InstructorDialog({
             <FieldLabel htmlFor="instructor-phone">Telefon</FieldLabel>
             <Input
               id="instructor-phone"
+              type="tel"
               value={draft.phone}
               onChange={(event) => update("phone", event.target.value)}
             />
@@ -229,12 +270,19 @@ function InstructorDialog({
             <FieldLabel htmlFor="instructor-since">Dabei seit</FieldLabel>
             <Input
               id="instructor-since"
-              placeholder="z. B. 03/2019"
+              inputMode="numeric"
+              maxLength={10}
+              placeholder="z. B. 2019"
+              aria-invalid={shown.since ? true : undefined}
               value={draft.since}
-              onChange={(event) => update("since", event.target.value)}
+              onChange={(event) =>
+                update("since", event.target.value.replace(/[^\d/-]/g, ""))
+              }
             />
+            {errorText("instructor-since-error", shown.since)}
           </Field>
         </FieldGroup>
+        <RequiredLegend />
 
         <DialogFooter className="gap-2 sm:justify-between">
           {onDelete ? (
@@ -256,12 +304,8 @@ function InstructorDialog({
                 Abbrechen
               </Button>
             </DialogClose>
-            <Button
-              type="button"
-              disabled={saving || !draft.firstName.trim() || !draft.lastName.trim()}
-              onClick={onSave}
-            >
-              Speichern
+            <Button type="button" disabled={saving} onClick={submit}>
+              {saving ? "Speichert …" : "Speichern"}
             </Button>
           </div>
         </DialogFooter>
@@ -345,6 +389,7 @@ function InstructorCard({
 
 export function Fahrlehrer() {
   const { instructors, loading, refresh } = useInstructors();
+  const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<InstructorInput>(emptyDraft);
@@ -367,8 +412,11 @@ export function Fahrlehrer() {
     try {
       await action();
       await refresh();
+      // The Stammfahrzeug is also shown on the vehicle ("Fahrlehrer/in").
+      await queryClient.invalidateQueries({ queryKey: ["vehicles"] });
       setCreating(false);
       setEditingId(null);
+      toast.dismiss();
       toast.success(success);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Speichern fehlgeschlagen.");
