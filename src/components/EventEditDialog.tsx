@@ -746,7 +746,11 @@ export function EventEditDialog({
                 disabled={saving || hasError}
                 onClick={() => void save()}
               >
-                {saving ? "Speichert…" : hasWarning ? "Trotzdem speichern" : "Speichern"}
+                {saving
+                  ? "Speichert…"
+                  : hasWarning && !hasError
+                    ? "Trotzdem speichern"
+                    : "Speichern"}
               </Button>
             </DialogFooter>
           )}
