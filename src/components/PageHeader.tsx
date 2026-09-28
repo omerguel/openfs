@@ -1,3 +1,4 @@
+import { SearchButton } from "@/components/GlobalSearch";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +21,11 @@ export function PageHeader({ children, center, end, className }: PageHeaderProps
       <div aria-hidden className="h-4 w-px shrink-0 bg-border/70" />
       {children}
       {center && <div className="absolute left-1/2 -translate-x-1/2">{center}</div>}
-      {end && <div className="ml-auto flex items-center gap-2">{end}</div>}
+      {/* The global search sits in every page header (also Strg/⌘ + K). */}
+      <div className="ml-auto flex min-w-0 items-center gap-2">
+        <SearchButton compact={Boolean(center)} />
+        {end}
+      </div>
     </header>
   );
 }

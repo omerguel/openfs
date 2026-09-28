@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "./sqlite";
 
-import { openDb } from "./db";
+import { migrateVehicleInstructorDetail, openDb } from "./db";
 import { ValidationError } from "./engine";
 import {
   createVehicle,
@@ -19,6 +19,7 @@ import {
 import { listArchive } from "./archive";
 import { createStudent, getStudent } from "./students";
 import { createInstructor, getInstructor } from "./instructors";
+import { createCalendarEvent, getCalendarEvent } from "./calendar-events";
 import type { InstructorInput } from "./instructors";
 
 let db: Database;
@@ -146,61 +147,44 @@ describe("createVehicle validation", () => {
 /* rename / plate-change propagation                                    */
 /* ================================================================== */
 
-describe("model rename propagation", () => {
-  test("renaming the last vehicle of a model updates students and calendar_events", () => {
+describe("model rename (id-linked references)", () => {
+  test("renaming a vehicle shows the new model on students and Termine", () => {
     const vehicle = createVehicle(
       db,
       makeVehicle({ model: "OldModel", plate: uniq("OLD-") }),
     );
-
-    // Student assigned to old model
     const student = createStudent(db, makeStudent({ vehicle: "OldModel" }));
+    const event = createCalendarEvent(db, {
+      date: "2026-03-01",
+      start: "10:00",
+      end: "11:00",
+      title: "Fahrstunde",
+      type: "Praktisch",
+      vehicleId: vehicle.id,
+    });
 
-    // Calendar event assigned to old model
-    db.prepare(
-      "INSERT INTO calendar_events (date, start, end, title, instructor, vehicle, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "2026-03-01",
-      "10:00",
-      "11:00",
-      "Fahrstunde",
-      "Nicht zugeteilt",
-      "OldModel",
-      "Praktisch",
-    );
-
-    // Act: rename model
     updateVehicle(db, vehicle.id, { model: "NewModel" });
 
-    // Assert: student vehicle updated
-    const updatedStudent = getStudent(db, student.id);
-    expect(updatedStudent.vehicle).toBe("NewModel");
-
-    // Assert: calendar_event vehicle updated
-    const ev = db
-      .query<{ vehicle: string }, []>(
-        "SELECT vehicle FROM calendar_events WHERE date = '2026-03-01'",
-      )
-      .get();
-    expect(ev?.vehicle).toBe("NewModel");
+    expect(getStudent(db, student.id).vehicle).toBe("NewModel");
+    expect(getCalendarEvent(db, Number(event.id)).vehicle).toBe("NewModel");
   });
 
-  test("renaming model with a fleet mate leaves references untouched", () => {
-    // Two vehicles share the same model
+  test("renaming one of two same-model vehicles only moves its own references", () => {
     const v1 = createVehicle(
       db,
       makeVehicle({ model: "SharedModel", plate: uniq("S1-") }),
     );
-    createVehicle(db, makeVehicle({ model: "SharedModel", plate: uniq("S2-") }));
+    const v2 = createVehicle(
+      db,
+      makeVehicle({ model: "SharedModel", plate: uniq("S2-") }),
+    );
+    const onV1 = createStudent(db, makeStudent({ vehicleId: v1.id }));
+    const onV2 = createStudent(db, makeStudent({ vehicleId: v2.id }));
 
-    const student = createStudent(db, makeStudent({ vehicle: "SharedModel" }));
-
-    // Rename v1 only — v2 still has "SharedModel", so references stay
     updateVehicle(db, v1.id, { model: "RenamedModel" });
 
-    const updatedStudent = getStudent(db, student.id);
-    // References should NOT move because another vehicle still carries "SharedModel"
-    expect(updatedStudent.vehicle).toBe("SharedModel");
+    expect(getStudent(db, onV1.id).vehicle).toBe("RenamedModel");
+    expect(getStudent(db, onV2.id).vehicle).toBe("SharedModel");
   });
 
   test("plate change on same model (no model rename) does not touch student references", () => {
@@ -288,26 +272,20 @@ describe("deleteVehicle", () => {
       db,
       makeVehicle({ model: "CalModel", plate: uniq("C-") }),
     );
-    db.prepare(
-      "INSERT INTO calendar_events (date, start, end, title, instructor, vehicle, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "2026-04-01",
-      "10:00",
-      "11:00",
-      "Termin",
-      "Nicht zugeteilt",
-      "CalModel",
-      "Praktisch",
-    );
+    const event = createCalendarEvent(db, {
+      date: "2026-04-01",
+      start: "10:00",
+      end: "11:00",
+      title: "Termin",
+      type: "Praktisch",
+      vehicle: "CalModel",
+    });
 
     deleteVehicle(db, vehicle.id);
 
-    const ev = db
-      .query<{ vehicle: string }, []>(
-        "SELECT vehicle FROM calendar_events WHERE date = '2026-04-01'",
-      )
-      .get();
-    expect(ev?.vehicle).toBe("");
+    const ev = getCalendarEvent(db, Number(event.id));
+    expect(ev.vehicle).toBeUndefined();
+    expect(ev.vehicleId).toBeNull();
   });
 
   test("writes archive entry with correct entity", () => {
@@ -341,5 +319,134 @@ describe("deleteVehicle", () => {
 
   test("unknown id → ValidationError", () => {
     expect(() => deleteVehicle(db, 999999)).toThrow(ValidationError);
+  });
+});
+
+/* ================================================================== */
+/* Fahrlehrer ↔ Fahrzeug: one source of truth                           */
+/* ================================================================== */
+
+describe("instructor assignment", () => {
+  test("assigning on the vehicle sets the instructor's Stammfahrzeug", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Golf" }));
+    const anna = createInstructor(
+      db,
+      makeInstructor({ firstName: "Anna", lastName: "Sync" }),
+    );
+    const updated = updateVehicle(db, vehicle.id, {
+      details: [{ label: "Fahrlehrer/in", value: "Anna Sync" }],
+    });
+    expect(updated.instructorIds).toEqual([anna.id]);
+    expect(updated.details.find((d) => d.label === "Fahrlehrer/in")?.value).toBe(
+      "Anna Sync",
+    );
+    expect(getInstructor(db, anna.id).vehicleId).toBe(vehicle.id);
+    expect(getInstructor(db, anna.id).vehicle).toBe("Sync Golf");
+  });
+
+  test("the Stammfahrzeug set on the instructor shows up on the vehicle", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Polo" }));
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Ben", lastName: "Sync", vehicle: "Sync Polo" }),
+    );
+    const shown = getVehicle(db, vehicle.id).details.find(
+      (d) => d.label === "Fahrlehrer/in",
+    );
+    expect(shown?.value).toBe("Ben Sync");
+  });
+
+  test("reassigning moves the vehicle; 'Nicht zugeteilt' clears it", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync ID3" }));
+    const a = createInstructor(
+      db,
+      makeInstructor({ firstName: "Cara", lastName: "Sync" }),
+    );
+    const b = createInstructor(
+      db,
+      makeInstructor({ firstName: "Dirk", lastName: "Sync" }),
+    );
+    updateVehicle(db, vehicle.id, { instructorId: a.id });
+    updateVehicle(db, vehicle.id, { instructorId: b.id });
+    expect(getInstructor(db, a.id).vehicleId).toBeNull();
+    expect(getInstructor(db, b.id).vehicleId).toBe(vehicle.id);
+    updateVehicle(db, vehicle.id, {
+      details: [{ label: "Fahrlehrer/in", value: "Nicht zugeteilt" }],
+    });
+    expect(getInstructor(db, b.id).vehicleId).toBeNull();
+    expect(getVehicle(db, vehicle.id).instructorIds).toEqual([]);
+  });
+
+  test("an unchanged multi-name value does not touch assignments", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Bus" }));
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Eva", lastName: "A", vehicle: "Sync Bus" }),
+    );
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Fin", lastName: "B", vehicle: "Sync Bus" }),
+    );
+    const current = getVehicle(db, vehicle.id);
+    const saved = updateVehicle(db, vehicle.id, { details: current.details });
+    expect(saved.instructorIds.length).toBe(2);
+  });
+
+  test("an unknown instructor name is rejected", () => {
+    const vehicle = createVehicle(db, makeVehicle());
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Fahrlehrer/in", value: "Niemand Da" }],
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("migration carries a vehicle-only name over and clears the copy", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Alt Astra" }));
+    const gus = createInstructor(
+      db,
+      makeInstructor({ firstName: "Gus", lastName: "Alt" }),
+    );
+    db.prepare("UPDATE vehicles SET details = ? WHERE id = ?").run(
+      JSON.stringify([{ label: "Fahrlehrer/in", value: "Gus Alt" }]),
+      vehicle.id,
+    );
+    migrateVehicleInstructorDetail(db);
+    migrateVehicleInstructorDetail(db);
+    expect(getInstructor(db, gus.id).vehicleId).toBe(vehicle.id);
+    const raw = db
+      .query<{ details: string }, [number]>("SELECT details FROM vehicles WHERE id = ?")
+      .get(vehicle.id)!.details;
+    expect(raw).not.toContain("Gus Alt");
+  });
+});
+
+describe("HU and Kilometerstand", () => {
+  test("HU accepts a month (JJJJ-MM → MM/JJJJ) and rejects free text", () => {
+    const vehicle = createVehicle(
+      db,
+      makeVehicle({ details: [{ label: "Nächste HU", value: "2027-03" }] }),
+    );
+    expect(vehicle.details.find((d) => d.label === "Nächste HU")?.value).toBe("03/2027");
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Nächste HU", value: "bald" }],
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("Kilometerstand is stored as a formatted number", () => {
+    const vehicle = createVehicle(
+      db,
+      makeVehicle({ details: [{ label: "Kilometerstand", value: "84320" }] }),
+    );
+    expect(vehicle.details.find((d) => d.label === "Kilometerstand")?.value).toBe(
+      "84.320 km",
+    );
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Kilometerstand", value: "viel" }],
+      }),
+    ).toThrow(ValidationError);
   });
 });

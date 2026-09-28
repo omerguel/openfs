@@ -38,13 +38,31 @@ export type AppointmentRequest = {
   type: AppointmentRequestType;
   status: AppointmentRequestStatus;
   createdAt: string;
+  /** Campaign whose tracking link brought the request. */
+  campaignId: number | null;
+  campaignName: string | null;
+  /** Student created from the request ("Als Fahrschüler anlegen"). */
+  studentId: number | null;
+  studentName: string | null;
+  /** Fahrlehrer/in of the confirmed appointment (null = none yet). */
+  appointmentInstructor: string | null;
   /* Present on list responses; create/update responses omit it. */
   conflicts?: AppointmentRequestConflict[];
+  /** Ids of requests probably from the same person (list responses). */
+  duplicateOf?: number[];
 };
 
 export type AppointmentRequestInput = Omit<
   AppointmentRequest,
-  "id" | "createdAt" | "conflicts"
+  | "id"
+  | "createdAt"
+  | "conflicts"
+  | "duplicateOf"
+  | "campaignId"
+  | "campaignName"
+  | "studentId"
+  | "studentName"
+  | "appointmentInstructor"
 >;
 
 /* Slot/assignment adjustments sent along when accepting a request. */
@@ -109,6 +127,19 @@ export async function acceptAppointmentRequest(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(overrides),
+    }),
+  );
+}
+
+export async function linkAppointmentRequestStudent(
+  id: number,
+  studentId: number | null,
+): Promise<AppointmentRequest> {
+  return parseOrThrow<AppointmentRequest>(
+    await fetch(`/api/appointment-requests/${id}/student`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studentId }),
     }),
   );
 }

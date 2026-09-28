@@ -9,6 +9,10 @@ import { Car, Check, Edit3, FileText, GraduationCap, User, X } from "lucide-reac
 import { toast } from "sonner";
 
 import type { StudentRecord } from "@/hooks/use-students";
+import { useCalendarEvents } from "@/hooks/use-calendar-events";
+import { type CalEvent, isCancelled } from "@/lib/calendar-data";
+import { formatGermanDate } from "@/lib/working-time";
+import type { ExamEventType } from "@/lib/exams";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,11 +41,12 @@ import {
   EditableSelectField,
   type StudentEdit,
 } from "./fields";
-import {
-  getStudentDocumentKey,
-  getStudentDocumentMeta,
-  getStudentDocumentName,
-} from "@/lib/student-documents";
+import { PortalLinkCard } from "./PortalLinkCard";
+import { useStudentFiles } from "@/hooks/use-student-files";
+import { getStudentFileMeta } from "@/lib/student-documents";
+import { ageInYears, allowsAccompaniedDriving } from "@/lib/license-classes";
+import { BALANCE_TONE_CLASS, describeBalance } from "@/lib/student-balance";
+import { cn } from "@/lib/utils";
 
 /** "11.08.1999" → "26 Jahre" (empty string when unparsable). */
 function formatAge(birthday: string): string {
@@ -58,20 +63,50 @@ function formatAge(birthday: string): string {
   return age > 0 && age < 120 ? `${age} Jahre` : "";
 }
 
+/* The student's exam of one type from the calendar: a result, else the
+   next booked date; null when there is none. */
+function examStatus(
+  events: CalEvent[],
+  studentId: number,
+  type: ExamEventType,
+): string | null {
+  const own = events
+    .filter((e) => e.studentId === studentId && e.type === type && !isCancelled(e))
+    .toSorted((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+  const passed = own.find((e) => e.examResult === "bestanden");
+  if (passed) return `Bestanden am ${formatGermanDate(passed.date)}`;
+  const today = new Date().toLocaleDateString("sv-SE");
+  const next = own.find((e) => !e.examResult && e.date >= today);
+  if (next) return `${formatGermanDate(next.date)}, ${next.start} Uhr`;
+  const failed = own.findLast((e) => e.examResult === "nicht_bestanden");
+  return failed ? `Nicht bestanden am ${formatGermanDate(failed.date)}` : null;
+}
+
 export function UebersichtTab({
   student,
   instructorOptions,
   vehicleOptions,
+  canSeeMoney,
+  canEdit = true,
   onSave,
 }: {
   student: StudentRecord;
   instructorOptions: string[];
   vehicleOptions: string[];
+  /** false for Fahrlehrer/innen — no balances. */
+  canSeeMoney: boolean;
+  /** Fahrlehrer/innen cannot change student records. */
+  canEdit?: boolean;
   onSave: (updates: StudentEdit) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<StudentEdit | null>(null);
   const [saving, setSaving] = useState(false);
+  // Documents are office-only (the API refuses them for Fahrlehrer/innen).
+  const { files } = useStudentFiles(student.id, canEdit);
+  const { events } = useCalendarEvents();
+  const practicalExam = examStatus(events, student.id, "Vorstellung zur prakt. Prüfung");
+  const theoryExam = examStatus(events, student.id, "Theorieprüfung");
 
   useEffect(() => {
     if (!editing) return;
@@ -86,10 +121,26 @@ export function UebersichtTab({
   }, [editing]);
 
   const editValue = draft ?? student;
-  const hasDebt = editValue.balance.startsWith("-");
+  // Balance and lessons are derived by the server (ledger + calendar).
+  const balance = describeBalance(student.balanceCents);
   const age = formatAge(editValue.birthday);
+  const years = ageInYears(editValue.birthday);
+  const showCompanion =
+    allowsAccompaniedDriving(editValue.classes) &&
+    ((years != null && years < 18) || Boolean(editValue.companion));
 
-  const updateDraft = (key: Exclude<keyof StudentEdit, "documents">, value: string) => {
+  const updateCompanion = (key: "name" | "phone", value: string) => {
+    setDraft((current) => {
+      const base = current ?? student;
+      const companion = { name: "", phone: "", ...(base.companion ?? {}), [key]: value };
+      return { ...base, companion };
+    });
+  };
+
+  const updateDraft = (
+    key: Exclude<keyof StudentEdit, "documents" | "companion">,
+    value: string,
+  ) => {
     setDraft((current) => ({ ...(current ?? student), [key]: value }));
   };
 
@@ -98,19 +149,17 @@ export function UebersichtTab({
       firstName: student.firstName,
       lastName: student.lastName,
       classes: student.classes,
-      balance: student.balance,
       phone: student.phone,
       email: student.email,
       address: student.address,
       birthday: student.birthday,
-      lastLesson: student.lastLesson,
-      nextLesson: student.nextLesson,
       drivingSchool: student.drivingSchool,
       registrationDate: student.registrationDate,
       instructor: student.instructor,
       vehicle: student.vehicle,
       status: student.status,
       documents: student.documents,
+      companion: student.companion ?? null,
     });
     setEditing(true);
   };
@@ -174,7 +223,7 @@ export function UebersichtTab({
               Abbrechen
             </Button>
           </>
-        ) : (
+        ) : !canEdit ? null : (
           <Button type="button" variant="outline" size="sm" onClick={startEditing}>
             <Edit3 data-icon="inline-start" />
             Bearbeiten
@@ -256,7 +305,7 @@ export function UebersichtTab({
                   onChange={(value) => updateDraft("lastName", value)}
                 />
                 <EditableSelectField
-                  label="Bildungstyp"
+                  label="Klasse"
                   value={editValue.classes}
                   editing={editing}
                   options={classOptions}
@@ -280,6 +329,35 @@ export function UebersichtTab({
               </FieldGroup>
             </CardContent>
           </Card>
+
+          {showCompanion && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Begleitperson (BF17)</CardTitle>
+                <CardDescription>Begleitetes Fahren ab 17</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="gap-3">
+                  <EditableField
+                    id="student-companion-name"
+                    label="Name"
+                    value={
+                      editValue.companion?.name || (editing ? "" : "Nicht hinterlegt")
+                    }
+                    editing={editing}
+                    onChange={(value) => updateCompanion("name", value)}
+                  />
+                  <EditableField
+                    id="student-companion-phone"
+                    label="Telefon"
+                    value={editValue.companion?.phone || (editing ? "" : "–")}
+                    editing={editing}
+                    onChange={(value) => updateCompanion("phone", value)}
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Middle column — training progress, exams, assignments */}
@@ -314,7 +392,7 @@ export function UebersichtTab({
                       <TableRow key={lesson.label}>
                         <TableCell>{lesson.label}</TableCell>
                         <TableCell className="text-right text-muted-foreground">
-                          {lesson.done}
+                          {lesson.done.replace(/min$/, " Min.")}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -343,15 +421,17 @@ export function UebersichtTab({
                       <TableCell className="font-medium">{editValue.classes}</TableCell>
                       <TableCell
                         className={
-                          student.theory.exam === "Nicht geplant"
+                          (theoryExam ?? student.theory.exam) === "Nicht geplant"
                             ? "text-muted-foreground"
                             : undefined
                         }
                       >
-                        {student.theory.exam}
+                        {theoryExam ?? student.theory.exam}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        Nicht geplant
+                      <TableCell
+                        className={practicalExam ? undefined : "text-muted-foreground"}
+                      >
+                        {practicalExam ?? "Nicht geplant"}
                       </TableCell>
                     </TableRow>
                   </TableBody>
@@ -411,80 +491,119 @@ export function UebersichtTab({
 
         {/* Right column — balance, documents, theory */}
         <div className="flex flex-col gap-4">
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>Beträge</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {editing ? (
-                <EditableField
-                  id="student-balance"
-                  label="Bilanz"
-                  value={editValue.balance}
-                  editing
-                  onChange={(value) => updateDraft("balance", value)}
-                />
-              ) : (
+          {canSeeMoney && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Kontostand</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-xs font-medium text-muted-foreground">
-                    Bilanz
+                    {balance.label}
                   </span>
                   <span
-                    className={
-                      hasDebt
-                        ? "text-lg font-semibold tabular-nums text-destructive"
-                        : "text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                    }
+                    className={cn(
+                      "text-lg font-semibold tabular-nums",
+                      BALANCE_TONE_CLASS[balance.tone],
+                    )}
                   >
-                    {editValue.balance}
+                    {balance.amount}
                   </span>
                 </div>
-              )}
-              <p className="text-xs text-muted-foreground">
-                Letzte Stunde {student.lastLesson} · Nächste Stunde {student.nextLesson}
-              </p>
-            </CardContent>
-          </Card>
+                <p className="text-xs text-muted-foreground">
+                  Aus der Buchhaltung: Zahlungen abzüglich abgerechneter Leistungen.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           <Card size="sm">
             <CardHeader>
-              <CardTitle>Dokumente</CardTitle>
-              <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
+              <CardTitle>Termine</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {student.documents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Noch keine Dokumente hinterlegt.
-                </p>
-              ) : (
-                student.documents.map((document, index) => (
-                  <div
-                    key={getStudentDocumentKey(document, index)}
-                    className="flex min-w-0 items-start gap-2 text-sm"
-                  >
-                    <FileText />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate">{getStudentDocumentName(document)}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {getStudentDocumentMeta(document)}
-                      </span>
-                    </span>
-                  </div>
-                ))
-              )}
+            <CardContent>
+              <FieldGroup className="gap-3">
+                <DetailItem label="Letzte Stunde" value={student.lastLesson} />
+                <DetailItem label="Nächste Stunde" value={student.nextLesson} />
+              </FieldGroup>
             </CardContent>
           </Card>
+
+          {canEdit && <PortalLinkCard student={student} />}
+
+          {canEdit && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Dokumente</CardTitle>
+
+                <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                {student.documents.length === 0 && files.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Noch keine Dokumente hinterlegt.
+                  </p>
+                ) : (
+                  <>
+                    {files.map((file) => (
+                      <div
+                        key={`file-${file.id}`}
+                        className="flex min-w-0 items-start gap-2 text-sm"
+                      >
+                        <FileText />
+                        <span className="flex min-w-0 flex-col">
+                          <a
+                            href={file.url}
+                            target="_blank"
+                            rel="noopener"
+                            className="truncate hover:underline"
+                          >
+                            {file.name}
+                          </a>
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {getStudentFileMeta(file)}
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                    {student.documents.map((document, index) => (
+                      <div
+                        key={`checklist-${document}-${index}`}
+                        className="flex min-w-0 items-start gap-2 text-sm"
+                      >
+                        <FileText />
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate">{document}</span>
+                          <span className="text-xs text-muted-foreground">
+                            Checkliste
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card size="sm">
             <CardHeader>
               <CardTitle>Theorie</CardTitle>
+
               <CardAction>
                 <Badge variant="secondary">{student.theory.status}</Badge>
               </CardAction>
             </CardHeader>
             <CardContent>
               <FieldGroup className="gap-3">
-                <DetailItem label="Letzter Login" value={student.theory.lastLogin} />
+                <DetailItem
+                  label="Theoriestunden"
+                  value={`${student.theory.attendedUnits} von ${student.theory.requiredUnits} Doppelstunden (${student.theory.progress} %)`}
+                />
+                <DetailItem
+                  label="Letzte Theoriestunde"
+                  value={student.theory.lastSession}
+                />
                 <DetailItem label="Vorprüfungen" value={student.theory.preExams} />
                 <DetailItem label="Prüfungstermin" value={student.theory.exam} />
               </FieldGroup>

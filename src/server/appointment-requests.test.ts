@@ -15,11 +15,14 @@ import {
   declineAppointmentRequest,
   deleteAppointmentRequest,
   ensureAppointmentRequestTables,
+  findLikelyDuplicates,
   getAppointmentRequest,
   listAppointmentRequests,
   updateAppointmentRequest,
 } from "./appointment-requests";
+import { ensureAbsenceTables } from "./absences";
 import { createCalendarEvent, listCalendarEvents } from "./calendar-events";
+import { migrateCalendarEventScheduling } from "./db";
 import { ValidationError } from "./engine";
 
 /* Same DDL as in src/server/db.ts — keeps the test DB minimal.
@@ -35,6 +38,18 @@ CREATE TABLE IF NOT EXISTS students (
   first_name TEXT NOT NULL DEFAULT '',
   last_name TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS instructors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_name TEXT NOT NULL DEFAULT '',
+  last_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'aktiv'
+);
+CREATE TABLE IF NOT EXISTS vehicles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'aktiv'
+);
 CREATE TABLE IF NOT EXISTS calendar_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,            -- ISO "YYYY-MM-DD"
@@ -43,8 +58,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -60,6 +75,18 @@ let db: Database;
 beforeEach(() => {
   db = openSqlite(":memory:");
   db.exec(CALENDAR_EVENTS_DDL);
+  migrateCalendarEventScheduling(db);
+  ensureAbsenceTables(db);
+  const addInstructor = db.prepare(
+    "INSERT INTO instructors (first_name, last_name) VALUES (?, ?)",
+  );
+  for (const name of ["Martin Weber", "Nadine Aksoy", "Emre Yilmaz", "Sven Kappel"]) {
+    const [first, last] = name.split(" ");
+    addInstructor.run(first!, last!);
+  }
+  const addVehicle = db.prepare("INSERT INTO vehicles (model, plate) VALUES (?, ?)");
+  addVehicle.run("VW Golf", "DA-FS 1");
+  addVehicle.run("Audi A3", "DA-FS 2");
   ensureAppointmentRequestTables(db);
 });
 
@@ -73,9 +100,17 @@ const VALID = {
   type: "Praktisch" as const,
 };
 
+/* The public POST checks the date against today — use a future date. */
+const futureDate = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().slice(0, 10);
+})();
+const PUBLIC_VALID = { ...VALID, requestedDate: futureDate, consent: true };
+
 describe("ensureAppointmentRequestTables", () => {
-  test("a fresh DB seeds 9 requests", () => {
-    expect(listAppointmentRequests(db)).toHaveLength(9);
+  test("a fresh DB seeds 10 requests", () => {
+    expect(listAppointmentRequests(db)).toHaveLength(10);
   });
 
   test("seed is mostly 'offen' with a mix of statuses", () => {
@@ -88,13 +123,77 @@ describe("ensureAppointmentRequestTables", () => {
 
   test("is idempotent — calling again does not reseed", () => {
     ensureAppointmentRequestTables(db);
-    expect(listAppointmentRequests(db)).toHaveLength(9);
+    expect(listAppointmentRequests(db)).toHaveLength(10);
   });
 
   test("does not reseed a non-empty table after deletes", () => {
     db.exec("DELETE FROM appointment_requests WHERE id > 1");
     ensureAppointmentRequestTables(db);
     expect(listAppointmentRequests(db)).toHaveLength(1);
+  });
+});
+
+describe("list order and duplicates", () => {
+  test("newest received first", () => {
+    const list = listAppointmentRequests(db);
+    const times = list.map((r) => r.createdAt);
+    expect(times).toEqual(times.toSorted().toReversed());
+  });
+
+  test("seeded open requests ask for today or later", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const open = listAppointmentRequests(db).filter(
+      (r) => r.status === "offen" && r.name !== "Ben Albers",
+    );
+    for (const request of open) {
+      expect(request.requestedDate >= today).toBe(true);
+    }
+  });
+
+  test("same phone (formatting ignored), e-mail or name within 14 days", () => {
+    const at = (createdAt: string) => ({ createdAt, message: "" });
+    const map = findLikelyDuplicates([
+      {
+        id: 1,
+        name: "Lena H",
+        phone: "+49 151 2345-6701",
+        email: "",
+        ...at("2026-09-01 10:00:00"),
+      },
+      {
+        id: 2,
+        name: "Lena Hoffmann",
+        phone: "0151 23456701",
+        email: "",
+        ...at("2026-09-10 10:00:00"),
+      },
+      { id: 3, name: "Max", phone: "", email: "MAX@x.de", ...at("2026-09-02 10:00:00") },
+      {
+        id: 4,
+        name: "Maximilian",
+        phone: "",
+        email: "max@x.de",
+        ...at("2026-09-03 10:00:00"),
+      },
+      {
+        id: 5,
+        name: "lena  hoffmann",
+        phone: "",
+        email: "",
+        ...at("2026-09-12 10:00:00"),
+      },
+      { id: 6, name: "Max", phone: "", email: "", ...at("2026-12-01 10:00:00") },
+    ]);
+    expect(map.get(1)).toEqual([2]);
+    expect(map.get(2)).toEqual([1, 5]);
+    expect(map.get(3)).toEqual([4]);
+    expect(map.get(4)).toEqual([3]);
+    expect(map.get(6)).toEqual([]); // too far apart from id 3
+  });
+
+  test("the seed contains one duplicate pair", () => {
+    const flagged = listAppointmentRequests(db).filter((r) => r.duplicateOf.length > 0);
+    expect(flagged.map((r) => r.name)).toEqual(["Lena Hoffmann", "Lena Hoffmann"]);
   });
 });
 
@@ -402,7 +501,7 @@ describe("appointmentRequestRoutes", () => {
       const createRes = await fetch(url("/api/appointment-requests"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(VALID),
+        body: JSON.stringify(PUBLIC_VALID),
       });
       expect(createRes.status).toBe(201);
       const created = (await createRes.json()) as { id: number };
@@ -473,7 +572,7 @@ describe("rate limiting on public create", () => {
     fetch(new URL("/api/appointment-requests", base).href, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(VALID),
+      body: JSON.stringify(PUBLIC_VALID),
     });
 
   test("third POST from the same IP returns 429 (max 2)", async () => {

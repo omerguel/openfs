@@ -7,6 +7,7 @@
 /* so they persist across reloads.                                     */
 /* ------------------------------------------------------------------ */
 
+import { useFinanceAccess } from "@/hooks/use-finance-access";
 import type { PricePlanInput, PricePlanRecord } from "@/lib/price-plan";
 import { parseOrThrow, useFetchList } from "@/lib/api";
 
@@ -46,7 +47,10 @@ export async function deletePricePlan(id: number): Promise<void> {
   );
 }
 
+/** Price plans are money: Fahrlehrer/innen get an empty list (the API
+ *  answers 403 for them, so the hook does not even ask). */
 export function usePricePlans() {
+  const { canSeeMoney, role } = useFinanceAccess();
   const {
     items: plans,
     loading,
@@ -55,6 +59,9 @@ export function usePricePlans() {
     ["price-plans"],
     fetchPricePlans,
     "Preispläne konnten nicht geladen werden",
+    canSeeMoney,
   );
-  return { plans, loading, refresh };
+
+  // Until the role is known the list counts as loading, not empty.
+  return { plans, loading: loading || role === undefined, refresh };
 }

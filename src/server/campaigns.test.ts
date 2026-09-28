@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { openSqlite, type Database } from "./sqlite";
 
 import {
+  effectiveCampaignStatus,
   createCampaign,
   deleteCampaign,
   ensureCampaignTables,
@@ -28,10 +29,10 @@ const VALID = {
   channel: "Google Ads" as const,
   budgetCents: 50000,
   spentCents: 12000,
-  leads: 40,
-  signups: 5,
+  manualLeads: 40,
+  manualSignups: 5,
   startDate: "2026-06-01",
-  endDate: "2026-08-31",
+  endDate: "2036-08-31",
   status: "aktiv" as const,
   notes: "Testlauf",
 };
@@ -91,7 +92,7 @@ describe("createCampaign", () => {
     expect(campaign.leads).toBe(40);
     expect(campaign.signups).toBe(5);
     expect(campaign.startDate).toBe("2026-06-01");
-    expect(campaign.endDate).toBe("2026-08-31");
+    expect(campaign.endDate).toBe("2036-08-31");
     expect(campaign.status).toBe("aktiv");
     expect(campaign.notes).toBe("Testlauf");
     expect(campaign.createdAt).toBeTruthy();
@@ -142,7 +143,9 @@ describe("createCampaign", () => {
   });
 
   test("non-integer leads → ValidationError", () => {
-    expect(() => createCampaign(db, { ...VALID, leads: 1.5 })).toThrow(ValidationError);
+    expect(() => createCampaign(db, { ...VALID, manualLeads: 1.5 })).toThrow(
+      ValidationError,
+    );
   });
 
   test("string spentCents → ValidationError", () => {
@@ -184,12 +187,44 @@ describe("getCampaign", () => {
   });
 });
 
+describe("effective status", () => {
+  test("a running campaign past its end date reads as beendet", () => {
+    expect(effectiveCampaignStatus("aktiv", "2026-05-31", "2026-06-01")).toBe("beendet");
+    expect(effectiveCampaignStatus("pausiert", "2026-05-31", "2026-06-01")).toBe(
+      "beendet",
+    );
+    expect(effectiveCampaignStatus("aktiv", "2026-05-31", "2026-05-31")).toBe("aktiv");
+    expect(effectiveCampaignStatus("aktiv", "", "2030-01-01")).toBe("aktiv");
+  });
+
+  test("stored rows are derived on read and flagged", () => {
+    const created = createCampaign(db, {
+      ...VALID,
+      startDate: "2020-01-01",
+      endDate: "2020-02-01",
+    });
+    expect(created.status).toBe("beendet");
+    expect(created.endedByDate).toBe(true);
+    const running = createCampaign(db, { ...VALID, name: "Läuft" });
+    expect(running).toMatchObject({ status: "aktiv", endedByDate: false });
+  });
+
+  test("seeded running campaigns have not ended yet", () => {
+    for (const campaign of listCampaigns(db)) {
+      if (campaign.status === "aktiv" && campaign.endDate) {
+        expect(campaign.endDate >= new Date().toISOString().slice(0, 10)).toBe(true);
+      }
+      expect(campaign.endedByDate).toBe(false);
+    }
+  });
+});
+
 describe("updateCampaign", () => {
   test("partial update merges over current values", () => {
     const created = createCampaign(db, VALID);
     const updated = updateCampaign(db, created.id, {
       spentCents: 25000,
-      leads: 80,
+      manualLeads: 80,
     });
     expect(updated.spentCents).toBe(25000);
     expect(updated.leads).toBe(80);
@@ -211,7 +246,7 @@ describe("updateCampaign", () => {
     expect(() => updateCampaign(db, created.id, { endDate: "2026-01-01" })).toThrow(
       "Enddatum darf nicht vor dem Startdatum liegen.",
     );
-    expect(getCampaign(db, created.id).endDate).toBe("2026-08-31");
+    expect(getCampaign(db, created.id).endDate).toBe("2036-08-31");
   });
 
   test("update on missing id → ValidationError", () => {

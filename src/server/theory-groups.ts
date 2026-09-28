@@ -10,6 +10,8 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { instructorNameSql, migrateNameColumn, resolveInstructorId } from "./refs";
+import { demoDataEnabled } from "./db";
 
 export type TheoryGroupStatus = "aktiv" | "abgeschlossen";
 
@@ -26,6 +28,8 @@ export type TheoryGroup = {
   time: string;
   room: string;
   instructor: string;
+  /** FK → instructors.id; null = unassigned. `instructor` is its display name. */
+  instructorId: number | null;
   capacity: number;
   /** Raw membership as stored (JSON array of student ids). */
   studentIds: number[];
@@ -42,12 +46,15 @@ export type TheoryGroupInput = {
   time: string;
   room: string;
   instructor: string;
+  instructorId?: number | null;
   capacity: number;
   studentIds: number[];
   status: TheoryGroupStatus;
 };
 
-const UNASSIGNED_INSTRUCTOR = "Nicht zugeteilt";
+type TheoryGroupData = Omit<TheoryGroupInput, "instructor" | "instructorId"> & {
+  instructorId: number | null;
+};
 
 export const THEORY_GROUP_WEEKDAYS = [
   "Montag",
@@ -73,7 +80,7 @@ CREATE TABLE IF NOT EXISTS theory_groups (
   weekday TEXT NOT NULL,
   time TEXT NOT NULL,
   room TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
+  instructor_id INTEGER REFERENCES instructors(id),
   capacity INTEGER NOT NULL DEFAULT 20,
   student_ids TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'abgeschlossen')),
@@ -93,6 +100,18 @@ CREATE TABLE IF NOT EXISTS theory_attendance (
 );
 `;
 
+/* One row per held session: which lesson (Grundstoff/Zusatzstoff) was
+   taught, optionally linked to the Theorie Termin in the calendar. */
+const SESSIONS_DDL = `
+CREATE TABLE IF NOT EXISTS theory_sessions (
+  group_id INTEGER NOT NULL REFERENCES theory_groups(id),
+  session_date TEXT NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  event_id INTEGER,
+  PRIMARY KEY (group_id, session_date)
+);
+`;
+
 function tableExists(db: Database, name: string): boolean {
   return (
     db
@@ -103,29 +122,19 @@ function tableExists(db: Database, name: string): boolean {
   );
 }
 
-const FALLBACK_INSTRUCTORS = [
-  "Martin Weber",
-  "Nadine Aksoy",
-  "Emre Yilmaz",
-  "Sven Kappel",
-];
-
-/* Seed groups — only on an empty table. Instructor names come from the
-   instructors table when it exists and has rows; member ids from the
-   students table when present (distributed round-robin). */
+/* Seed groups — only on an empty table. Instructors come from the
+   instructors table when it exists and has rows (else unassigned);
+   member ids from the students table when present (round-robin). */
 function seedTheoryGroups(db: Database) {
-  let instructorNames = FALLBACK_INSTRUCTORS;
-  if (tableExists(db, "instructors")) {
-    const rows = db
-      .query<{ name: string }, []>(
-        `SELECT trim(first_name || ' ' || last_name) AS name
-         FROM instructors WHERE status = 'aktiv' ORDER BY id`,
-      )
-      .all()
-      .map((row) => row.name)
-      .filter(Boolean);
-    if (rows.length > 0) instructorNames = rows;
-  }
+  const instructorIds: (number | null)[] = tableExists(db, "instructors")
+    ? db
+        .query<{ id: number }, []>(
+          "SELECT id FROM instructors WHERE status = 'aktiv' ORDER BY id",
+        )
+        .all()
+        .map((row) => row.id)
+    : [];
+  if (instructorIds.length === 0) instructorIds.push(null);
 
   const studentIds = tableExists(db, "students")
     ? db
@@ -184,35 +193,85 @@ function seedTheoryGroups(db: Database) {
 
   const insert = db.prepare(
     `INSERT INTO theory_groups
-       (name, klass, weekday, time, room, instructor, capacity, student_ids, status)
+       (name, klass, weekday, time, room, instructor_id, capacity, student_ids, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertAttendance = db.prepare(
+    `INSERT OR IGNORE INTO theory_attendance (group_id, student_id, session_date, attended)
+     VALUES (?, ?, ?, ?)`,
   );
   const seedAll = db.transaction(() => {
     seeds.forEach((seed, index) => {
       const memberIds = studentIds.filter((_, i) => i % seeds.length === index);
-      insert.run(
-        seed.name,
-        seed.klass,
-        seed.weekday,
-        seed.time,
-        seed.room,
-        instructorNames[index % instructorNames.length]!,
-        seed.capacity,
-        JSON.stringify(memberIds),
-        seed.status,
+      const groupId = Number(
+        insert.run(
+          seed.name,
+          seed.klass,
+          seed.weekday,
+          seed.time,
+          seed.room,
+          instructorIds[index % instructorIds.length] ?? null,
+          seed.capacity,
+          JSON.stringify(memberIds),
+          seed.status,
+        ).lastInsertRowid,
       );
+      // Plausible attendance so demo students show real theory progress:
+      // weekly past sessions on the group's weekday, each student at a
+      // different point of the course, with the odd missed session.
+      const dates = pastWeekdays(WEEKDAY_INDEX[seed.weekday] ?? 1, 14);
+      memberIds.forEach((studentId, position) => {
+        const sessions = SEED_SESSIONS[(studentId + position) % SEED_SESSIONS.length]!;
+        dates.slice(0, sessions).forEach((date, n) => {
+          insertAttendance.run(groupId, studentId, date, n === 2 ? 0 : 1);
+        });
+      });
     });
   });
   seedAll();
 }
 
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sonntag: 0,
+  Montag: 1,
+  Dienstag: 2,
+  Mittwoch: 3,
+  Donnerstag: 4,
+  Freitag: 5,
+  Samstag: 6,
+};
+
+/* How many sessions each seeded member has been to (cycled). */
+const SEED_SESSIONS = [5, 11, 8, 15, 3];
+
+/** The last `count` dates (newest first) falling on `weekday`, before today. */
+function pastWeekdays(weekday: number, count: number): string[] {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  while (date.getDay() !== weekday) date.setDate(date.getDate() - 1);
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+        date.getDate(),
+      ).padStart(2, "0")}`,
+    );
+    date.setDate(date.getDate() - 7);
+  }
+  return out;
+}
+
 export function ensureTheoryGroupTables(db: Database) {
   db.exec(TABLE_DDL);
   db.exec(ATTENDANCE_DDL);
+  db.exec(SESSIONS_DDL);
+  if (tableExists(db, "instructors")) {
+    migrateNameColumn(db, "theory_groups", { from: "instructor" });
+  }
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM theory_groups")
     .get()!.n;
-  if (count === 0) seedTheoryGroups(db);
+  if (count === 0 && demoDataEnabled(db)) seedTheoryGroups(db);
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,14 +286,23 @@ type TheoryGroupRow = {
   time: string;
   room: string;
   instructor: string;
+  instructor_id: number | null;
   capacity: number;
   student_ids: string;
   status: TheoryGroupStatus;
   created_at: string;
 };
 
-const SELECT = `SELECT id, name, klass, weekday, time, room, instructor,
-  capacity, student_ids, status, created_at FROM theory_groups`;
+/* The instructor display name needs the instructors table — bare test
+   databases without it fall back to the unassigned marker. */
+function selectSql(db: Database): string {
+  const instructor = tableExists(db, "instructors")
+    ? instructorNameSql("g")
+    : "'Nicht zugeteilt'";
+  return `SELECT g.id, g.name, g.klass, g.weekday, g.time, g.room, g.instructor_id,
+    ${instructor} AS instructor, g.capacity, g.student_ids, g.status, g.created_at
+    FROM theory_groups g`;
+}
 
 function parseStudentIds(raw: string): number[] {
   try {
@@ -273,6 +341,7 @@ function toGroup(db: Database, row: TheoryGroupRow): TheoryGroup {
     time: row.time,
     room: row.room,
     instructor: row.instructor,
+    instructorId: row.instructor_id,
     capacity: row.capacity,
     studentIds,
     members: resolveMembers(db, studentIds),
@@ -283,13 +352,15 @@ function toGroup(db: Database, row: TheoryGroupRow): TheoryGroup {
 
 export function listTheoryGroups(db: Database): TheoryGroup[] {
   return db
-    .query<TheoryGroupRow, []>(`${SELECT} ORDER BY name`)
+    .query<TheoryGroupRow, []>(`${selectSql(db)} ORDER BY g.name`)
     .all()
     .map((row) => toGroup(db, row));
 }
 
 export function getTheoryGroup(db: Database, id: number): TheoryGroup {
-  const row = db.query<TheoryGroupRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db
+    .query<TheoryGroupRow, [number]>(`${selectSql(db)} WHERE g.id = ?`)
+    .get(id);
   if (!row) throw new ValidationError("Theorie-Gruppe nicht gefunden.");
   return toGroup(db, row);
 }
@@ -324,15 +395,15 @@ function normalizeStudentIds(db: Database, value: unknown, current: number[]): n
   return ids;
 }
 
-type GroupTextKey = "name" | "klass" | "weekday" | "time" | "room" | "instructor";
+type GroupTextKey = "name" | "klass" | "weekday" | "time" | "room";
 
 /* Merge a partial payload over current values, trimming strings and
    rejecting anything that would leave the group unusable. */
 function normalize(
   db: Database,
   input: Partial<TheoryGroupInput>,
-  current: TheoryGroupInput,
-): TheoryGroupInput {
+  current: TheoryGroupData,
+): TheoryGroupData {
   const str = (key: GroupTextKey): string => {
     const value = input[key];
     if (value === undefined) return current[key];
@@ -342,13 +413,17 @@ function normalize(
     return value.trim();
   };
 
-  const next: TheoryGroupInput = {
+  const next: TheoryGroupData = {
     name: str("name"),
     klass: str("klass"),
     weekday: str("weekday"),
     time: str("time"),
     room: str("room"),
-    instructor: str("instructor") || UNASSIGNED_INSTRUCTOR,
+    instructorId: resolveInstructorId(
+      db,
+      { id: input.instructorId, name: input.instructor },
+      current.instructorId,
+    ),
     capacity: current.capacity,
     studentIds: current.studentIds,
     status: current.status,
@@ -392,13 +467,13 @@ function normalize(
   return next;
 }
 
-const EMPTY: TheoryGroupInput = {
+const EMPTY: TheoryGroupData = {
   name: "",
   klass: "",
   weekday: "Montag",
   time: "18:00",
   room: "",
-  instructor: UNASSIGNED_INSTRUCTOR,
+  instructorId: null,
   capacity: 20,
   studentIds: [],
   status: "aktiv",
@@ -416,10 +491,10 @@ export function createTheoryGroup(
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string, string, number, string, string]
+      [string, string, string, string, string, number | null, number, string, string]
     >(
       `INSERT INTO theory_groups
-         (name, klass, weekday, time, room, instructor, capacity, student_ids, status)
+         (name, klass, weekday, time, room, instructor_id, capacity, student_ids, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
@@ -428,7 +503,7 @@ export function createTheoryGroup(
       data.weekday,
       data.time,
       data.room,
-      data.instructor,
+      data.instructorId,
       data.capacity,
       JSON.stringify(data.studentIds),
       data.status,
@@ -445,7 +520,7 @@ export function updateTheoryGroup(
   const data = normalize(db, input, current);
   db.prepare(
     `UPDATE theory_groups
-     SET name = ?, klass = ?, weekday = ?, time = ?, room = ?, instructor = ?,
+     SET name = ?, klass = ?, weekday = ?, time = ?, room = ?, instructor_id = ?,
          capacity = ?, student_ids = ?, status = ?
      WHERE id = ?`,
   ).run(
@@ -454,7 +529,7 @@ export function updateTheoryGroup(
     data.weekday,
     data.time,
     data.room,
-    data.instructor,
+    data.instructorId,
     data.capacity,
     JSON.stringify(data.studentIds),
     data.status,
@@ -465,6 +540,7 @@ export function updateTheoryGroup(
 
 export function deleteTheoryGroup(db: Database, id: number): void {
   getTheoryGroup(db, id); // throws ValidationError if unknown
+  db.prepare("DELETE FROM theory_sessions WHERE group_id = ?").run(id);
   db.prepare("DELETE FROM theory_groups WHERE id = ?").run(id);
 }
 
@@ -479,8 +555,14 @@ export type AttendanceEntry = {
 
 export type AttendanceSession = {
   sessionDate: string;
+  /** Lesson taught, e.g. "Grundstoff 9" — "" when not recorded. */
+  topic: string;
+  /** The Theorie Termin this session was recorded from, if any. */
+  eventId: number | null;
   entries: AttendanceEntry[];
 };
+
+export type SessionMeta = { topic?: string; eventId?: number | null };
 
 const SESSION_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -506,8 +588,19 @@ export function listAttendance(db: Database, groupId: number): AttendanceSession
     entries.push({ studentId: row.student_id, attended: row.attended === 1 });
   }
 
+  const meta = new Map(
+    db
+      .query<{ session_date: string; topic: string; event_id: number | null }, [number]>(
+        "SELECT session_date, topic, event_id FROM theory_sessions WHERE group_id = ?",
+      )
+      .all(groupId)
+      .map((row) => [row.session_date, row]),
+  );
+
   return Array.from(byDate.entries()).map(([sessionDate, entries]) => ({
     sessionDate,
+    topic: meta.get(sessionDate)?.topic ?? "",
+    eventId: meta.get(sessionDate)?.event_id ?? null,
     entries,
   }));
 }
@@ -518,10 +611,40 @@ export function setAttendance(
   groupId: number,
   sessionDate: string,
   entries: { studentId: number; attended: boolean }[],
+  meta: SessionMeta = {},
 ): void {
   const group = getTheoryGroup(db, groupId); // throws if unknown
   if (!SESSION_DATE_RE.test(sessionDate)) {
     throw new ValidationError("Datum muss im Format YYYY-MM-DD angegeben werden.");
+  }
+  if (meta.topic !== undefined && typeof meta.topic !== "string") {
+    throw new ValidationError("Feld 'topic' muss ein Text sein.");
+  }
+  const topic = meta.topic?.trim();
+  if (topic !== undefined && topic.length > 200) {
+    throw new ValidationError("Thema darf höchstens 200 Zeichen lang sein.");
+  }
+  let eventId: number | null | undefined = meta.eventId;
+  if (eventId !== undefined && eventId !== null) {
+    if (!Number.isInteger(eventId) || eventId <= 0) {
+      throw new ValidationError("Feld 'eventId' muss eine positive ganze Zahl sein.");
+    }
+    const event = db
+      .query<{ type: string; date: string }, [number]>(
+        "SELECT type, date FROM calendar_events WHERE id = ?",
+      )
+      .get(eventId);
+    if (!event) throw new ValidationError("Termin nicht gefunden.");
+    if (event.type !== "Theorie") {
+      throw new ValidationError(
+        "Anwesenheit kann nur zu Theorie-Terminen erfasst werden.",
+      );
+    }
+    if (event.date !== sessionDate) {
+      throw new ValidationError("Datum muss dem Datum des Termins entsprechen.");
+    }
+  } else if (eventId === null) {
+    eventId = null;
   }
   const memberSet = new Set(group.studentIds);
   for (const entry of entries) {
@@ -542,6 +665,24 @@ export function setAttendance(
   const run = db.transaction(() => {
     for (const entry of entries) {
       upsert.run(groupId, entry.studentId, sessionDate, entry.attended ? 1 : 0);
+    }
+    // Only touch the session row when the caller sent topic / eventId —
+    // older clients that send entries only keep what was stored.
+    if (topic !== undefined || eventId !== undefined) {
+      db.prepare(
+        `INSERT INTO theory_sessions (group_id, session_date, topic, event_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (group_id, session_date) DO UPDATE SET
+           topic = CASE WHEN ? THEN excluded.topic ELSE theory_sessions.topic END,
+           event_id = CASE WHEN ? THEN excluded.event_id ELSE theory_sessions.event_id END`,
+      ).run(
+        groupId,
+        sessionDate,
+        topic ?? "",
+        eventId ?? null,
+        topic !== undefined ? 1 : 0,
+        eventId !== undefined ? 1 : 0,
+      );
     }
   });
   run();
@@ -617,9 +758,14 @@ export function theoryGroupRoutes(db: Database) {
           const body = (await req.json()) as {
             sessionDate: string;
             entries: { studentId: number; attended: boolean }[];
+            topic?: string;
+            eventId?: number | null;
           };
           const groupId = parseId(req.params.id);
-          setAttendance(db, groupId, body.sessionDate, body.entries);
+          setAttendance(db, groupId, body.sessionDate, body.entries, {
+            topic: body.topic,
+            eventId: body.eventId,
+          });
           return json({ sessions: listAttendance(db, groupId) });
         })(),
     },

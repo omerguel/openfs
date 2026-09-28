@@ -3,6 +3,7 @@
 /* page — view mode renders a definition pair, edit mode an input.     */
 /* ------------------------------------------------------------------ */
 
+import { LICENSE_CLASSES } from "@/lib/license-classes";
 import type { Student } from "@/lib/student-data";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -20,22 +21,20 @@ export type StudentEdit = Pick<
   | "firstName"
   | "lastName"
   | "classes"
-  | "balance"
   | "phone"
   | "email"
   | "address"
   | "birthday"
-  | "lastLesson"
-  | "nextLesson"
   | "drivingSchool"
   | "registrationDate"
   | "instructor"
   | "vehicle"
   | "status"
   | "documents"
+  | "companion"
 >;
 
-export const classOptions = ["A", "B", "B197", "BE"];
+export const classOptions = LICENSE_CLASSES;
 
 export function DetailItem({ label, value }: { label: string; value: string }) {
   return (

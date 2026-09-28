@@ -15,8 +15,17 @@ import {
   type CalendarEvent,
   type CalendarEventType,
 } from "./calendar-events";
+import { campaignIdByTrackingCode } from "./campaigns";
 import { ValidationError } from "./engine";
-import { handle, json } from "./http";
+import { clientIp, handle, json } from "./http";
+import {
+  notifyAppointmentRequestConfirmed,
+  notifyAppointmentRequestDeclined,
+} from "./notifications";
+import { demoDataEnabled } from "./db";
+import { schoolToday } from "./school-time";
+
+export { schoolToday };
 
 export type AppointmentRequestStatus = "offen" | "bestätigt" | "abgelehnt";
 
@@ -41,9 +50,26 @@ export type AppointmentRequest = {
   type: CalendarEventType;
   status: AppointmentRequestStatus;
   createdAt: string;
+  /** Campaign whose tracking link (/anfrage?kampagne=…) brought the request. */
+  campaignId: number | null;
+  campaignName: string | null;
+  /** Student created from this request ("Als Fahrschüler anlegen"). */
+  studentId: number | null;
+  studentName: string | null;
+  /** Fahrlehrer/in of the confirmed appointment (null = none yet). */
+  appointmentInstructor: string | null;
 };
 
-export type AppointmentRequestInput = Omit<AppointmentRequest, "id" | "createdAt">;
+export type AppointmentRequestInput = Omit<
+  AppointmentRequest,
+  | "id"
+  | "createdAt"
+  | "campaignId"
+  | "campaignName"
+  | "studentId"
+  | "studentName"
+  | "appointmentInstructor"
+>;
 
 /* Calendar event overlapping a request's slot — shown as a warning on
    the /terminanfragen page before the office accepts the request. */
@@ -57,6 +83,9 @@ export type AppointmentRequestConflict = {
 
 export type AppointmentRequestWithConflicts = AppointmentRequest & {
   conflicts: AppointmentRequestConflict[];
+  /** Other requests that are probably from the same person (same phone,
+      e-mail or name, received within DUPLICATE_WINDOW_DAYS). */
+  duplicateOf: number[];
 };
 
 /* Optional adjustments applied when a request is accepted — lets the
@@ -68,6 +97,8 @@ export type AcceptOverrides = {
   instructor?: string;
   vehicle?: string;
   location?: string;
+  /** Accept even when the slot overlaps or the instructor is absent. */
+  allowConflicts?: boolean;
 };
 
 type AppointmentRequestRow = {
@@ -81,6 +112,11 @@ type AppointmentRequestRow = {
   type: CalendarEventType;
   status: AppointmentRequestStatus;
   created_at: string;
+  campaign_id: number | null;
+  campaign_name: string | null;
+  student_id: number | null;
+  student_name: string | null;
+  appointment_instructor: string | null;
 };
 
 /* ----------------------------- schema ----------------------------- */
@@ -110,88 +146,128 @@ type SeedRow = [
   time: string,
   type: CalendarEventType,
   status: AppointmentRequestStatus,
+  /** Days before today the request came in (created_at). */
+  receivedDaysAgo: number,
 ];
 
-const SEED: SeedRow[] = [
+/* ISO date `days` from today (local), so the demo inbox never ages:
+   open requests ask for the coming weeks, handled ones lie behind. */
+function daysFromToday(days: number): string {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/* Weekday-only variant: shifts Saturdays/Sundays to the next Monday. */
+function weekdayFromToday(days: number): string {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  const shift = date.getDay() === 6 ? 2 : date.getDay() === 0 ? 1 : 0;
+  return daysFromToday(days + shift);
+}
+
+const seedRows = (): SeedRow[] => [
   [
     "Lena Hoffmann",
     "0151 23456701",
     "lena.hoffmann@web.de",
     "Ich hätte gerne eine Fahrstunde am Nachmittag, gerne auch Autobahn.",
-    "2026-06-15",
+    weekdayFromToday(3),
     "14:00",
     "Praktisch",
     "offen",
+    3,
   ],
   [
     "Jonas Becker",
     "0160 9876512",
     "jonas.becker@gmx.de",
     "Kann ich am Dienstag am Theorieunterricht teilnehmen?",
-    "2026-06-16",
+    weekdayFromToday(4),
     "18:00",
     "Theorie",
     "offen",
+    2,
   ],
   [
     "Miriam Schulz",
     "0176 44455566",
     "miriam.schulz@outlook.de",
     "Mein Fahrlehrer meinte, ich bin bereit für die Prüfung.",
-    "2026-06-22",
+    weekdayFromToday(10),
     "09:30",
     "Vorstellung zur prakt. Prüfung",
     "offen",
+    1,
   ],
   [
     "Tarek Yılmaz",
     "0157 11223344",
     "tarek.yilmaz@gmail.com",
     "Doppelstunde wäre super, am liebsten Schaltwagen.",
-    "2026-06-17",
+    weekdayFromToday(5),
     "16:30",
     "Praktisch",
     "offen",
+    1,
   ],
   [
     "Sophie Wagner",
     "0152 99887766",
     "sophie.wagner@web.de",
     "Anmeldung zur Theorieprüfung — alle Pflichtstunden sind erledigt.",
-    "2026-06-24",
+    weekdayFromToday(12),
     "11:00",
     "Theorieprüfung",
     "offen",
+    0,
   ],
   [
     "David Krüger",
     "0171 55667788",
     "david.krueger@gmail.com",
     "Bitte eine Fahrstunde vor der Arbeit, früh morgens.",
-    "2026-06-12",
+    weekdayFromToday(-3),
     "07:30",
     "Praktisch",
     "bestätigt",
+    9,
   ],
   [
     "Anna Lehmann",
     "0159 33221100",
     "anna.lehmann@gmx.de",
     "Geht am Sonntag eine Theoriestunde?",
-    "2026-06-14",
+    daysFromToday(-1),
     "10:00",
     "Theorie",
     "abgelehnt",
+    6,
   ],
   [
     "Felix Neumann",
     "030 4455667",
     "felix.neumann@posteo.de",
     "Beratungsgespräch zum Umstieg von B197 auf B gewünscht.",
-    "2026-06-19",
+    weekdayFromToday(6),
     "15:00",
     "Andere",
     "offen",
+    0,
+  ],
+  // Same person twice (no answer yet) — shows the duplicate hint.
+  [
+    "Lena Hoffmann",
+    "0151 23456701",
+    "",
+    "Hatte schon angefragt — geht auch ein Termin am Vormittag?",
+    weekdayFromToday(4),
+    "10:00",
+    "Praktisch",
+    "offen",
+    0,
   ],
 ];
 
@@ -210,7 +286,7 @@ function currentWeekDate(day: number): string {
 
 /* One request deliberately overlapping the seeded Tuesday 09:00–09:45
    calendar event (db.ts), so the conflict warning has demo data. */
-const CONFLICTING_SEED: SeedRow = [
+const conflictingSeed = (): SeedRow => [
   "Ben Albers",
   "0163 7788990",
   "ben.albers@web.de",
@@ -219,23 +295,66 @@ const CONFLICTING_SEED: SeedRow = [
   "09:15",
   "Praktisch",
   "offen",
+  2,
 ];
+
+/* Lead attribution + conversion links, added after the table shipped.
+   No FKs: campaigns/students live in other modules and are optional
+   in unit-test schemas; deletes clear the links explicitly. */
+function migrateRequestLinks(db: Database): void {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(appointment_requests)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("campaign_id")) {
+    db.exec("ALTER TABLE appointment_requests ADD COLUMN campaign_id INTEGER");
+  }
+  if (!cols.includes("student_id")) {
+    db.exec("ALTER TABLE appointment_requests ADD COLUMN student_id INTEGER");
+  }
+  // Calendar event created when the request was accepted — lets "Als
+  // Fahrschüler anlegen" attach the confirmed Termin to the new student.
+  if (!cols.includes("event_id")) {
+    db.exec("ALTER TABLE appointment_requests ADD COLUMN event_id INTEGER");
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_appointment_requests_campaign ON appointment_requests(campaign_id)",
+  );
+}
 
 export function ensureAppointmentRequestTables(db: Database): void {
   db.exec(TABLE_DDL);
+  migrateRequestLinks(db);
 
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM appointment_requests")
     .get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const insert = db.prepare(
     `INSERT INTO appointment_requests
-       (name, phone, email, message, requested_date, requested_time, type, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (name, phone, email, message, requested_date, requested_time, type, status,
+        created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+       datetime('now', '-' || ? || ' days', '-' || ? || ' hours'))`,
   );
   const seed = db.transaction(() => {
-    for (const row of [...SEED, CONFLICTING_SEED]) insert.run(...row);
+    [...seedRows(), conflictingSeed()].forEach((row, index) => {
+      const [name, phone, email, message, date, time, type, status, daysAgo] = row;
+      // Spread the arrival times over the day so the order is stable.
+      insert.run(
+        name,
+        phone,
+        email,
+        message,
+        date,
+        time,
+        type,
+        status,
+        daysAgo,
+        index + 1,
+      );
+    });
   });
   seed();
 }
@@ -253,10 +372,40 @@ const toRequest = (row: AppointmentRequestRow): AppointmentRequest => ({
   type: row.type,
   status: row.status,
   createdAt: row.created_at,
+  campaignId: row.campaign_id,
+  campaignName: row.campaign_name,
+  studentId: row.student_name === null ? null : row.student_id,
+  studentName: row.student_name,
+  appointmentInstructor: row.appointment_instructor || null,
 });
 
-const SELECT =
-  "SELECT id, name, phone, email, message, requested_date, requested_time, type, status, created_at FROM appointment_requests";
+const tableExists = (db: Database, name: string) =>
+  db
+    .query<{ n: number }, [string]>(
+      "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(name)!.n > 0;
+
+/* Campaign/student names are joined when their tables exist (the unit
+   tests run this module on a bare schema). */
+function selectSql(db: Database): string {
+  const campaign = tableExists(db, "campaigns")
+    ? "(SELECT c.name FROM campaigns c WHERE c.id = r.campaign_id)"
+    : "NULL";
+  const student = tableExists(db, "students")
+    ? "(SELECT trim(s.first_name || ' ' || s.last_name) FROM students s WHERE s.id = r.student_id)"
+    : "NULL";
+  const instructor =
+    tableExists(db, "calendar_events") && tableExists(db, "instructors")
+      ? `(SELECT trim(i.first_name || ' ' || i.last_name) FROM calendar_events ce
+          JOIN instructors i ON i.id = ce.instructor_id WHERE ce.id = r.event_id)`
+      : "NULL";
+  return `SELECT r.id, r.name, r.phone, r.email, r.message, r.requested_date,
+    r.requested_time, r.type, r.status, r.created_at, r.campaign_id, r.student_id,
+    ${campaign} AS campaign_name, ${student} AS student_name,
+    ${instructor} AS appointment_instructor
+    FROM appointment_requests r`;
+}
 
 /* Calendar events overlapping the requested slot, assuming the same
    60min default duration the accept flow uses. */
@@ -271,7 +420,9 @@ function findConflictingEvents(
   return listCalendarEvents(db, { from: date, to: date })
     .filter(
       (event) =>
-        toMinutes(event.start) < requestEnd && toMinutes(event.end) > requestStart,
+        !event.cancelledAt &&
+        toMinutes(event.start) < requestEnd &&
+        toMinutes(event.end) > requestStart,
     )
     .map((event) => ({
       id: event.id,
@@ -282,26 +433,81 @@ function findConflictingEvents(
     }));
 }
 
-/* Only open requests carry conflicts — accepted ones would always
-   collide with the calendar event their own acceptance created. */
+export const DUPLICATE_WINDOW_DAYS = 14;
+
+/* "+49 151 234-567" → "0151234567"; too short numbers never match. */
+function phoneKey(phone: string): string {
+  let digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("0049")) digits = `0${digits.slice(4)}`;
+  else if (digits.startsWith("49") && phone.trim().startsWith("+")) {
+    digits = `0${digits.slice(2)}`;
+  }
+  return digits.length >= 6 ? digits : "";
+}
+
+const nameKey = (name: string) =>
+  name.trim().toLocaleLowerCase("de").replace(/\s+/g, " ");
+
+const createdMs = (createdAt: string) =>
+  new Date(
+    `${createdAt.replace(" ", "T")}${createdAt.includes("Z") ? "" : "Z"}`,
+  ).getTime();
+
+/** Ids of likely duplicates per request id (same phone digits, e-mail or
+    name, received within DUPLICATE_WINDOW_DAYS of each other). */
+export function findLikelyDuplicates(
+  requests: Pick<AppointmentRequest, "id" | "name" | "phone" | "email" | "createdAt">[],
+): Map<number, number[]> {
+  const windowMs = DUPLICATE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const keyed = requests.map((r) => ({
+    id: r.id,
+    at: createdMs(r.createdAt),
+    phone: phoneKey(r.phone),
+    email: r.email.trim().toLowerCase(),
+    name: nameKey(r.name),
+  }));
+  const result = new Map<number, number[]>();
+  for (const a of keyed) {
+    const matches = keyed
+      .filter(
+        (b) =>
+          b.id !== a.id &&
+          Math.abs(a.at - b.at) <= windowMs &&
+          ((a.phone !== "" && a.phone === b.phone) ||
+            (a.email !== "" && a.email === b.email) ||
+            (a.name !== "" && a.name === b.name)),
+      )
+      .map((b) => b.id);
+    result.set(a.id, matches);
+  }
+  return result;
+}
+
+/* Newest received first. Only open requests carry conflicts — accepted
+   ones would always collide with the calendar event their own
+   acceptance created. */
 export function listAppointmentRequests(db: Database): AppointmentRequestWithConflicts[] {
-  return db
+  const requests = db
     .query<AppointmentRequestRow, []>(
-      `${SELECT} ORDER BY requested_date, requested_time, id`,
+      `${selectSql(db)} ORDER BY r.created_at DESC, r.id DESC`,
     )
     .all()
-    .map(toRequest)
-    .map((request) => ({
-      ...request,
-      conflicts:
-        request.status === "offen"
-          ? findConflictingEvents(db, request.requestedDate, request.requestedTime)
-          : [],
-    }));
+    .map(toRequest);
+  const duplicates = findLikelyDuplicates(requests);
+  return requests.map((request) => ({
+    ...request,
+    conflicts:
+      request.status === "offen"
+        ? findConflictingEvents(db, request.requestedDate, request.requestedTime)
+        : [],
+    duplicateOf: duplicates.get(request.id) ?? [],
+  }));
 }
 
 export function getAppointmentRequest(db: Database, id: number): AppointmentRequest {
-  const row = db.query<AppointmentRequestRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db
+    .query<AppointmentRequestRow, [number]>(`${selectSql(db)} WHERE r.id = ?`)
+    .get(id);
   if (!row) throw new ValidationError("Terminanfrage nicht gefunden.");
   return toRequest(row);
 }
@@ -418,21 +624,79 @@ function normalize(
   };
 }
 
+/* Plausible window for a requested lesson. Branch opening hours are free
+   text ("Mo–Fr 14–18 Uhr") and describe the office, not driving hours,
+   so the public form checks this fixed window instead. */
+export const PUBLIC_EARLIEST_TIME = "06:00";
+export const PUBLIC_LATEST_TIME = "21:00";
+
+export type PublicRequestInput = Partial<AppointmentRequestInput> & {
+  campaign?: unknown;
+  /** Datenschutz consent checkbox of the public form. */
+  consent?: unknown;
+};
+
+/* Extra rules for the unauthenticated /anfrage form on top of normalize():
+   reachable contact, a date from today on, a plausible time and the
+   Datenschutz consent. Staff edits (PATCH) keep the looser rules so old
+   requests stay editable. */
+export function validatePublicRequest(input: PublicRequestInput, today: string): void {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  if (!text(input.name)) throw new ValidationError("Name ist ein Pflichtfeld.");
+  if (!text(input.phone) && !text(input.email)) {
+    throw new ValidationError(
+      "Bitte Telefonnummer oder E-Mail-Adresse angeben, damit wir Sie erreichen können.",
+    );
+  }
+  const phone = text(input.phone);
+  if (phone && phone.replace(/\D/g, "").length < 6) {
+    throw new ValidationError("Bitte eine gültige Telefonnummer angeben.");
+  }
+  const date = text(input.requestedDate);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date) && date < today) {
+    throw new ValidationError("Das Wunschdatum darf nicht in der Vergangenheit liegen.");
+  }
+  const time = text(input.requestedTime);
+  if (
+    /^\d{2}:\d{2}$/.test(time) &&
+    (time < PUBLIC_EARLIEST_TIME || time > PUBLIC_LATEST_TIME)
+  ) {
+    throw new ValidationError(
+      `Bitte eine Uhrzeit zwischen ${PUBLIC_EARLIEST_TIME} und ${PUBLIC_LATEST_TIME} Uhr wählen.`,
+    );
+  }
+  if (input.consent !== true) {
+    throw new ValidationError(
+      "Bitte der Verarbeitung Ihrer Angaben gemäß Datenschutzerklärung zustimmen.",
+    );
+  }
+}
+
 /* ------------------------------ writes ---------------------------- */
+
+/* Tracking code sent by the public form (?kampagne= / utm_campaign).
+   Unknown or malformed codes are ignored — a stale flyer link must
+   never make the request itself fail. */
+function resolveCampaign(db: Database, code: unknown): number | null {
+  if (typeof code !== "string" || !code.trim() || code.length > 100) return null;
+  if (!tableExists(db, "campaigns")) return null;
+  return campaignIdByTrackingCode(db, code);
+}
 
 export function createAppointmentRequest(
   db: Database,
-  input: Partial<AppointmentRequestInput>,
+  input: Partial<AppointmentRequestInput> & { campaign?: unknown },
 ): AppointmentRequest {
   const data = normalize(input, EMPTY);
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string, string, string, string]
+      [string, string, string, string, string, string, string, string, number | null]
     >(
       `INSERT INTO appointment_requests
-         (name, phone, email, message, requested_date, requested_time, type, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+         (name, phone, email, message, requested_date, requested_time, type, status,
+          campaign_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       data.name,
@@ -443,8 +707,121 @@ export function createAppointmentRequest(
       data.requestedTime,
       data.type,
       data.status,
+      resolveCampaign(db, input.campaign),
     )!;
   return getAppointmentRequest(db, row.id);
+}
+
+/* "Als Fahrschüler anlegen": link the request to the student created
+   from it (null unlinks). The link turns a tracked lead into a signup
+   for the campaign statistics. */
+export function linkAppointmentRequestStudent(
+  db: Database,
+  id: number,
+  studentId: unknown,
+): AppointmentRequest {
+  getAppointmentRequest(db, id); // 404 → ValidationError
+  if (studentId !== null) {
+    if (typeof studentId !== "number" || !Number.isInteger(studentId) || studentId <= 0) {
+      throw new ValidationError(
+        "Feld 'studentId' muss eine Fahrschüler-ID oder null sein.",
+      );
+    }
+    const exists =
+      tableExists(db, "students") &&
+      db
+        .query<{ n: number }, [number]>("SELECT count(*) AS n FROM students WHERE id = ?")
+        .get(studentId)!.n > 0;
+    if (!exists) throw new ValidationError("Fahrschüler/in nicht gefunden.");
+  }
+  const run = db.transaction(() => {
+    const previous = db
+      .query<{ student_id: number | null }, [number]>(
+        "SELECT student_id FROM appointment_requests WHERE id = ?",
+      )
+      .get(id)!.student_id;
+    db.prepare("UPDATE appointment_requests SET student_id = ? WHERE id = ?").run(
+      studentId as number | null,
+      id,
+    );
+    const eventIds = requestEventIds(db, id);
+    if (eventIds.length === 0) return;
+    const placeholders = eventIds.map(() => "?").join(", ");
+    if (studentId === null) {
+      // Unlinking gives the Termin back to the inbox, but only when it
+      // still belongs to the student this request pointed at.
+      if (previous !== null) {
+        db.prepare(
+          `UPDATE calendar_events SET student_id = NULL
+           WHERE id IN (${placeholders}) AND student_id = ?`,
+        ).run(...eventIds, previous);
+      }
+      return;
+    }
+    // Never steal a Termin that was assigned to someone else by hand.
+    db.prepare(
+      `UPDATE calendar_events SET student_id = ?
+       WHERE id IN (${placeholders}) AND (student_id IS NULL OR student_id = ?)`,
+    ).run(studentId as number, ...eventIds, previous ?? -1);
+    adoptEventInstructor(db, studentId as number, eventIds);
+  });
+  run();
+  return getAppointmentRequest(db, id);
+}
+
+const columnExists = (db: Database, table: string, column: string): boolean =>
+  tableExists(db, table) &&
+  db
+    .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+    .all()
+    .some((c) => c.name === column);
+
+/* Calendar events created by accepting this request. Requests accepted
+   before event_id existed are matched the way the accept flow creates
+   them: title = requester name, subtitle "Terminanfrage", no student. */
+function requestEventIds(db: Database, id: number): number[] {
+  if (!columnExists(db, "calendar_events", "student_id")) return [];
+  const row = db
+    .query<{ event_id: number | null; name: string; status: string }, [number]>(
+      "SELECT event_id, name, status FROM appointment_requests WHERE id = ?",
+    )
+    .get(id);
+  if (!row) return [];
+  if (row.event_id !== null) {
+    const exists = db
+      .query<{ id: number }, [number]>("SELECT id FROM calendar_events WHERE id = ?")
+      .get(row.event_id);
+    return exists ? [exists.id] : [];
+  }
+  if (row.status !== "bestätigt") return [];
+  return db
+    .query<{ id: number }, [string]>(
+      `SELECT id FROM calendar_events
+       WHERE subtitle = 'Terminanfrage' AND title = ? AND student_id IS NULL
+       ORDER BY date, start`,
+    )
+    .all(row.name)
+    .map((r) => r.id);
+}
+
+/* The instructor chosen when confirming the Termin becomes the student's
+   instructor — unless the office already assigned one. */
+function adoptEventInstructor(db: Database, studentId: number, eventIds: number[]): void {
+  if (eventIds.length === 0) return;
+  if (!columnExists(db, "students", "instructor_id")) return;
+  if (!columnExists(db, "calendar_events", "instructor_id")) return;
+  const placeholders = eventIds.map(() => "?").join(", ");
+  const instructor = db
+    .query<{ instructor_id: number }, number[]>(
+      `SELECT instructor_id FROM calendar_events
+       WHERE id IN (${placeholders}) AND instructor_id IS NOT NULL
+       ORDER BY date, start LIMIT 1`,
+    )
+    .get(...eventIds);
+  if (!instructor) return;
+  db.prepare(
+    "UPDATE students SET instructor_id = ? WHERE id = ? AND instructor_id IS NULL",
+  ).run(instructor.instructor_id, studentId);
 }
 
 export function updateAppointmentRequest(
@@ -514,10 +891,20 @@ export function acceptAppointmentRequest(
       instructor: overrides.instructor ?? "Nicht zugeteilt",
       vehicle: overrides.vehicle ?? "",
       type: request.type,
+      // Already converted ("Als Fahrschüler anlegen" before accepting):
+      // the Termin belongs to that student right away.
+      ...(request.studentId !== null ? { studentId: request.studentId } : {}),
+      allowConflicts: overrides.allowConflicts === true,
     });
-    db.prepare("UPDATE appointment_requests SET status = 'bestätigt' WHERE id = ?").run(
-      id,
-    );
+    db.prepare(
+      "UPDATE appointment_requests SET status = 'bestätigt', event_id = ? WHERE id = ?",
+    ).run(Number(event.id), id);
+    if (request.studentId !== null) {
+      adoptEventInstructor(db, request.studentId, [Number(event.id)]);
+    }
+    // Confirmation mail (only with an e-mail address and the toggle on) —
+    // same transaction, so a failed accept never leaves a stray mail.
+    notifyAppointmentRequestConfirmed(db, request, event);
     return event;
   });
   const event = run();
@@ -525,8 +912,15 @@ export function acceptAppointmentRequest(
 }
 
 export function declineAppointmentRequest(db: Database, id: number): AppointmentRequest {
-  getAppointmentRequest(db, id); // 404 → ValidationError
-  db.prepare("UPDATE appointment_requests SET status = 'abgelehnt' WHERE id = ?").run(id);
+  const request = getAppointmentRequest(db, id); // 404 → ValidationError
+  const run = db.transaction(() => {
+    db.prepare("UPDATE appointment_requests SET status = 'abgelehnt' WHERE id = ?").run(
+      id,
+    );
+    // Declining twice must not mail the requester twice.
+    if (request.status !== "abgelehnt") notifyAppointmentRequestDeclined(db, request);
+  });
+  run();
   return getAppointmentRequest(db, id);
 }
 
@@ -587,20 +981,19 @@ export function appointmentRequestRoutes(
         handle(() => json({ requests: listAppointmentRequests(db) }))(),
       POST: (req: BunRequest, server?: RequestIPSource) =>
         handle(async () => {
-          const ip = server?.requestIP(req)?.address ?? "unknown";
+          const ip = clientIp(req, server);
           if (rateLimited(ip, Date.now())) {
             return json(
               { error: "Zu viele Anfragen. Bitte später erneut versuchen." },
               429,
             );
           }
-          return json(
-            createAppointmentRequest(
-              db,
-              (await req.json()) as Partial<AppointmentRequestInput>,
-            ),
-            201,
-          );
+          const body = (await req.json()) as PublicRequestInput;
+          const { consent: _consent, ...input } = body;
+          // The public form never sets a status — every lead starts "offen".
+          const data = { ...input, status: undefined };
+          validatePublicRequest(body, schoolToday());
+          return json(createAppointmentRequest(db, data), 201);
         })(),
     },
 
@@ -628,6 +1021,20 @@ export function appointmentRequestRoutes(
           // Body is optional — accept with the requested slot by default.
           const body = (await req.json().catch(() => ({}))) as AcceptOverrides;
           return json(acceptAppointmentRequest(db, parseId(req.params.id), body));
+        })(),
+    },
+
+    "/api/appointment-requests/:id/student": {
+      PUT: (req: BunRequest<"/api/appointment-requests/:id/student">) =>
+        handle(async () => {
+          const body = (await req.json().catch(() => ({}))) as { studentId?: unknown };
+          return json(
+            linkAppointmentRequestStudent(
+              db,
+              parseId(req.params.id),
+              body.studentId ?? null,
+            ),
+          );
         })(),
     },
 

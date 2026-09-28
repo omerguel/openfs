@@ -10,6 +10,10 @@
 import type { Database } from "./sqlite";
 
 import { ValidationError } from "./engine";
+import type { FileStore } from "./file-store";
+import { instructorIdByName, vehicleIdByName } from "./refs";
+import { currentUser } from "./request-context";
+import { deleteStoredFiles, removeStudentFileRows } from "./student-files";
 
 export type ArchiveEntity =
   | "student"
@@ -28,13 +32,9 @@ const TABLES: Record<ArchiveEntity, string> = {
   price_plan: "price_plans",
 };
 
-/* Both students.instructor/vehicle and instructors.vehicle fall back to
-   this marker when their target is deleted (see the delete* functions). */
-const UNASSIGNED = "Nicht zugeteilt";
-
-/* Records that pointed at the deleted row and were reset to UNASSIGNED
-   (or NULL for price plans / conversations, removed from the member
-   list for theory groups). Restore re-links them — but only the ones
+/* Records that pointed at the deleted row and were reset to NULL
+   (instructor_id / vehicle_id / price_plan_id / conversations.student_id;
+   removed from the member list for theory groups). Restore re-links them — but only the ones
    still unassigned, so reassignments made in the meantime survive. */
 export type ArchiveLinks = {
   students?: number[];
@@ -59,6 +59,8 @@ export function tableExists(db: Database, name: string): boolean {
 type ArchivePayload = {
   row: Record<string, unknown>;
   links?: ArchiveLinks;
+  /** Why the record was archived (students: Ausbildung abgeschlossen, …). */
+  reason?: string;
 };
 
 export type ArchiveRecord = {
@@ -66,6 +68,13 @@ export type ArchiveRecord = {
   entity: ArchiveEntity;
   label: string;
   deletedAt: string;
+  /** Name of the signed-in user who deleted it ("" = unknown/older entry). */
+  deletedBy: string;
+  /** Short summary of the snapshot (Kundennummer, Datum, Kennzeichen …)
+      so similar entries can be told apart before restoring. */
+  detail: string;
+  /** Why it was archived (students only; null = not given). */
+  reason: string | null;
 };
 
 type ArchiveRow = {
@@ -74,7 +83,63 @@ type ArchiveRow = {
   label: string;
   payload: string;
   deleted_at: string;
+  deleted_by: string | null;
 };
+
+/* Added after the table shipped: who deleted the entry. Cheap and
+   idempotent, so it runs before every read/write of the archive. */
+function ensureArchiveColumns(db: Database): void {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(archive)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("deleted_by")) {
+    db.exec("ALTER TABLE archive ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''");
+  }
+}
+
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+const germanDate = (iso: string) => {
+  const [y, m, d] = iso.split("-");
+  return y && m && d ? `${d}.${m}.${y}` : iso;
+};
+
+/* One muted line per entity, built from the raw row snapshot. */
+export function archiveDetail(entity: ArchiveEntity, payload: string): string {
+  let row: Record<string, unknown>;
+  try {
+    row = (JSON.parse(payload) as ArchivePayload).row ?? {};
+  } catch {
+    return "";
+  }
+  const parts: string[] = [];
+  switch (entity) {
+    case "student":
+      if (text(row.customer_number)) parts.push(`Kd.-Nr. ${text(row.customer_number)}`);
+      if (text(row.classes)) parts.push(`Klasse ${text(row.classes)}`);
+      if (text(row.phone)) parts.push(text(row.phone));
+      break;
+    case "calendar_event":
+      if (text(row.type)) parts.push(text(row.type));
+      if (text(row.date)) {
+        parts.push(
+          `${germanDate(text(row.date))}${text(row.start) ? `, ${text(row.start)}–${text(row.end)} Uhr` : ""}`,
+        );
+      }
+      break;
+    case "instructor":
+      if (text(row.classes)) parts.push(`Klassen ${text(row.classes)}`);
+      if (text(row.phone)) parts.push(text(row.phone));
+      break;
+    case "vehicle":
+      if (text(row.klass)) parts.push(`Klasse ${text(row.klass)}`);
+      break;
+    case "price_plan":
+      break;
+  }
+  return parts.join(" · ");
+}
 
 const toRecord = (row: ArchiveRow): ArchiveRecord => ({
   id: row.id,
@@ -82,7 +147,19 @@ const toRecord = (row: ArchiveRow): ArchiveRecord => ({
   label: row.label,
   // datetime('now') stores UTC without zone marker — make it ISO.
   deletedAt: `${row.deleted_at.replace(" ", "T")}Z`,
+  deletedBy: row.deleted_by ?? "",
+  detail: archiveDetail(row.entity, row.payload),
+  reason: archiveReason(row.payload),
 });
+
+function archiveReason(payload: string): string | null {
+  try {
+    const reason = (JSON.parse(payload) as { reason?: unknown }).reason;
+    return typeof reason === "string" && reason ? reason : null;
+  } catch {
+    return null;
+  }
+}
 
 /* Snapshot a row into the archive. Call this inside the same
    transaction that deletes the row. */
@@ -92,6 +169,7 @@ export function archiveRow(
   id: number,
   label: string,
   links?: ArchiveLinks,
+  reason?: string,
 ): void {
   const row = db
     .query<Record<string, unknown>, [number]>(
@@ -103,33 +181,89 @@ export function archiveRow(
   if (links && Object.values(links).some((ids) => ids?.length)) {
     payload.links = links;
   }
-  db.prepare("INSERT INTO archive (entity, label, payload) VALUES (?, ?, ?)").run(
-    entity,
-    label,
-    JSON.stringify(payload),
-  );
+  if (reason) payload.reason = reason;
+  ensureArchiveColumns(db);
+  db.prepare(
+    "INSERT INTO archive (entity, label, payload, deleted_by) VALUES (?, ?, ?, ?)",
+  ).run(entity, label, JSON.stringify(payload), currentUser()?.name ?? "");
 }
 
 export function listArchive(db: Database): ArchiveRecord[] {
+  ensureArchiveColumns(db);
   return db
     .query<ArchiveRow, []>(
-      "SELECT id, entity, label, payload, deleted_at FROM archive ORDER BY deleted_at DESC, id DESC",
+      "SELECT id, entity, label, payload, deleted_at, deleted_by FROM archive ORDER BY deleted_at DESC, id DESC",
     )
     .all()
     .map(toRecord);
 }
 
+/** Contract data of archived students — the Verträge page keeps them
+    visible under "Archiviert" (restorable from the Archiv). */
+export type ArchivedContract = {
+  archiveId: number;
+  deletedAt: string;
+  reason: string | null;
+  studentId: number;
+  firstName: string;
+  lastName: string;
+  contractNumber: string;
+  customerNumber: string;
+  classes: string;
+  registrationDate: string;
+  pricePlanId: number | null;
+};
+
+export function listArchivedContracts(db: Database): ArchivedContract[] {
+  const rows = db
+    .query<ArchiveRow, []>(
+      `SELECT id, entity, label, payload, deleted_at FROM archive
+       WHERE entity = 'student' ORDER BY deleted_at DESC, id DESC`,
+    )
+    .all();
+  const contracts: ArchivedContract[] = [];
+  for (const row of rows) {
+    let payload: Partial<ArchivePayload> & Record<string, unknown>;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      continue;
+    }
+    // Early snapshots stored the bare row without the { row, links } wrapper.
+    const snapshot = (
+      payload.row && typeof payload.row === "object" ? payload.row : payload
+    ) as Record<string, unknown>;
+    const text = (key: string) =>
+      typeof snapshot[key] === "string" ? (snapshot[key] as string) : "";
+    contracts.push({
+      archiveId: row.id,
+      deletedAt: toRecord(row).deletedAt,
+      reason: typeof payload.reason === "string" ? payload.reason : null,
+      studentId: Number(snapshot.id),
+      firstName: text("first_name"),
+      lastName: text("last_name"),
+      contractNumber: text("contract_number"),
+      customerNumber: text("customer_number"),
+      classes: text("classes"),
+      registrationDate: text("registration_date"),
+      pricePlanId:
+        typeof snapshot.price_plan_id === "number" ? snapshot.price_plan_id : null,
+    });
+  }
+  return contracts;
+}
+
 function getArchiveRow(db: Database, id: number): ArchiveRow {
   const row = db
     .query<ArchiveRow, [number]>(
-      "SELECT id, entity, label, payload, deleted_at FROM archive WHERE id = ?",
+      "SELECT id, entity, label, payload, deleted_at, NULL AS deleted_by FROM archive WHERE id = ?",
     )
     .get(id);
   if (!row) throw new ValidationError("Archiveintrag nicht gefunden.");
   return row;
 }
 
-/* Put records that were reset to UNASSIGNED when their target was
+/* Put records that were reset to NULL when their target was
    deleted back onto the restored target — skipping any that have been
    reassigned since. Runs inside the restore transaction. */
 function relink(
@@ -140,61 +274,33 @@ function relink(
 ): void {
   const idList = (ids: number[]) => ids.map(() => "?").join(", ");
 
-  if (links.students?.length) {
-    const ids = links.students;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE students SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "vehicle") {
-      db.prepare(
-        `UPDATE students SET vehicle = ?
-         WHERE vehicle = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(String(snapshot.model), ...ids);
-    } else if (entity === "price_plan") {
-      db.prepare(
-        `UPDATE students SET price_plan_id = ?
-         WHERE price_plan_id IS NULL AND id IN (${idList(ids)})`,
-      ).run(Number(snapshot.id), ...ids);
-    }
-  }
-
-  if (links.instructors?.length && entity === "vehicle") {
-    const ids = links.instructors;
+  const targetId = Number(snapshot.id);
+  // Re-point `column` at the restored row — only where it is still NULL.
+  const relinkColumn = (table: string, column: string, ids: number[] | undefined) => {
+    if (!ids?.length || !tableExists(db, table)) return;
     db.prepare(
-      `UPDATE instructors SET vehicle = ?
-       WHERE vehicle = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-    ).run(String(snapshot.model), ...ids);
-  }
+      `UPDATE ${table} SET ${column} = ?
+       WHERE ${column} IS NULL AND id IN (${idList(ids)})`,
+    ).run(targetId, ...ids);
+  };
 
-  if (links.calendarEvents?.length) {
-    const ids = links.calendarEvents;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE calendar_events SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "vehicle") {
-      // Events store the bare model; their "deleted" marker is ''.
-      db.prepare(
-        `UPDATE calendar_events SET vehicle = ?
-         WHERE vehicle = '' AND id IN (${idList(ids)})`,
-      ).run(String(snapshot.model), ...ids);
-    }
+  if (entity === "instructor") {
+    relinkColumn("students", "instructor_id", links.students);
+    relinkColumn("calendar_events", "instructor_id", links.calendarEvents);
+    relinkColumn("theory_groups", "instructor_id", links.theoryGroups);
+  } else if (entity === "vehicle") {
+    relinkColumn("students", "vehicle_id", links.students);
+    relinkColumn("instructors", "vehicle_id", links.instructors);
+    relinkColumn("calendar_events", "vehicle_id", links.calendarEvents);
+  } else if (entity === "price_plan") {
+    relinkColumn("students", "price_plan_id", links.students);
+  } else if (entity === "student") {
+    relinkColumn("calendar_events", "student_id", links.calendarEvents);
   }
 
   if (links.theoryGroups?.length && tableExists(db, "theory_groups")) {
     const ids = links.theoryGroups;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE theory_groups SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "student") {
+    if (entity === "student") {
       // Re-add the student to each group it was removed from — unless
       // the seat has been filled or the student re-added in the meantime.
       const studentId = Number(snapshot.id);
@@ -241,6 +347,44 @@ function parseIdList(raw: string): number[] {
   }
 }
 
+/* Adapt a snapshot to the table as it is today: snapshots taken before
+   the id migration carry name columns (instructor / vehicle) — resolve
+   them to ids; columns the table no longer has are dropped; links to an
+   instructor/vehicle that is itself gone become unassigned (NULL). */
+function normalizeSnapshot(
+  db: Database,
+  table: string,
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const existing = new Set(
+    db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c) => c.name),
+  );
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (existing.has(key)) next[key] = value;
+  }
+  if (existing.has("instructor_id") && next.instructor_id === undefined) {
+    const name = typeof snapshot.instructor === "string" ? snapshot.instructor : "";
+    next.instructor_id = name ? instructorIdByName(db, name) : null;
+  }
+  if (existing.has("vehicle_id") && next.vehicle_id === undefined) {
+    const name = typeof snapshot.vehicle === "string" ? snapshot.vehicle : "";
+    next.vehicle_id = name ? vehicleIdByName(db, name) : null;
+  }
+  const exists = (target: string, id: unknown) =>
+    typeof id === "number" && db.query(`SELECT 1 FROM ${target} WHERE id = ?`).get(id);
+  if (next.instructor_id != null && !exists("instructors", next.instructor_id)) {
+    next.instructor_id = null;
+  }
+  if (next.vehicle_id != null && !exists("vehicles", next.vehicle_id)) {
+    next.vehicle_id = null;
+  }
+  return next;
+}
+
 /* Re-insert the snapshot verbatim and drop the archive entry. UNIQUE /
    FK violations (e.g. the Vertragsnummer was reused, or a referenced
    price plan is itself still deleted) become readable errors. */
@@ -252,13 +396,15 @@ export function restoreArchived(db: Database, id: number): ArchiveRecord {
     "row" in parsed && typeof parsed.row === "object"
       ? (parsed as ArchivePayload)
       : { row: parsed as Record<string, unknown>, links: undefined };
-  const columns = Object.keys(snapshot);
+  const table = TABLES[row.entity];
+  const restorable = normalizeSnapshot(db, table, snapshot);
+  const columns = Object.keys(restorable);
 
   const restore = db.transaction(() => {
     db.prepare(
-      `INSERT INTO ${TABLES[row.entity]} (${columns.map((c) => `"${c}"`).join(", ")})
+      `INSERT INTO ${table} (${columns.map((c) => `"${c}"`).join(", ")})
        VALUES (${columns.map(() => "?").join(", ")})`,
-    ).run(...(columns.map((c) => snapshot[c]) as (string | number | null)[]));
+    ).run(...(columns.map((c) => restorable[c]) as (string | number | null)[]));
     if (links) relink(db, row.entity, snapshot, links);
     db.prepare("DELETE FROM archive WHERE id = ?").run(id);
   });
@@ -281,7 +427,37 @@ export function restoreArchived(db: Database, id: number): ArchiveRecord {
   return toRecord(row);
 }
 
-export function purgeArchived(db: Database, id: number): void {
-  getArchiveRow(db, id); // throws ValidationError if unknown
-  db.prepare("DELETE FROM archive WHERE id = ?").run(id);
+/* Removes the archive entry for good. For a student this is also the
+   moment its uploaded files go (student_files keeps them while the
+   student is only archived). The DB part is synchronous; the returned
+   promise settles once the stored bytes are deleted — best effort, it
+   never rejects. Without a store the file rows are left alone so no
+   bytes are orphaned without a trace. */
+export function purgeArchived(
+  db: Database,
+  id: number,
+  store?: FileStore,
+): Promise<void> {
+  const row = getArchiveRow(db, id); // throws ValidationError if unknown
+  let keys: string[] = [];
+  db.transaction(() => {
+    db.prepare("DELETE FROM archive WHERE id = ?").run(id);
+    if (row.entity === "student" && store && tableExists(db, "student_files")) {
+      const studentId = archivedRowId(row.payload);
+      if (studentId !== null) keys = removeStudentFileRows(db, studentId);
+    }
+  })();
+  return store && keys.length > 0 ? deleteStoredFiles(store, keys) : Promise.resolve();
+}
+
+function archivedRowId(payload: string): number | null {
+  try {
+    const parsed = JSON.parse(payload) as { row?: { id?: unknown }; id?: unknown };
+    const id = Number(
+      parsed.row && typeof parsed.row === "object" ? parsed.row.id : parsed.id,
+    );
+    return Number.isInteger(id) ? id : null;
+  } catch {
+    return null;
+  }
 }

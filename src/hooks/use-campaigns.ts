@@ -22,19 +22,46 @@ export type Campaign = {
   id: number;
   name: string;
   channel: CampaignChannel;
+  /** Unique slug for the tracking link /anfrage?kampagne=<code>. */
+  trackingCode: string;
   budgetCents: number;
   spentCents: number;
+  /** Derived: manualLeads + trackedLeads. */
   leads: number;
+  /** Derived: manualSignups + trackedSignups. */
   signups: number;
+  manualLeads: number;
+  manualSignups: number;
+  /** Requests that came in through the tracking link. */
+  trackedLeads: number;
+  /** …whose requester was taken on as a student. */
+  trackedSignups: number;
   startDate: string;
   /** Empty string = open-ended (laufend). */
   endDate: string;
+  /** Effective status — "beendet" once the end date has passed. */
   status: CampaignStatus;
+  /** True when the campaign reads "beendet" only because it ran out. */
+  endedByDate: boolean;
   notes: string;
   createdAt: string;
 };
 
-export type CampaignInput = Omit<Campaign, "id" | "createdAt">;
+export type CampaignInput = Omit<
+  Campaign,
+  | "id"
+  | "createdAt"
+  | "leads"
+  | "signups"
+  | "trackedLeads"
+  | "trackedSignups"
+  | "endedByDate"
+>;
+
+/** Public tracking link of a campaign (the /anfrage form reads it). */
+export function campaignTrackingUrl(code: string, origin = window.location.origin) {
+  return `${origin}/anfrage?kampagne=${encodeURIComponent(code)}`;
+}
 
 export async function fetchCampaigns(): Promise<Campaign[]> {
   const data = await parseOrThrow<{ campaigns: Campaign[] }>(

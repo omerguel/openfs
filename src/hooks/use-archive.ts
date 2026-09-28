@@ -17,6 +17,12 @@ export type ArchiveItem = {
   entity: ArchiveEntity;
   label: string;
   deletedAt: string;
+  /** Who deleted it ("" for older entries or system deletes). */
+  deletedBy: string;
+  /** Short summary (Kundennummer, Termin-Datum, Kennzeichen …). */
+  detail: string;
+  /** Why it was archived (students only). */
+  reason: string | null;
 };
 
 export async function fetchArchive(): Promise<ArchiveItem[]> {
@@ -43,4 +49,35 @@ export function useArchive() {
     "Archiv konnte nicht geladen werden",
   );
   return { items, loading, refresh };
+}
+
+/** Contract data of archived students (Verträge → "Archiviert"). */
+export type ArchivedContract = {
+  archiveId: number;
+  deletedAt: string;
+  reason: string | null;
+  studentId: number;
+  firstName: string;
+  lastName: string;
+  contractNumber: string;
+  customerNumber: string;
+  classes: string;
+  registrationDate: string;
+  pricePlanId: number | null;
+};
+
+export async function fetchArchivedContracts(): Promise<ArchivedContract[]> {
+  const data = await parseOrThrow<{ contracts: ArchivedContract[] }>(
+    await fetch("/api/students/archived"),
+  );
+  return data.contracts;
+}
+
+export function useArchivedContracts() {
+  const { items, loading, refresh } = useFetchList(
+    ["archive", "contracts"],
+    fetchArchivedContracts,
+    "Archivierte Verträge konnten nicht geladen werden",
+  );
+  return { contracts: items, loading, refresh };
 }

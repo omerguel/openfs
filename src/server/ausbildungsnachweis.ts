@@ -46,6 +46,10 @@ export type Attestation = {
   /** PNG data-URL of the student's drawn signature. */
   signatureDataUrl: string;
   signedAt: string;
+  /** Read-time extras from the calendar event (not part of the record):
+      the lesson's date and its Fahrtart (Übungs-, Überland-, …fahrt). */
+  lessonDate?: string | null;
+  lessonKind?: string | null;
 };
 
 type AttestationRow = {
@@ -94,15 +98,30 @@ export function listAttestationsForStudent(
   db: Database,
   studentId: number,
 ): Attestation[] {
+  const hasKind = db
+    .query<{ name: string }, []>("PRAGMA table_info(calendar_events)")
+    .all()
+    .some((c) => c.name === "lesson_kind");
   return db
-    .query<AttestationRow, [number]>(
-      `SELECT id, event_id, student_id, instructor, content, duration_min,
-              signature_data_url, signed_at
-       FROM lesson_attestations WHERE student_id = ?
-       ORDER BY signed_at DESC`,
+    .query<
+      AttestationRow & { lesson_date: string | null; lesson_kind: string | null },
+      [number]
+    >(
+      `SELECT la.id, la.event_id, la.student_id, la.instructor, la.content,
+              la.duration_min, la.signature_data_url, la.signed_at,
+              ce.date AS lesson_date,
+              ${hasKind ? "ce.lesson_kind" : "NULL"} AS lesson_kind
+       FROM lesson_attestations la
+       LEFT JOIN calendar_events ce ON ce.id = la.event_id
+       WHERE la.student_id = ?
+       ORDER BY la.signed_at DESC`,
     )
     .all(studentId)
-    .map(toAttestation);
+    .map((row) => ({
+      ...toAttestation(row),
+      lessonDate: row.lesson_date,
+      lessonKind: row.lesson_kind,
+    }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,14 +147,29 @@ export function createAttestation(
 ): Attestation {
   /* ── event must exist ─────────────────────────────────────────── */
   const event = db
-    .query<{ id: number; type: string; student_id: number | null }, [number]>(
-      `SELECT ce.id, ce.type, ce.student_id
+    .query<
+      {
+        id: number;
+        type: string;
+        student_id: number | null;
+        cancelled_at: string | null;
+      },
+      [number]
+    >(
+      `SELECT ce.id, ce.type, ce.student_id, ce.cancelled_at
        FROM calendar_events ce WHERE ce.id = ?`,
     )
     .get(input.eventId);
 
   if (!event) {
     throw new ValidationError(`Termin mit ID ${input.eventId} existiert nicht.`);
+  }
+
+  /* ── a cancelled lesson did not take place ─────────────────────── */
+  if (event.cancelled_at) {
+    throw new ValidationError(
+      "Für abgesagte Termine kann kein Ausbildungsnachweis erstellt werden.",
+    );
   }
 
   /* ── event must be type "Praktisch" ───────────────────────────── */

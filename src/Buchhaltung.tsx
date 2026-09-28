@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import type { DateRange } from "react-day-picker";
 import {
+  ArrowDownWideNarrow,
+  ArrowUpWideNarrow,
   CalendarDays,
   ChevronDown,
   Download,
   Plus,
   Printer,
+  Receipt,
   Search,
   Undo2,
 } from "lucide-react";
@@ -42,23 +45,34 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
+import type { GeldkontoBalance } from "@/lib/accounting-report-types";
 import type { Account, AccountKind, JournalRow, LedgerRow } from "@/lib/accounting-types";
+import { accountName } from "@/lib/account-labels";
 import { formatCents, formatEuro } from "@/lib/money";
 import {
   accountingApi,
   buildFilterQuery,
+  downloadFile,
   formatIsoDate,
   toIsoDate,
   useApi,
   type StatusFilter,
 } from "./components/buchhaltung/api";
+import { CashbookTab } from "./components/buchhaltung/CashbookTab";
 import { PaymentDialog } from "./components/buchhaltung/PaymentDialog";
 import { QuittungDialog } from "./components/buchhaltung/QuittungDialog";
+import {
+  money,
+  PrintTable,
+  useReportPrinter,
+  type PrintJob,
+} from "./components/buchhaltung/ReportPrint";
+import { SectionTabs } from "./components/buchhaltung/SectionTabs";
 import { StornoDialog, type StornoTarget } from "./components/buchhaltung/StornoDialog";
+import { VatTab } from "./components/buchhaltung/VatTab";
 
-type TabKey = "ledger" | "journal" | "accounts" | "cash-bank";
+type TabKey = "ledger" | "journal" | "cashbook" | "vat" | "accounts" | "cash-bank";
 
 type Column<Row> = {
   key: string;
@@ -69,8 +83,10 @@ type Column<Row> = {
 };
 
 const tabs: { value: TabKey; label: string }[] = [
-  { value: "ledger", label: "Kassen- und Bankenübersicht" },
+  { value: "ledger", label: "Zahlungsübersicht" },
   { value: "journal", label: "Buchungsjournal" },
+  { value: "cashbook", label: "Kassenbuch" },
+  { value: "vat", label: "Umsatzsteuer" },
   { value: "accounts", label: "Kontenrahmen" },
   { value: "cash-bank", label: "Kasse/Bank" },
 ];
@@ -80,6 +96,7 @@ const KIND_LABELS: Record<AccountKind, string> = {
   transit: "Neutrale Anwendung",
   durchlaufend: "Durchlaufende Posten",
   anzahlung: "Fahrschüler-Guthaben",
+  vortrag: "Saldenvortrag",
   steuer: "Steuerkonto",
   erloes: "Einnahmen",
   privat: "Privat",
@@ -93,7 +110,7 @@ function Money({
   cents: number | null;
   tone?: "positive" | "negative" | "neutral";
 }) {
-  if (cents == null) return <span className="text-muted-foreground">-</span>;
+  if (cents == null) return <span className="text-muted-foreground">–</span>;
   return (
     <span
       className={cn(
@@ -122,27 +139,23 @@ function RowActions({
   onStorno: () => void;
 }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1 xl:flex-nowrap">
       {printable && (
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
+          size="xs"
           aria-label="Quittung drucken"
           onClick={onPrint}
         >
-          <Printer data-icon="inline-start" />
+          <Receipt data-icon="inline-start" />
+          Quittung
         </Button>
       )}
       {stornoEligible && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Stornieren"
-          onClick={onStorno}
-        >
+        <Button type="button" variant="ghost" size="xs" onClick={onStorno}>
           <Undo2 data-icon="inline-start" />
+          Stornieren
         </Button>
       )}
     </div>
@@ -154,47 +167,92 @@ function AccountingTable<Row>({
   rows,
   rowKey,
   rowClassName,
-  minWidth = "min-w-[72rem]",
+  minWidth = "min-w-[64rem]",
+  mobile,
 }: {
   columns: Column<Row>[];
   rows: Row[];
   rowKey: (row: Row) => string;
   rowClassName?: (row: Row) => string;
   minWidth?: string;
+  /** Card rendering for phones; the table is shown from sm up. */
+  mobile?: (row: Row) => React.ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border bg-card">
-      <Table className={cn("text-xs", minWidth)}>
-        <TableHeader>
-          <TableRow className="bg-background hover:bg-background">
-            {columns.map((column) => (
-              <TableHead key={column.key} className={column.className}>
-                {column.label}
-              </TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+    <>
+      {mobile && (
+        <ul className="flex flex-col divide-y rounded-lg border bg-card sm:hidden">
           {rows.map((row) => (
-            <TableRow
-              key={rowKey(row)}
-              className={cn(
-                "border-0 even:bg-muted/30 hover:bg-muted/50",
-                rowClassName?.(row),
-              )}
-            >
+            <li key={rowKey(row)} className={cn("px-3 py-2", rowClassName?.(row))}>
+              {mobile(row)}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div
+        className={cn(
+          "overflow-x-auto rounded-lg border bg-card",
+          mobile && "hidden sm:block",
+        )}
+      >
+        <Table className={cn("text-xs", minWidth)}>
+          <TableHeader>
+            <TableRow className="bg-background hover:bg-background">
               {columns.map((column) => (
-                <TableCell
-                  key={column.key}
-                  className={cn("h-12 whitespace-normal", column.cellClassName)}
-                >
-                  {column.render(row)}
-                </TableCell>
+                <TableHead key={column.key} className={column.className}>
+                  {column.label}
+                </TableHead>
               ))}
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow
+                key={rowKey(row)}
+                className={cn(
+                  "border-0 even:bg-muted/30 hover:bg-muted/50",
+                  rowClassName?.(row),
+                )}
+              >
+                {columns.map((column) => (
+                  <TableCell
+                    key={column.key}
+                    className={cn("h-12 whitespace-normal", column.cellClassName)}
+                  >
+                    {column.render(row)}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </>
+  );
+}
+
+function MobileRow({
+  meta,
+  title,
+  subtitle,
+  amount,
+  actions,
+}: {
+  meta: string;
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  amount: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1 text-sm">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 truncate text-xs text-muted-foreground">{meta}</span>
+        <span className="shrink-0">{amount}</span>
+      </div>
+      <div className="min-w-0">{title}</div>
+      {subtitle && <div className="text-xs text-muted-foreground">{subtitle}</div>}
+      {actions}
     </div>
   );
 }
@@ -202,12 +260,10 @@ function AccountingTable<Row>({
 function TableState({
   loading,
   error,
-  empty,
   emptyText,
 }: {
   loading: boolean;
   error: string | null;
-  empty: boolean;
   emptyText: string;
 }) {
   if (loading) {
@@ -269,6 +325,13 @@ function sameDay(a?: Date, b?: Date) {
   );
 }
 
+function rangeText(range: DateRange | undefined) {
+  if (!range?.from) return "Gesamter Zeitraum";
+  return range.to && !sameDay(range.from, range.to)
+    ? `${formatDay(range.from)} – ${formatDay(range.to)}`
+    : formatDay(range.from);
+}
+
 function DateRangeFilter({
   range,
   onChange,
@@ -280,11 +343,7 @@ function DateRangeFilter({
   const today = new Date();
   const filterYear = range?.from?.getFullYear() ?? today.getFullYear();
 
-  const label = range?.from
-    ? range.to && !sameDay(range.from, range.to)
-      ? `${formatDay(range.from)} – ${formatDay(range.to)}`
-      : formatDay(range.from)
-    : "Zeitraum wählen";
+  const label = range?.from ? rangeText(range) : "Zeitraum wählen";
 
   // If the active range matches a whole month, highlight that quick button.
   const activeMonth = (() => {
@@ -424,11 +483,16 @@ function Toolbar({
   onSearchChange,
   status,
   onStatusChange,
+  sort,
+  onSortChange,
   onNew,
   onDatev,
+  onJournalCsv,
+  onJournalPrint,
   onPrintFiltered,
-  hasPrintableRows,
+  printableCount,
   balances,
+  geldkonten,
 }: {
   tab: TabKey;
   range: DateRange | undefined;
@@ -437,38 +501,60 @@ function Toolbar({
   onSearchChange: (value: string) => void;
   status: StatusFilter;
   onStatusChange: (value: StatusFilter) => void;
+  sort: "asc" | "desc";
+  onSortChange: (value: "asc" | "desc") => void;
   onNew: () => void;
   onDatev: () => void;
+  onJournalCsv: () => void;
+  onJournalPrint: () => void;
   onPrintFiltered: () => void;
-  hasPrintableRows: boolean;
+  printableCount: number;
   balances: { openingCents: number; closingCents: number } | null;
+  geldkonten: GeldkontoBalance[] | null;
 }) {
-  const action =
-    tab === "accounts" ? "Kategorie" : tab === "cash-bank" ? "Konto" : "Zahlung";
   const isBookkeeping = tab === "ledger" || tab === "journal";
+  const hasStatus = isBookkeeping || tab === "accounts" || tab === "cash-bank";
+  const hasRange = isBookkeeping || tab === "cashbook";
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={status}
-            onValueChange={(value) => onStatusChange(value as StatusFilter)}
-          >
-            <SelectTrigger className="w-44" size="sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="all">Alle</SelectItem>
-                <SelectItem value="active">Aktiv</SelectItem>
-                <SelectItem value="storniert">
-                  {isBookkeeping ? "Storniert" : "Inaktiv"}
-                </SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {isBookkeeping && <DateRangeFilter range={range} onChange={onRangeChange} />}
+          {hasStatus && (
+            <Select
+              value={status}
+              onValueChange={(value) => onStatusChange(value as StatusFilter)}
+            >
+              <SelectTrigger className="w-36" size="sm" aria-label="Status">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">Alle</SelectItem>
+                  <SelectItem value="active">Aktiv</SelectItem>
+                  <SelectItem value="storniert">
+                    {isBookkeeping ? "Storniert" : "Inaktiv"}
+                  </SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          )}
+          {hasRange && <DateRangeFilter range={range} onChange={onRangeChange} />}
+          {tab === "journal" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onSortChange(sort === "desc" ? "asc" : "desc")}
+            >
+              {sort === "desc" ? (
+                <ArrowDownWideNarrow data-icon="inline-start" />
+              ) : (
+                <ArrowUpWideNarrow data-icon="inline-start" />
+              )}
+              {sort === "desc" ? "Neueste zuerst" : "Älteste zuerst"}
+            </Button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -478,47 +564,130 @@ function Toolbar({
               DATEV
             </Button>
           )}
-          <InputGroup className="w-48">
-            <InputGroupInput
-              placeholder="Suche"
-              value={search}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
-            <InputGroupAddon align="inline-end">
-              <Search />
-            </InputGroupAddon>
-          </InputGroup>
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon-sm"
-            aria-label="Drucken"
-            onClick={onPrintFiltered}
-            disabled={!hasPrintableRows}
-          >
-            <Printer data-icon="inline-start" />
-          </Button>
-          <Button type="button" size="sm" onClick={onNew}>
-            <Plus data-icon="inline-start" />
-            {action}
-          </Button>
+          {tab === "journal" && (
+            <>
+              <Button type="button" variant="outline" size="sm" onClick={onJournalCsv}>
+                <Download data-icon="inline-start" />
+                CSV
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={onJournalPrint}>
+                <Printer data-icon="inline-start" />
+                Drucken
+              </Button>
+            </>
+          )}
+          {(isBookkeeping || tab === "accounts" || tab === "cash-bank") && (
+            <InputGroup className="w-full sm:w-48">
+              <InputGroupInput
+                placeholder="Suche"
+                aria-label="Suche"
+                value={search}
+                onChange={(e) => onSearchChange(e.target.value)}
+              />
+              <InputGroupAddon align="inline-end">
+                <Search />
+              </InputGroupAddon>
+            </InputGroup>
+          )}
+          {tab === "ledger" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onPrintFiltered}
+              disabled={printableCount === 0}
+              title="Quittungen aller Zahlungen im aktuellen Filter drucken"
+            >
+              <Receipt data-icon="inline-start" />
+              Quittungen drucken ({printableCount})
+            </Button>
+          )}
+          {tab !== "accounts" && tab !== "vat" && (
+            <Button type="button" size="sm" onClick={onNew}>
+              <Plus data-icon="inline-start" />
+              Buchung
+            </Button>
+          )}
         </div>
       </div>
-      {tab === "ledger" && balances && (
-        <p className="text-xs text-muted-foreground">
-          Anfangsbestand:{" "}
-          <span className="font-medium text-foreground">
-            {formatEuro(balances.openingCents)}
-          </span>
-          {" · "}
-          Endbestand:{" "}
-          <span className="font-medium text-foreground">
-            {formatEuro(balances.closingCents)}
-          </span>
+      {tab === "ledger" && (balances || geldkonten) && (
+        <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {balances && (
+            <span>
+              Zeitraum: Anfangsbestand{" "}
+              <span className="font-medium text-foreground tabular-nums">
+                {formatEuro(balances.openingCents)}
+              </span>
+              {" · "}Endbestand{" "}
+              <span className="font-medium text-foreground tabular-nums">
+                {formatEuro(balances.closingCents)}
+              </span>
+            </span>
+          )}
+          {geldkonten?.map((konto) => (
+            <span key={konto.number}>
+              Aktuell {accountName(konto)}{" "}
+              <span
+                className={cn(
+                  "font-medium text-foreground tabular-nums",
+                  konto.todayCents < 0 && "text-destructive",
+                )}
+              >
+                {formatEuro(konto.todayCents)}
+              </span>
+            </span>
+          ))}
         </p>
       )}
     </div>
   );
+}
+
+function journalPrintJob(rows: JournalRow[], range: DateRange | undefined): PrintJob {
+  const active = rows.filter((row) => !row.storniert && !row.isStorno);
+  return {
+    title: `Buchungsjournal ${rangeText(range)}`,
+    subtitle: `${rows.length} Buchungen · Summe ohne Stornos ${formatCents(
+      active.reduce((sum, row) => sum + row.amountCents, 0),
+    )} €`,
+    body: (
+      <PrintTable
+        head={[
+          "Datum",
+          "Beleg",
+          "Buchung",
+          "Beschreibung",
+          "Soll",
+          "Haben",
+          "Betrag",
+          "USt",
+        ]}
+        numeric={[6]}
+        rows={rows.map((row) => [
+          formatIsoDate(row.date),
+          row.belegNr ?? "",
+          row.buchungNr,
+          `${row.description}${row.isStorno ? " (Storno)" : row.storniert ? " (storniert)" : ""}`,
+          `${row.sollKonto} ${accountName({ number: row.sollKonto, name: row.sollName })}`,
+          `${row.habenKonto} ${accountName({ number: row.habenKonto, name: row.habenName })}`,
+          money(row.amountCents),
+          row.vatRate == null ? "" : `${row.vatRate} %`,
+        ])}
+        foot={[
+          [
+            "",
+            "",
+            "",
+            "Summe (ohne Stornos)",
+            "",
+            "",
+            formatCents(active.reduce((sum, row) => sum + row.amountCents, 0)),
+            "",
+          ],
+        ]}
+      />
+    ),
+  };
 }
 
 /* ------------------------------- page ------------------------------ */
@@ -531,10 +700,12 @@ export function Buchhaltung() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [sort, setSort] = useState<"asc" | "desc">("desc");
   const [refresh, setRefresh] = useState(0);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [stornoTarget, setStornoTarget] = useState<StornoTarget | null>(null);
   const [quittungIds, setQuittungIds] = useState<number[]>([]);
+  const printer = useReportPrinter();
 
   // Debounce the search box so we don't hit the API per keystroke.
   useEffect(() => {
@@ -543,9 +714,17 @@ export function Buchhaltung() {
   }, [searchInput]);
 
   const query = buildFilterQuery(range, search, status);
-  const ledger = useApi(() => accountingApi.ledger(query), [query, refresh]);
-  const journal = useApi(() => accountingApi.journal(query), [query, refresh]);
+  const joiner = query ? "&" : "?";
+  const ledger = useApi(
+    () => accountingApi.ledger(`${query}${joiner}cash=1`),
+    [query, refresh],
+  );
+  const journal = useApi(
+    () => accountingApi.journal(`${query}${joiner}sort=${sort}`),
+    [query, sort, refresh],
+  );
   const accounts = useApi(() => accountingApi.accounts(), [refresh]);
+  const balances = useApi(() => accountingApi.balances(), [refresh]);
 
   const refetch = () => setRefresh((value) => value + 1);
 
@@ -561,32 +740,38 @@ export function Buchhaltung() {
     }
   };
 
-  const exportDatev = async () => {
+  const rangeParams = () => {
     const params = new URLSearchParams();
     if (range?.from) {
       params.set("from", toIsoDate(range.from));
       params.set("to", toIsoDate(range.to ?? range.from));
     }
+    return params;
+  };
+
+  const exportDatev = async () => {
     try {
-      const res = await fetch(`/api/accounting/datev?${params}`);
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? "DATEV-Export fehlgeschlagen.");
-      }
-      const filename =
-        res.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] ??
-        "EXTF_Buchungsstapel.csv";
-      const url = URL.createObjectURL(await res.blob());
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      const filename = await downloadFile(
+        `/api/accounting/datev?${rangeParams()}`,
+        "EXTF_Buchungsstapel.csv",
+      );
       toast.success(`DATEV-Buchungsstapel ${filename} exportiert.`);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "DATEV-Export fehlgeschlagen.",
       );
+    }
+  };
+
+  const exportJournalCsv = async () => {
+    try {
+      const filename = await downloadFile(
+        `/api/accounting/journal/export?${rangeParams()}`,
+        "Buchungsjournal.csv",
+      );
+      toast.success(`${filename} exportiert.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export fehlgeschlagen.");
     }
   };
 
@@ -598,52 +783,61 @@ export function Buchhaltung() {
       key: "date",
       label: "Datum",
       className: "pl-4",
-      cellClassName: "pl-4 text-muted-foreground",
+      cellClassName: "pl-4 text-muted-foreground tabular-nums",
       render: (row) => formatIsoDate(row.date),
     },
     {
       key: "receipt",
-      label: "Belegnummer",
+      label: "Beleg",
       cellClassName: "text-muted-foreground",
-      render: (row) => row.belegNr ?? "-",
+      render: (row) => row.belegNr ?? "–",
     },
     {
       key: "type",
-      label: "Typ",
+      label: "Art",
       cellClassName: "text-muted-foreground",
       render: (row) => row.typeLabel,
     },
     {
       key: "student",
-      label: "Schüler",
+      label: "Fahrschüler/in",
       cellClassName: "font-medium",
-      render: (row) => row.studentName ?? "-",
+      render: (row) => row.studentName ?? "–",
     },
     {
       key: "description",
       label: "Beschreibung",
-      className: "min-w-64",
+      className: "min-w-56",
       cellClassName: "max-w-80",
       render: (row) => (
         <span className={cn(row.storniert && "line-through")}>
-          {row.description || "-"}
+          {row.description || "–"}
+          {row.stornoReason && (
+            <span className="block text-muted-foreground no-underline">
+              Storno: {row.stornoReason}
+            </span>
+          )}
         </span>
       ),
     },
     {
       key: "vat",
-      label: "Inkl. MwSt",
+      label: "USt",
       cellClassName: "text-muted-foreground",
       render: (row) => row.vatLabel,
     },
     {
       key: "income",
-      label: "Einnahmen, EUR",
+      label: "Einnahme, EUR",
+      className: "text-right",
+      cellClassName: "text-right",
       render: (row) => <Money cents={row.incomeCents} />,
     },
     {
       key: "expense",
       label: "Ausgabe, EUR",
+      className: "text-right",
+      cellClassName: "text-right",
       render: (row) => <Money cents={row.expenseCents} tone="negative" />,
     },
     {
@@ -667,71 +861,72 @@ export function Buchhaltung() {
     },
   ];
 
+  const kontoCell = (number: string, name: string) => (
+    <span>
+      {accountName({ number, name })}
+      <span className="block text-muted-foreground tabular-nums">{number}</span>
+    </span>
+  );
+
   const journalColumns: Column<JournalRow>[] = [
     {
       key: "date",
       label: "Datum",
       className: "pl-4",
-      cellClassName: "pl-4 text-muted-foreground",
+      cellClassName: "pl-4 text-muted-foreground tabular-nums",
       render: (row) => formatIsoDate(row.date),
     },
     {
       key: "receipt",
-      label: "Belegnummer",
-      cellClassName: "text-muted-foreground",
-      render: (row) => row.belegNr ?? "-",
-    },
-    {
-      key: "booking",
-      label: "Buchungsnummer",
-      cellClassName: "text-muted-foreground",
-      render: (row) => row.buchungNr,
-    },
-    {
-      key: "type",
-      label: "Typ",
-      cellClassName: "text-muted-foreground",
-      render: (row) => row.typeLabel,
+      label: "Beleg / Buchung",
+      cellClassName: "text-muted-foreground tabular-nums",
+      render: (row) => (
+        <span>
+          {row.belegNr ?? "–"}
+          <span className="block">{row.buchungNr}</span>
+        </span>
+      ),
     },
     {
       key: "description",
       label: "Beschreibung",
-      className: "min-w-64",
-      cellClassName: "max-w-80",
+      className: "min-w-56",
       render: (row) => (
-        <span className={cn(row.storniert && "line-through")}>
-          {row.description || "-"}
+        <span>
+          <span className={cn(row.storniert && "line-through")}>
+            {row.description || "–"}
+          </span>
+          <span className="block text-muted-foreground">
+            {row.typeLabel}
+            {row.stornoReason ? ` · Storno: ${row.stornoReason}` : ""}
+          </span>
         </span>
       ),
     },
     {
       key: "soll",
-      label: "Sollkonto",
+      label: "Soll",
       cellClassName: "text-muted-foreground",
-      render: (row) => `${row.sollKonto} · ${row.sollName}`,
+      render: (row) => kontoCell(row.sollKonto, row.sollName),
     },
     {
       key: "haben",
-      label: "Habenkonto",
+      label: "Haben",
       cellClassName: "text-muted-foreground",
-      render: (row) => `${row.habenKonto} · ${row.habenName}`,
+      render: (row) => kontoCell(row.habenKonto, row.habenName),
     },
     {
       key: "amount",
       label: "Betrag, EUR",
+      className: "text-right",
+      cellClassName: "text-right",
       render: (row) => <Money cents={row.amountCents} tone="neutral" />,
     },
     {
       key: "vat",
       label: "USt",
-      cellClassName: "text-muted-foreground",
-      render: (row) => (row.vatRate == null ? "-" : `${row.vatRate} %`),
-    },
-    {
-      key: "reason",
-      label: "Stornogrund",
-      cellClassName: "text-muted-foreground",
-      render: (row) => row.stornoReason ?? "-",
+      cellClassName: "whitespace-nowrap text-muted-foreground tabular-nums",
+      render: (row) => (row.vatRate == null ? "–" : `${row.vatRate} %`),
     },
     {
       key: "actions",
@@ -759,10 +954,22 @@ export function Buchhaltung() {
       key: "number",
       label: "Nummer",
       className: "pl-4",
-      cellClassName: "pl-4 text-muted-foreground",
+      cellClassName: "pl-4 text-muted-foreground tabular-nums",
       render: (row) => row.number,
     },
-    { key: "name", label: "Name", className: "min-w-64", render: (row) => row.name },
+    {
+      key: "name",
+      label: "Name",
+      className: "min-w-64",
+      render: (row) => (
+        <span>
+          {accountName(row)}
+          {accountName(row) !== row.name && (
+            <span className="block text-muted-foreground">{row.name}</span>
+          )}
+        </span>
+      ),
+    },
     {
       key: "type",
       label: "Typ",
@@ -771,15 +978,9 @@ export function Buchhaltung() {
     },
     {
       key: "vat",
-      label: "MwSt",
+      label: "USt",
       cellClassName: "text-muted-foreground",
       render: (row) => row.vatLabel,
-    },
-    {
-      key: "taxKey",
-      label: "Steuerschlüssel",
-      cellClassName: "text-muted-foreground",
-      render: () => "-",
     },
     {
       key: "status",
@@ -789,7 +990,7 @@ export function Buchhaltung() {
     },
     {
       key: "actions",
-      label: "Aktionen",
+      label: "Aktiv",
       className: "pr-4",
       cellClassName: "pr-4",
       render: (row) => (
@@ -802,31 +1003,60 @@ export function Buchhaltung() {
     },
   ];
 
+  const balanceOf = (number: string) =>
+    balances.data?.find((balance) => balance.number === number) ?? null;
+
   const cashBankColumns: Column<Account>[] = [
     {
       key: "name",
       label: "Name",
       className: "pl-4",
-      cellClassName: "pl-4",
-      render: (row) => row.name,
-    },
-    {
-      key: "number",
-      label: "Nummer",
-      cellClassName: "text-muted-foreground",
-      render: (row) => row.number,
+      cellClassName: "pl-4 font-medium",
+      render: (row) => `${accountName(row)} · ${row.number}`,
     },
     {
       key: "type",
       label: "Typ",
       cellClassName: "text-muted-foreground",
-      render: (row) => (row.name.includes("Kasse") ? "Kassenbuch" : "Bankenbuch"),
+      render: (row) => (row.number === "1600" ? "Kassenbuch" : "Bankbuch"),
     },
     {
-      key: "date",
-      label: "Datum",
-      cellClassName: "text-muted-foreground",
-      render: (row) => (row.openingDate ? formatIsoDate(row.openingDate) : "-"),
+      key: "opening",
+      label: "Anfangssaldo, EUR",
+      className: "text-right",
+      cellClassName: "text-right tabular-nums text-muted-foreground",
+      render: (row) => (
+        <span>
+          {formatCents(row.openingCents ?? 0)}
+          {row.openingDate && (
+            <span className="block">am {formatIsoDate(row.openingDate)}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: "current",
+      label: "Aktueller Saldo, EUR",
+      className: "text-right",
+      cellClassName: "text-right tabular-nums",
+      render: (row) => {
+        const balance = balanceOf(row.number);
+        if (!balance) return "–";
+        return (
+          <span>
+            <span
+              className={cn("font-medium", balance.todayCents < 0 && "text-destructive")}
+            >
+              {formatCents(balance.todayCents)}
+            </span>
+            {balance.balanceCents !== balance.todayCents && (
+              <span className="block text-muted-foreground">
+                inkl. künftiger Buchungen {formatCents(balance.balanceCents)}
+              </span>
+            )}
+          </span>
+        );
+      },
     },
     {
       key: "status",
@@ -835,14 +1065,8 @@ export function Buchhaltung() {
       render: (row) => (row.active ? "Aktiv" : "Inaktiv"),
     },
     {
-      key: "opening",
-      label: "Anfangssaldo, EUR",
-      cellClassName: "text-right tabular-nums text-muted-foreground",
-      render: (row) => formatCents(row.openingCents ?? 0),
-    },
-    {
       key: "actions",
-      label: "Aktionen",
+      label: "Aktiv",
       className: "pr-4",
       cellClassName: "pr-4",
       render: (row) => (
@@ -860,11 +1084,15 @@ export function Buchhaltung() {
       if (status === "active" && !account.active) return false;
       if (status === "storniert" && account.active) return false;
       if (search.trim()) {
-        const haystack = `${account.number} ${account.name}`.toLowerCase();
+        const haystack =
+          `${account.number} ${account.name} ${accountName(account)}`.toLowerCase();
         if (!haystack.includes(search.trim().toLowerCase())) return false;
       }
       return true;
     });
+
+  const rowFade = (row: { storniert: boolean; isStorno: boolean }) =>
+    row.storniert || row.isStorno ? "opacity-60" : "";
 
   const renderTab = () => {
     if (tab === "ledger") {
@@ -873,8 +1101,7 @@ export function Buchhaltung() {
           <TableState
             loading={ledger.loading}
             error={ledger.error}
-            empty
-            emptyText="Für den gewählten Zeitraum liegen keine Buchungen vor."
+            emptyText="Für den gewählten Zeitraum liegen keine Zahlungen vor."
           />
         );
       }
@@ -883,7 +1110,38 @@ export function Buchhaltung() {
           columns={ledgerColumns}
           rows={ledger.data.rows}
           rowKey={(row) => String(row.id)}
-          rowClassName={(row) => (row.storniert || row.isStorno ? "opacity-60" : "")}
+          rowClassName={rowFade}
+          mobile={(row) => (
+            <MobileRow
+              meta={`${formatIsoDate(row.date)} · ${row.typeLabel}${row.belegNr ? ` · ${row.belegNr}` : ""}`}
+              title={
+                <span className={cn(row.storniert && "line-through")}>
+                  {row.studentName ? `${row.studentName} — ` : ""}
+                  {row.description || "–"}
+                </span>
+              }
+              amount={
+                row.incomeCents != null ? (
+                  <Money cents={row.incomeCents} />
+                ) : (
+                  <Money cents={row.expenseCents} tone="negative" />
+                )
+              }
+              actions={
+                <RowActions
+                  printable={row.printable}
+                  stornoEligible={!row.storniert && !row.isStorno}
+                  onPrint={() => setQuittungIds([row.id])}
+                  onStorno={() =>
+                    setStornoTarget({
+                      id: row.id,
+                      label: stornoLabel(row.belegNr, row.description),
+                    })
+                  }
+                />
+              }
+            />
+          )}
         />
       );
     }
@@ -894,7 +1152,6 @@ export function Buchhaltung() {
           <TableState
             loading={journal.loading}
             error={journal.error}
-            empty
             emptyText="Für den gewählten Zeitraum liegen keine Buchungen vor."
           />
         );
@@ -904,72 +1161,83 @@ export function Buchhaltung() {
           columns={journalColumns}
           rows={journal.data.rows}
           rowKey={(row) => row.buchungNr}
-          rowClassName={(row) => (row.storniert || row.isStorno ? "opacity-60" : "")}
-          minWidth="min-w-[92rem]"
+          rowClassName={rowFade}
+          minWidth="min-w-[60rem]"
+          mobile={(row) => (
+            <MobileRow
+              meta={`${formatIsoDate(row.date)} · ${row.belegNr ?? row.buchungNr}`}
+              title={
+                <span className={cn(row.storniert && "line-through")}>
+                  {row.description || "–"}
+                </span>
+              }
+              subtitle={`${accountName({ number: row.sollKonto, name: row.sollName })} (${row.sollKonto}) an ${accountName({ number: row.habenKonto, name: row.habenName })} (${row.habenKonto})${row.vatRate != null ? ` · USt ${row.vatRate} %` : ""}`}
+              amount={<Money cents={row.amountCents} tone="neutral" />}
+              actions={
+                <RowActions
+                  printable={row.printable}
+                  stornoEligible={!row.storniert && !row.isStorno}
+                  onPrint={() => setQuittungIds([row.transactionId])}
+                  onStorno={() =>
+                    setStornoTarget({
+                      id: row.transactionId,
+                      label: stornoLabel(row.belegNr, row.description),
+                    })
+                  }
+                />
+              }
+            />
+          )}
         />
       );
     }
 
-    if (tab === "accounts" || tab === "cash-bank") {
-      const all = accounts.data?.accounts ?? [];
-      const rows = filterAccounts(
-        tab === "cash-bank" ? all.filter((a) => a.kind === "geldkonto") : all,
-      );
-      if (accounts.loading || accounts.error || !rows.length) {
-        return (
-          <TableState
-            loading={accounts.loading}
-            error={accounts.error}
-            empty
-            emptyText="Keine Konten gefunden."
-          />
-        );
-      }
-      return tab === "accounts" ? (
-        <AccountingTable
-          columns={accountColumns}
-          rows={rows}
-          rowKey={(row) => `${row.number}-${row.name}`}
-          minWidth="min-w-[88rem]"
-        />
-      ) : (
-        <AccountingTable
-          columns={cashBankColumns}
-          rows={rows}
-          rowKey={(row) => row.number}
+    if (tab === "cashbook") {
+      return <CashbookTab range={range} refresh={refresh} onPrint={printer.print} />;
+    }
+
+    if (tab === "vat") {
+      return <VatTab refresh={refresh} onPrint={printer.print} />;
+    }
+
+    const all = accounts.data?.accounts ?? [];
+    const rows = filterAccounts(
+      tab === "cash-bank" ? all.filter((a) => a.kind === "geldkonto") : all,
+    );
+    if (accounts.loading || accounts.error || !rows.length) {
+      return (
+        <TableState
+          loading={accounts.loading}
+          error={accounts.error}
+          emptyText="Keine Konten gefunden."
         />
       );
     }
-
-    return (
-      <Empty className="min-h-80 border-0">
-        <EmptyHeader>
-          <EmptyTitle>Keine Ergebnisse gefunden</EmptyTitle>
-          <EmptyDescription>
-            Für den gewählten Zeitraum liegen keine Rechnungen vor.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+    return tab === "accounts" ? (
+      <AccountingTable
+        columns={accountColumns}
+        rows={rows}
+        rowKey={(row) => `${row.number}-${row.name}`}
+        minWidth="min-w-[48rem]"
+      />
+    ) : (
+      <AccountingTable
+        columns={cashBankColumns}
+        rows={rows}
+        rowKey={(row) => row.number}
+        minWidth="min-w-[40rem]"
+      />
     );
   };
 
-  const printableTransactionIds = (() => {
-    if (tab === "ledger") {
-      return ledger.data?.rows?.filter((row) => row.printable).map((row) => row.id) ?? [];
-    }
-    if (tab === "journal") {
-      return (
-        journal.data?.rows
-          ?.filter((row) => row.printable)
-          .map((row) => row.transactionId) ?? []
-      );
-    }
-    return [];
-  })();
+  const printableTransactionIds =
+    tab === "ledger"
+      ? (ledger.data?.rows?.filter((row) => row.printable).map((row) => row.id) ?? [])
+      : [];
 
   const printFilteredRows = () => {
     if (!printableTransactionIds.length) {
-      toast.info("Keine druckbaren Einträge im aktuellen Filter.");
+      toast.info("Keine druckbaren Quittungen im aktuellen Filter.");
       return;
     }
     setQuittungIds(printableTransactionIds);
@@ -978,41 +1246,34 @@ export function Buchhaltung() {
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
-        center={
-          <div className="max-w-[calc(100vw-18rem)] overflow-x-auto">
-            <ToggleGroup
-              type="single"
-              value={tab}
-              onValueChange={(value) => {
-                if (value) setTab(value as TabKey);
-              }}
-              variant="outline"
-              size="sm"
-              spacing={0}
-              aria-label="Buchhaltung Bereich"
-            >
-              {tabs.map((item) => (
-                <ToggleGroupItem
-                  key={item.value}
-                  value={item.value}
-                  aria-label={item.label}
-                >
-                  {item.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </div>
+        end={
+          <SectionTabs
+            className="hidden md:block"
+            items={tabs}
+            value={tab}
+            onChange={setTab}
+            label="Buchhaltung Bereich"
+          />
         }
-      />
+      >
+        <span className="text-sm font-medium">Buchhaltung</span>
+      </PageHeader>
 
       <Tabs
         value={tab}
         onValueChange={(value) => setTab(value as TabKey)}
         className="min-h-0 flex-1 gap-0 overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background"
       >
-        <div className="min-h-0 flex-1 overflow-auto p-4 2xl:p-6">
+        <div className="min-h-0 flex-1 overflow-auto p-2 sm:p-4 2xl:p-6">
+          <SectionTabs
+            className="mb-2 md:hidden"
+            items={tabs}
+            value={tab}
+            onChange={setTab}
+            label="Buchhaltung Bereich"
+          />
           <Card className="animate-enter min-h-full">
-            <CardContent className="flex flex-col gap-4">
+            <CardContent className="flex flex-col gap-4 px-3 sm:px-6">
               <Toolbar
                 tab={tab}
                 range={range}
@@ -1021,19 +1282,18 @@ export function Buchhaltung() {
                 onSearchChange={setSearchInput}
                 status={status}
                 onStatusChange={setStatus}
+                sort={sort}
+                onSortChange={setSort}
                 balances={ledger.data}
+                geldkonten={balances.data}
                 onDatev={exportDatev}
+                onJournalCsv={() => void exportJournalCsv()}
+                onJournalPrint={() =>
+                  journal.data && printer.print(journalPrintJob(journal.data.rows, range))
+                }
                 onPrintFiltered={printFilteredRows}
-                hasPrintableRows={printableTransactionIds.length > 0}
-                onNew={() => {
-                  if (tab === "accounts") {
-                    toast("Der Kontenrahmen SKR 03 ist fest hinterlegt.");
-                  } else if (tab === "cash-bank") {
-                    toast("Folgt demnächst.");
-                  } else {
-                    setPaymentOpen(true);
-                  }
-                }}
+                printableCount={printableTransactionIds.length}
+                onNew={() => setPaymentOpen(true)}
               />
 
               {tabs.map((item) => (
@@ -1065,6 +1325,7 @@ export function Buchhaltung() {
         onDone={refetch}
       />
       <QuittungDialog transactionIds={quittungIds} onClose={() => setQuittungIds([])} />
+      {printer.portal}
     </div>
   );
 }

@@ -20,6 +20,8 @@ export type Instructor = {
   email: string;
   classes: string;
   vehicle: string;
+  /** FK → vehicles.id (null = none); `vehicle` is its display label. */
+  vehicleId?: number | null;
   since: string;
   status: InstructorStatus;
 };

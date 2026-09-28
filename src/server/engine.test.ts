@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "./sqlite";
 
-import { openDb, setCompany, getCompany, DEFAULT_COMPANY } from "./db";
+import { openDb, setCompany, getCompany, DEFAULT_COMPANY, DEMO_COMPANY } from "./db";
 import {
   createTransaction,
   getQuittung,
@@ -102,6 +102,74 @@ describe("createTransaction", () => {
     });
     expect(created.bookings[0]).toMatchObject({ soll: "3272", haben: "1370" });
     expect(listJournal(db, {})[0]!.vatRate).toBeNull();
+  });
+
+  test("multi-line Guthabenübertragung: one transaction, VAT per line, one Storno", () => {
+    const created = createTransaction(db, {
+      type: "guthaben_uebertragung",
+      date: "2026-06-09",
+      amountCents: 28000 + 12983,
+      student: STUDENT,
+      description: "",
+      lines: [
+        {
+          habenKonto: "4400",
+          amountCents: 28000,
+          description: "Praktische Prüfung (55)",
+        },
+        {
+          habenKonto: "1370",
+          amountCents: 12983,
+          description: "TÜV Prüfungsgebühr (durchlaufender Posten)",
+        },
+      ],
+    });
+    expect(created.belegNr).toBeNull();
+    expect(created.bookings.map((b) => [b.soll, b.haben, b.amountCents])).toEqual([
+      ["3272", "4400", 28000],
+      ["3272", "1370", 12983],
+    ]);
+    const journal = listJournal(db, {}).filter((r) => r.transactionId === created.id);
+    expect(journal.map((r) => r.vatRate).sort()).toEqual([19, null].sort());
+    expect(listLedger(db, {}).rows.find((r) => r.id === created.id)?.description).toBe(
+      "Praktische Prüfung (55), TÜV Prüfungsgebühr (durchlaufender Posten)",
+    );
+
+    const storno = stornoTransaction(db, created.id, "Prüfung abgesagt", "2026-06-10");
+    expect(storno.bookings.map((b) => [b.soll, b.haben])).toEqual([
+      ["4400", "3272"],
+      ["1370", "3272"],
+    ]);
+  });
+
+  test("multi-line total must match the lines, and every line needs text", () => {
+    const base = {
+      type: "guthaben_uebertragung" as const,
+      date: "2026-06-09",
+      student: STUDENT,
+      description: "",
+    };
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 100,
+        lines: [{ habenKonto: "4400", amountCents: 200, description: "A" }],
+      }),
+    ).toThrow("Summe der Positionen");
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 200,
+        lines: [{ habenKonto: "4400", amountCents: 200, description: " " }],
+      }),
+    ).toThrow("Beschreibung");
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 200,
+        lines: [{ habenKonto: "1600", amountCents: 200, description: "A" }],
+      }),
+    ).toThrow("nicht zulässig");
   });
 
   test("Transfer goes through 1460 Geldtransit with two bookings", () => {
@@ -456,9 +524,9 @@ describe("seed", () => {
 
 describe("company settings", () => {
   test("defaults and round-trip", () => {
-    expect(getCompany(db)).toEqual(DEFAULT_COMPANY);
+    expect(getCompany(db)).toEqual(DEMO_COMPANY);
     const updated = {
-      ...DEFAULT_COMPANY,
+      ...DEMO_COMPANY,
       steuernummer: "012 345 67890",
       ustIdNr: "DE123456789",
     };
@@ -595,5 +663,25 @@ describe("Quittung payload", () => {
     );
     expect(quittung.totalCents).toBe(40983);
     expect(quittung.lines[0]!.netCents + quittung.lines[0]!.vatCents).toBe(40983);
+  });
+});
+
+describe("ledger customer filter", () => {
+  test("customerNo matches the booking's student snapshot exactly", () => {
+    const other = { ...STUDENT, customerNo: "10052", name: "Aylin Demir" };
+    for (const student of [STUDENT, other]) {
+      createTransaction(db, {
+        type: "zahlung_guthaben",
+        date: "2026-06-09",
+        amountCents: 1000,
+        geldkonto: "1600",
+        paymentMethod: "bar",
+        student,
+      });
+    }
+    const rows = listLedger(db, { customerNo: STUDENT.customerNo }).rows;
+    expect(rows).toHaveLength(1);
+    // A name search cannot tell the namesakes apart.
+    expect(listLedger(db, { q: "Aylin Demir" }).rows).toHaveLength(2);
   });
 });

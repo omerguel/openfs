@@ -25,12 +25,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+/* Progress, status and the last Theoriestunde are derived server-side
+   from the theory-group attendance (student-facts.ts). Pre-exams stay
+   manual: the learning app is not integrated (the official question
+   catalogue needs a licence), so there is no "last login" to show. */
 const toLearner = (student: StudentRecord) => ({
   id: student.id,
   name: `${student.firstName} ${student.lastName}`,
   phone: student.phone,
   className: student.classes,
-  lastLogin: student.theory.lastLogin,
+  lastSession: student.theory.lastSession,
+  lastSessionDate: student.theory.lastSessionDate,
+  attendedUnits: student.theory.attendedUnits,
+  requiredUnits: student.theory.requiredUnits,
   createdAt: student.registrationDate,
   progress: student.theory.progress,
   preExams: student.theory.preExams,
@@ -43,6 +50,7 @@ const statusDot: Record<TheoryStatus, string> = {
   "In Prüfung": "bg-amber-500",
   Bereit: "bg-green-500",
   Pausiert: "bg-muted-foreground/50",
+  "Noch nicht begonnen": "bg-muted-foreground/30",
 };
 
 const statusOptions: Array<{ value: StatusFilter; label: string }> = [
@@ -51,6 +59,7 @@ const statusOptions: Array<{ value: StatusFilter; label: string }> = [
   { value: "Bereit", label: "Bereit" },
   { value: "In Prüfung", label: "In Prüfung" },
   { value: "Pausiert", label: "Pausiert" },
+  { value: "Noch nicht begonnen", label: "Noch nicht begonnen" },
 ];
 
 type Learner = ReturnType<typeof toLearner>;
@@ -71,18 +80,12 @@ const parseDate = (value: string) => {
   return new Date(year, month - 1, day).getTime();
 };
 
-const parseLastLogin = (value: string) => {
-  if (value.startsWith("Heute")) return Number.MAX_SAFE_INTEGER;
-  if (value.startsWith("Gestern")) return Number.MAX_SAFE_INTEGER - 1;
-  return parseDate(value);
-};
-
 function compareLearners(left: Learner, right: Learner, sort: SortOption) {
   if (sort === "progress-desc") return right.progress - left.progress;
   if (sort === "progress-asc") return left.progress - right.progress;
   if (sort === "exam") return parseDate(left.exam) - parseDate(right.exam);
   if (sort === "activity")
-    return parseLastLogin(right.lastLogin) - parseLastLogin(left.lastLogin);
+    return (right.lastSessionDate ?? "").localeCompare(left.lastSessionDate ?? "");
   return left.name.localeCompare(right.name, "de");
 }
 
@@ -199,8 +202,8 @@ function LearnerListItem({
 
           <div className="mt-3 flex items-center gap-2">
             <Progress value={learner.progress} className="h-1.5" />
-            <span className="w-9 text-right text-xs font-medium tabular-nums">
-              {learner.progress}%
+            <span className="w-12 text-right text-xs font-medium tabular-nums">
+              {learner.attendedUnits}/{learner.requiredUnits}
             </span>
           </div>
 
@@ -209,9 +212,12 @@ function LearnerListItem({
               <CalendarDays className="size-3.5 shrink-0" />
               {learner.exam}
             </span>
-            <span className="flex min-w-0 items-center gap-1.5 truncate">
+            <span
+              className="flex min-w-0 items-center gap-1.5 truncate tabular-nums"
+              title="Letzte Theoriestunde"
+            >
               <Clock3 className="size-3.5 shrink-0" />
-              {learner.lastLogin}
+              {learner.lastSession}
             </span>
           </div>
         </div>
@@ -290,8 +296,9 @@ function LearnerDetail({ learner, onBack }: { learner: Learner; onBack: () => vo
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium">Theorie-Fortschritt</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Aktueller Lernstand in der App
+                <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                  {learner.attendedUnits} von {learner.requiredUnits} Doppelstunden
+                  besucht (laut Anwesenheit der Theoriegruppen)
                 </p>
               </div>
               <p className="text-2xl font-semibold tracking-[-0.03em] tabular-nums">
@@ -309,9 +316,12 @@ function LearnerDetail({ learner, onBack }: { learner: Learner; onBack: () => vo
               </h2>
             </div>
             <dl className="mt-3 overflow-hidden rounded-xl bg-muted/25 ring-1 ring-foreground/10 divide-y">
-              <DetailReadout label="Letzte Vorprüfungen" value={learner.preExams} />
+              <DetailReadout label="Letzte Theoriestunde" value={learner.lastSession} />
               <DetailReadout label="Theorieprüfung" value={learner.exam} />
-              <DetailReadout label="Letzte Aktivität" value={learner.lastLogin} />
+              <DetailReadout
+                label="Vorprüfungen (manuell, Lern-App nicht angebunden)"
+                value={learner.preExams}
+              />
               <DetailReadout label="Angemeldet am" value={learner.createdAt} />
             </dl>
           </section>
@@ -492,7 +502,7 @@ export function Theorie() {
                       <SelectItem value="progress-desc">Fortschritt ↓</SelectItem>
                       <SelectItem value="progress-asc">Fortschritt ↑</SelectItem>
                       <SelectItem value="exam">Prüfung</SelectItem>
-                      <SelectItem value="activity">Aktivität</SelectItem>
+                      <SelectItem value="activity">Letzte Stunde</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>

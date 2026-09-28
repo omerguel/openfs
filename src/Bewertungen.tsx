@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import {
+  Download,
   Eye,
   EyeOff,
+  Info,
   MessageSquareText,
   Reply,
   RotateCcw,
@@ -13,9 +15,12 @@ import { toast } from "sonner";
 import { PageHeader } from "./components/PageHeader.tsx";
 import {
   deleteReview,
+  importGoogleReviews,
   REVIEW_SOURCES,
   updateReview,
+  useGoogleReviewSummary,
   useReviews,
+  type GoogleReviewSummary,
   type Review,
   type ReviewSource,
   type ReviewStatus,
@@ -124,7 +129,44 @@ function StatusBadge({ status }: { status: ReviewStatus }) {
 
 /* Compact average + per-star distribution. Reads from the full set, not the
    filtered slice — the school's standing doesn't change because a filter is on. */
-function SummaryBand({ reviews }: { reviews: Review[] }) {
+const importedFormatter = new Intl.DateTimeFormat("de-DE", {
+  dateStyle: "short",
+  timeStyle: "short",
+});
+
+/* Google's own overall rating (all reviews on Google, not only the five
+   the API returns) — shown next to the local average once imported. */
+function GoogleRating({ summary }: { summary: GoogleReviewSummary | null }) {
+  if (!summary || summary.rating === null) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] text-muted-foreground">Google gesamt</span>
+      <span className="flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold tabular-nums">
+          {formatAverage(summary.rating)}
+        </span>
+        <Star
+          aria-hidden
+          className="size-3 fill-amber-400 text-amber-500 dark:fill-amber-300 dark:text-amber-300"
+        />
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {summary.userRatingCount ?? 0} Bewertungen
+          {summary.importedAt
+            ? ` · Stand ${importedFormatter.format(new Date(summary.importedAt))}`
+            : ""}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function SummaryBand({
+  reviews,
+  google,
+}: {
+  reviews: Review[];
+  google: GoogleReviewSummary | null;
+}) {
   const { average, total, distribution, max } = useMemo(() => {
     const counts = [0, 0, 0, 0, 0]; // index 0 = 1 star … index 4 = 5 stars
     let sum = 0;
@@ -154,6 +196,8 @@ function SummaryBand({ reviews }: { reviews: Review[] }) {
           </span>
         </div>
       </div>
+
+      <GoogleRating summary={google} />
 
       <div className="flex w-full min-w-0 flex-col gap-1 sm:w-56">
         {[5, 4, 3, 2, 1].map((star) => {
@@ -208,6 +252,15 @@ function ReplyDialog({
             „Beantwortet“ markiert.
           </DialogDescription>
         </DialogHeader>
+
+        {review.source === "Google" && (
+          <p className="flex gap-2 text-xs text-pretty text-muted-foreground">
+            <Info aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+            Die Antwort wird nur intern gespeichert. Auf Google veröffentlichen lässt sie
+            sich nur über die Google Business Profile API (OAuth-Anmeldung und Freigabe
+            durch Google) — bitte zusätzlich im Google-Unternehmensprofil antworten.
+          </p>
+        )}
 
         <div className="rounded-lg border bg-muted/40 p-3">
           <div className="flex items-center justify-between gap-2">
@@ -343,7 +396,7 @@ function ReviewRow({
       </span>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="truncate text-sm font-medium">{review.author}</span>
@@ -353,7 +406,7 @@ function ReviewRow({
               {review.source} · {formatDate(review.date)}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="-ml-2 flex shrink-0 items-center justify-between gap-2 sm:ml-0">
             <ReviewActions
               review={review}
               saving={saving}
@@ -383,6 +436,8 @@ function ReviewRow({
 
 export function Bewertungen() {
   const { reviews, loading, refresh } = useReviews();
+  const { summary: google, refresh: refreshGoogle } = useGoogleReviewSummary();
+  const [importing, setImporting] = useState(false);
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("alle");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("alle");
@@ -427,6 +482,33 @@ export function Bewertungen() {
       setSaving(false);
     }
   };
+
+  const importFromGoogle = async () => {
+    setImporting(true);
+    try {
+      const result = await importGoogleReviews();
+      await Promise.all([refresh(), refreshGoogle()]);
+      toast.success(
+        result.imported + result.updated === 0
+          ? "Google liefert aktuell keine Bewertungen."
+          : `${result.imported} neue, ${result.updated} aktualisierte Google-Bewertungen.`,
+        {
+          description:
+            "Google gibt über die Places API höchstens fünf Bewertungen zurück.",
+        },
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Import fehlgeschlagen.");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const googleHint = !google?.configured
+    ? "GOOGLE_PLACES_API_KEY ist nicht gesetzt."
+    : !google.placeId
+      ? "Bitte zuerst die Google Place ID im Schulprofil hinterlegen."
+      : "Bewertungen und Gesamtbewertung von Google abrufen.";
 
   const saveReply = async (reply: string) => {
     if (replyingId === null) return;
@@ -514,6 +596,17 @@ export function Bewertungen() {
               <RotateCcw />
               Zurücksetzen
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={importing || !google?.configured || !google.placeId}
+              title={googleHint}
+              aria-label={`Google-Bewertungen importieren. ${googleHint}`}
+              onClick={() => void importFromGoogle()}
+            >
+              <Download data-icon="inline-start" />
+              <span className="hidden sm:inline">Google importieren</span>
+            </Button>
           </>
         }
       >
@@ -547,7 +640,7 @@ export function Bewertungen() {
             </div>
           ) : (
             <>
-              <SummaryBand reviews={reviews} />
+              <SummaryBand reviews={reviews} google={google} />
               {filteredReviews.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-2 px-4 py-16 text-muted-foreground">
                   <MessageSquareText className="size-5" />

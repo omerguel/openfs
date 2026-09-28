@@ -9,7 +9,8 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
-import { getCompany, setCompany } from "./db";
+import { toInstagramUrl } from "../lib/instagram";
+import { demoDataEnabled, getCompany, setCompany } from "./db";
 
 export type OpeningHoursEntry = {
   day: string;
@@ -24,11 +25,29 @@ export type SchoolProfile = {
   instagram: string;
   facebook: string;
   google_maps_url: string;
+  /** Google Place ID ("ChIJ…") — source of the Google-Bewertungen import. */
+  google_place_id: string;
   /** Always exactly 7 entries, Montag–Sonntag in order. */
   opening_hours: OpeningHoursEntry[];
   services: string[];
   highlights: string[];
+  /** Offered Führerscheinklassen (e.g. "B", "B197", "A2"). */
+  license_classes: string[];
+  /** Berufskraftfahrer classes (e.g. "C (BKF)"). */
+  bkf_classes: string[];
+  /** Merkmale the school offers (e.g. "Sehtest", "Intensivkurs"). */
+  features: string[];
+  languages: string[];
+  certificates: string[];
+  /** Brands of the training vehicles per class group. */
+  vehicle_brands: VehicleBrands;
+  payment_methods: string[];
+  /** Theorieunterricht, same shape as opening_hours. */
+  theory_hours: OpeningHoursEntry[];
 };
+
+export const BRAND_GROUPS = ["A", "B", "C", "D"] as const;
+export type VehicleBrands = Record<(typeof BRAND_GROUPS)[number], string[]>;
 
 export const WEEK_DAYS = [
   "Montag",
@@ -42,7 +61,32 @@ export const WEEK_DAYS = [
 
 const SETTINGS_KEY = "school_profile";
 
-export const DEFAULT_SCHOOL_PROFILE: SchoolProfile = {
+/* A real school starts with an empty profile — nothing public that the
+   owner did not write. The demo school (demo data enabled) gets the
+   sample content below. */
+export const EMPTY_SCHOOL_PROFILE: SchoolProfile = {
+  description: "",
+  slogan: "",
+  founded_year: null,
+  website: "",
+  instagram: "",
+  facebook: "",
+  google_maps_url: "",
+  google_place_id: "",
+  opening_hours: WEEK_DAYS.map((day) => ({ day, hours: "" })),
+  services: [],
+  highlights: [],
+  license_classes: [],
+  bkf_classes: [],
+  features: [],
+  languages: [],
+  certificates: [],
+  vehicle_brands: { A: [], B: [], C: [], D: [] },
+  payment_methods: [],
+  theory_hours: WEEK_DAYS.map((day) => ({ day, hours: "" })),
+};
+
+export const DEMO_SCHOOL_PROFILE: SchoolProfile = {
   description:
     "Ihre Fahrschule vor Ort — wir begleiten Sie sicher und entspannt zum Führerschein.",
   slogan: "Sicher ans Ziel.",
@@ -51,6 +95,7 @@ export const DEFAULT_SCHOOL_PROFILE: SchoolProfile = {
   instagram: "",
   facebook: "",
   google_maps_url: "",
+  google_place_id: "",
   opening_hours: WEEK_DAYS.map((day) => ({
     day,
     hours:
@@ -68,7 +113,27 @@ export const DEFAULT_SCHOOL_PROFILE: SchoolProfile = {
     "Theorieunterricht online",
   ],
   highlights: ["Moderne Fahrzeugflotte", "Erfahrene Fahrlehrer", "Hohe Bestehensquote"],
+  license_classes: ["B", "B197", "A1", "AM"],
+  bkf_classes: [],
+  features: ["Sehtest", "Erste Hilfe", "Finanzierung", "Online lernen"],
+  languages: ["Deutsch", "Türkisch"],
+  certificates: [],
+  vehicle_brands: { A: ["Honda"], B: ["VW", "Audi"], C: [], D: [] },
+  payment_methods: ["Banküberweisung", "Bar"],
+  theory_hours: WEEK_DAYS.map((day) => ({
+    day,
+    hours: day === "Dienstag" || day === "Donnerstag" ? "18:30 – 20:00" : "Geschlossen",
+  })),
 };
+
+/** @deprecated name kept for older imports — the demo school's profile. */
+export const DEFAULT_SCHOOL_PROFILE = DEMO_SCHOOL_PROFILE;
+
+function baseProfile(db: Database): SchoolProfile {
+  return structuredClone(
+    demoDataEnabled(db) ? DEMO_SCHOOL_PROFILE : EMPTY_SCHOOL_PROFILE,
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Persistence                                                          */
@@ -78,13 +143,13 @@ export function getSchoolProfile(db: Database): SchoolProfile {
   const row = db
     .query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?")
     .get(SETTINGS_KEY);
-  if (!row) return structuredClone(DEFAULT_SCHOOL_PROFILE);
+  if (!row) return baseProfile(db);
   try {
     // Re-sanitize on read so a hand-edited/legacy blob can never leak
-    // malformed data into the API.
-    return sanitizeSchoolProfile(JSON.parse(row.value), DEFAULT_SCHOOL_PROFILE);
+    // malformed data into the API; fields added later come from the base.
+    return sanitizeSchoolProfile(JSON.parse(row.value), baseProfile(db));
   } catch {
-    return structuredClone(DEFAULT_SCHOOL_PROFILE);
+    return baseProfile(db);
   }
 }
 
@@ -106,7 +171,28 @@ const STRING_FIELDS = [
   "instagram",
   "facebook",
   "google_maps_url",
+  "google_place_id",
 ] as const;
+
+const LIST_FIELDS = [
+  "license_classes",
+  "bkf_classes",
+  "features",
+  "languages",
+  "certificates",
+  "payment_methods",
+] as const;
+
+/** "@fahrschule", "fahrschule" or "instagram.com/fahrschule" → full URL. */
+export function normalizeInstagram(value: string): string {
+  const url = toInstagramUrl(value);
+  if (url === null) {
+    throw new ValidationError(
+      "Instagram bitte als Profil-Link oder @Name angeben (z. B. @fahrschule_nord).",
+    );
+  }
+  return url;
+}
 
 function sanitizeStringList(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) {
@@ -184,6 +270,12 @@ export function sanitizeSchoolProfile(
     next[key] = value.trim();
   }
 
+  if (next.google_place_id && !/^[A-Za-z0-9_-]{10,300}$/.test(next.google_place_id)) {
+    throw new ValidationError(
+      "Die Google Place ID besteht nur aus Buchstaben, Ziffern, '-' und '_' (z. B. ChIJ…).",
+    );
+  }
+
   if ("founded_year" in input) {
     next.founded_year = sanitizeFoundedYear(input.founded_year);
   }
@@ -196,6 +288,25 @@ export function sanitizeSchoolProfile(
   if (input.highlights !== undefined) {
     next.highlights = sanitizeStringList(input.highlights, "highlights");
   }
+  for (const key of LIST_FIELDS) {
+    if (input[key] !== undefined) next[key] = sanitizeStringList(input[key], key);
+  }
+  if (input.vehicle_brands !== undefined) {
+    const brands = input.vehicle_brands;
+    if (typeof brands !== "object" || brands === null || Array.isArray(brands)) {
+      throw new ValidationError("Feld 'vehicle_brands' muss ein Objekt sein.");
+    }
+    for (const group of BRAND_GROUPS) {
+      const value = (brands as Record<string, unknown>)[group];
+      if (value !== undefined) {
+        next.vehicle_brands[group] = sanitizeStringList(value, `vehicle_brands.${group}`);
+      }
+    }
+  }
+  if (input.theory_hours !== undefined) {
+    next.theory_hours = sanitizeOpeningHours(input.theory_hours, current.theory_hours);
+  }
+  if (next.instagram) next.instagram = normalizeInstagram(next.instagram);
 
   return next;
 }
@@ -215,6 +326,8 @@ export function schoolProfileRoutes(db: Database) {
             throw new ValidationError("Ungültiger JSON-Body.");
           });
           const next = sanitizeSchoolProfile(body, getSchoolProfile(db));
+          // Tax data is Inhaber-only, the public profile is office work —
+          // Fahrlehrer never reach this (auth.ts).
           setSchoolProfile(db, next);
           const company = getCompany(db);
           if (next.website !== company.website) {

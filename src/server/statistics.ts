@@ -10,6 +10,7 @@
 import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
+import { instructorNameSql } from "./refs";
 import { handle, json } from "./http";
 
 /* ------------------------------- types ----------------------------- */
@@ -119,7 +120,32 @@ export function registrationMonth(raw: string): string | null {
   return null;
 }
 
-export function studentStatistics(db: Database): StudentStatistics {
+/* "YYYY-MM" → next "YYYY-MM". */
+function nextMonth(month: string): string {
+  const [y = 0, m = 0] = month.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+/* Every month from the first registration up to `until` (or the last
+   registration, if later), with 0 for months without signups — so the
+   chart has no silent gaps and the Ø per month is honest. */
+export function fillMonths(perMonth: Map<string, number>, until: string): MonthCount[] {
+  const months = [...perMonth.keys()].sort();
+  const first = months[0];
+  if (!first) return [];
+  const last = months.at(-1)! > until ? months.at(-1)! : until;
+  const out: MonthCount[] = [];
+  // Hard cap guards against absurd dates (e.g. year 1900) blowing up the list.
+  for (let month = first; month <= last && out.length < 600; month = nextMonth(month)) {
+    out.push({ month, count: perMonth.get(month) ?? 0 });
+  }
+  return out;
+}
+
+const isoMonth = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+export function studentStatistics(db: Database, now = new Date()): StudentStatistics {
   const rows = db
     .query<{ status: string; registration_date: string }, []>(
       "SELECT status, registration_date FROM students",
@@ -138,9 +164,7 @@ export function studentStatistics(db: Database): StudentStatistics {
     total: rows.length,
     aktiv,
     inaktiv: rows.length - aktiv,
-    registrationsPerMonth: [...perMonth.entries()]
-      .map(([month, count]) => ({ month, count }))
-      .sort((a, b) => (a.month < b.month ? -1 : 1)),
+    registrationsPerMonth: fillMonths(perMonth, isoMonth(now)),
   };
 }
 
@@ -161,6 +185,7 @@ export function lessonStatistics(db: Database): LessonStatistics {
     .query<{ month: string; type: string; count: number }, []>(
       `SELECT substr(date, 1, 7) AS month, type, count(*) AS count
        FROM calendar_events
+       WHERE cancelled_at IS NULL
        GROUP BY month, type
        ORDER BY month`,
     )
@@ -214,15 +239,15 @@ export function instructorStatistics(db: Database): InstructorStatistics {
      duration arithmetic is safe inline. */
   const utilization = db
     .query<InstructorUtilization, []>(
-      `SELECT instructor,
+      `SELECT ${instructorNameSql("ce")} AS instructor,
               count(*) AS events,
               sum(
-                (CAST(substr("end", 1, 2) AS INTEGER) * 60 + CAST(substr("end", 4, 2) AS INTEGER))
-                - (CAST(substr(start, 1, 2) AS INTEGER) * 60 + CAST(substr(start, 4, 2) AS INTEGER))
+                (CAST(substr(ce."end", 1, 2) AS INTEGER) * 60 + CAST(substr(ce."end", 4, 2) AS INTEGER))
+                - (CAST(substr(ce.start, 1, 2) AS INTEGER) * 60 + CAST(substr(ce.start, 4, 2) AS INTEGER))
               ) AS minutes
-       FROM calendar_events
-       WHERE instructor <> ''
-       GROUP BY instructor
+       FROM calendar_events ce
+       WHERE ce.cancelled_at IS NULL
+       GROUP BY ce.instructor_id
        ORDER BY minutes DESC, instructor`,
     )
     .all();
@@ -289,7 +314,7 @@ export function examStatistics(db: Database): ExamStatistics {
            coalesce(sum(CASE WHEN exam_result = 'bestanden' THEN 1 ELSE 0 END), 0) AS bestanden,
            coalesce(sum(CASE WHEN exam_result = 'nicht_bestanden' THEN 1 ELSE 0 END), 0) AS nicht_bestanden
          FROM calendar_events
-         WHERE type = ?`,
+         WHERE type = ? AND cancelled_at IS NULL`,
       )
       .get(type)!;
 

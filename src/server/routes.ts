@@ -7,9 +7,15 @@ import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
 import type { CompanyProfile } from "../lib/accounting-types";
-import { listArchive, purgeArchived, restoreArchived } from "./archive";
-import { getCompany, setCompany } from "./db";
-import { getSchoolProfile, setSchoolProfile } from "./school-profile";
+import {
+  listArchive,
+  listArchivedContracts,
+  purgeArchived,
+  restoreArchived,
+} from "./archive";
+import { OWNER_COMPANY_FIELDS, updateCompanyProfile } from "./company-profile";
+import { getCompany } from "./db";
+import { currentUser } from "./request-context";
 import { generateDatevExport } from "./datev";
 import {
   createInstructor,
@@ -23,7 +29,13 @@ import {
   listPricePlans,
   updatePricePlan,
 } from "./price-plans";
-import { createStudent, deleteStudent, listStudents, updateStudent } from "./students";
+import {
+  createStudent,
+  deleteStudent,
+  listStudents,
+  updateStudent,
+  withoutMoney,
+} from "./students";
 import {
   createCalendarEvent,
   type CalendarEventInput,
@@ -35,10 +47,10 @@ import {
   updateCalendarEvent,
 } from "./calendar-events";
 import { UNASSIGNED_VEHICLE } from "../lib/vehicle-options";
+import { BILLABLE_EVENT_TYPES } from "../lib/price-plan";
 import {
   createVehicle,
   type VehicleInput,
-  listVehicleModels,
   listVehicles,
   updateVehicle,
   deleteVehicle,
@@ -55,7 +67,9 @@ import {
   ValidationError,
   type ListFilter,
 } from "./engine";
+import type { FileStore } from "./file-store";
 import { handle, json } from "./http";
+import { listVehicleLabels } from "./refs";
 
 function filterFromUrl(url: string): ListFilter {
   const params = new URL(url).searchParams;
@@ -64,7 +78,10 @@ function filterFromUrl(url: string): ListFilter {
     from: params.get("from") ?? undefined,
     to: params.get("to") ?? undefined,
     q: params.get("q")?.trim() || undefined,
+    customerNo: params.get("customerNo")?.trim() || undefined,
     status: status === "active" || status === "storniert" ? status : "all",
+    cashOnly: params.get("cash") === "1",
+    sort: params.get("sort") === "asc" ? "asc" : "desc",
   };
 }
 
@@ -102,9 +119,24 @@ export function instructorRoutes(db: Database) {
 export function studentRoutes(db: Database) {
   return {
     "/api/students": {
-      GET: (req: BunRequest) => handle(() => json({ students: listStudents(db) }))(),
+      GET: (req: BunRequest) =>
+        handle(() => {
+          // Fahrlehrer/innen have no finance access: no balances or prices.
+          const students = listStudents(db);
+          return json({
+            students:
+              currentUser()?.role === "fahrlehrer"
+                ? students.map(withoutMoney)
+                : students,
+          });
+        })(),
       POST: (req: BunRequest) =>
         handle(async () => json(createStudent(db, await req.json()), 201))(),
+    },
+
+    "/api/students/archived": {
+      GET: (req: BunRequest) =>
+        handle(() => json({ contracts: listArchivedContracts(db) }))(),
     },
 
     "/api/students/:id": {
@@ -122,7 +154,9 @@ export function studentRoutes(db: Database) {
           if (!Number.isInteger(id)) {
             throw new ValidationError("Ungültige Fahrschüler-ID.");
           }
-          deleteStudent(db, id);
+          deleteStudent(db, id, {
+            reason: new URL(req.url).searchParams.get("reason"),
+          });
           return json({ ok: true });
         })(),
     },
@@ -164,8 +198,9 @@ export function vehicleRoutes(db: Database) {
     "/api/vehicle-options": {
       GET: () =>
         handle(() => {
-          const models = listVehicleModels(db);
-          const options = [...new Set(models), UNASSIGNED_VEHICLE];
+          // Unique labels ("Modell" or "Modell · Kennzeichen" for fleet
+          // mates) — the server resolves each back to exactly one vehicle.
+          const options = [...listVehicleLabels(db), UNASSIGNED_VEHICLE];
           return json({ vehicleOptions: options });
         })(),
     },
@@ -257,9 +292,9 @@ export function calendarEventRoutes(db: Database) {
 
           // Pre-flight: load event, validate prerequisites.
           const event = getCalendarEvent(db, id);
-          if (event.type !== "Praktisch") {
+          if (!(BILLABLE_EVENT_TYPES as string[]).includes(event.type)) {
             throw new ValidationError(
-              "Nur praktische Fahrstunden können abgerechnet werden.",
+              "Nur praktische Fahrstunden und Prüfungen können abgerechnet werden.",
             );
           }
           if (event.studentId == null) {
@@ -270,6 +305,11 @@ export function calendarEventRoutes(db: Database) {
           if (event.billedActive) {
             throw new ValidationError(
               "Termin ist bereits abgerechnet. Zuerst stornieren um neu abzurechnen.",
+            );
+          }
+          if (event.cancelledAt) {
+            throw new ValidationError(
+              "Abgesagte Termine können nicht abgerechnet werden.",
             );
           }
 
@@ -329,7 +369,7 @@ export function calendarEventRoutes(db: Database) {
   };
 }
 
-export function archiveRoutes(db: Database) {
+export function archiveRoutes(db: Database, fileStore?: FileStore) {
   const parseId = (raw: string): number => {
     const id = Number(raw);
     if (!Number.isInteger(id)) {
@@ -350,8 +390,8 @@ export function archiveRoutes(db: Database) {
 
     "/api/archive/:id": {
       DELETE: (req: BunRequest<"/api/archive/:id">) =>
-        handle(() => {
-          purgeArchived(db, parseId(req.params.id));
+        handle(async () => {
+          await purgeArchived(db, parseId(req.params.id), fileStore);
           return json({ ok: true });
         })(),
     },
@@ -444,21 +484,21 @@ export function accountingRoutes(db: Database) {
     },
 
     "/api/profile": {
-      GET: (req: BunRequest) => handle(() => json(getCompany(db)))(),
+      GET: (req: BunRequest) =>
+        handle(() => {
+          const company = getCompany(db);
+          // Fahrlehrer/innen print Nachweise with the school's address —
+          // tax numbers and the Bankverbindung are none of their business.
+          if (currentUser()?.role === "fahrlehrer") {
+            for (const field of OWNER_COMPANY_FIELDS) company[field] = "";
+          }
+          return json(company);
+        })(),
+
       PUT: (req: BunRequest) =>
         handle(async () => {
           const body = (await req.json()) as Partial<CompanyProfile>;
-          const current = getCompany(db);
-          const next: CompanyProfile = { ...current };
-          for (const key of Object.keys(current) as (keyof CompanyProfile)[]) {
-            const value = body[key];
-            if (typeof value === "string") next[key] = value.trim();
-          }
-          setCompany(db, next);
-          if (next.website !== current.website) {
-            setSchoolProfile(db, { ...getSchoolProfile(db), website: next.website });
-          }
-          return json(next);
+          return json(updateCompanyProfile(db, body, currentUser()?.role));
         })(),
     },
   };

@@ -4,6 +4,7 @@ import type { StudentRecord } from "@/hooks/use-students";
 import type { PricePlanRecord } from "@/lib/price-plan";
 import {
   computeContractKpis,
+  deriveArchivedContractRows,
   deriveContractRows,
   filterContractRows,
   isInMonth,
@@ -42,11 +43,14 @@ function makeStudent(overrides: Partial<StudentRecord> = {}): StudentRecord {
     lessons: [],
     documents: [],
     theory: {
-      lastLogin: "—",
       preExams: "0",
       exam: "—",
       status: "Aktiv",
       progress: 0,
+      attendedUnits: 0,
+      requiredUnits: 14,
+      lastSession: "Noch keine",
+      lastSessionDate: null,
     },
     ...overrides,
   };
@@ -204,5 +208,39 @@ describe("filterContractRows", () => {
 
   test("status still applies while searching", () => {
     expect(filterContractRows(rows, "keller", "aktiv")).toHaveLength(0);
+  });
+
+  test("archived contracts only appear under Archiviert", () => {
+    const archived = deriveArchivedContractRows(
+      [
+        {
+          archiveId: 7,
+          deletedAt: "2026-09-28T10:00:00Z",
+          reason: "Ausbildung abgeschlossen",
+          studentId: 9,
+          firstName: "Tom",
+          lastName: "Richter",
+          contractNumber: "V-2026-1018",
+          customerNumber: "10058",
+          classes: "A",
+          registrationDate: "03.05.2026",
+          pricePlanId: 2,
+        },
+      ],
+      plans,
+    );
+    expect(archived[0]).toMatchObject({
+      name: "Richter, Tom",
+      planName: "Rabatt Tarif",
+      archived: { archiveId: 7, reason: "Ausbildung abgeschlossen" },
+    });
+    const all = [...rows, ...archived];
+    expect(filterContractRows(all, "", "alle")).toHaveLength(2);
+    expect(filterContractRows(all, "", "inaktiv").map((row) => row.studentId)).toEqual([
+      2,
+    ]);
+    expect(filterContractRows(all, "", "archiviert").map((row) => row.studentId)).toEqual(
+      [9],
+    );
   });
 });

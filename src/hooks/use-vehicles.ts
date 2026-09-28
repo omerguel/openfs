@@ -28,9 +28,15 @@ export type Vehicle = {
   status: VehicleStatus;
   accent: string;
   details: VehicleDetail[];
+  /** Instructors whose Stammfahrzeug this is — the "Fahrlehrer/in" detail
+   *  is derived from it on the server (single source of truth). */
+  instructorIds?: number[];
 };
 
-type VehicleInput = Omit<Vehicle, "id">;
+export type VehicleInput = Omit<Vehicle, "id" | "instructorIds"> & {
+  /** Make this vehicle the Stammfahrzeug of that instructor (null = nobody). */
+  instructorId?: number | null;
+};
 
 export async function fetchVehicles(): Promise<Vehicle[]> {
   const data = await parseOrThrow<{ vehicles: Vehicle[] }>(await fetch("/api/vehicles"));
@@ -85,9 +91,15 @@ export function useVehicles() {
   };
 }
 
+/* A vehicle change can move an instructor's Stammfahrzeug — refresh both. */
 function useInvalidateVehicles() {
   const queryClient = useQueryClient();
-  return () => queryClient.invalidateQueries({ queryKey: vehicleQueryKeys.all });
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: vehicleQueryKeys.all }),
+      queryClient.invalidateQueries({ queryKey: ["instructors"] }),
+      queryClient.invalidateQueries({ queryKey: ["vehicle-options"] }),
+    ]);
 }
 
 export function useCreateVehicle() {

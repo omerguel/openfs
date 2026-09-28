@@ -20,6 +20,12 @@
 /*    (4400, 4300, 3272, …) calculate USt themselves and must NOT get  */
 /*    a BU-Schlüssel; non-automatic Aufwandskonten get Vorsteuer keys  */
 /*    (9 = 19 %, 8 = 7 %).                                             */
+/*  - Saldenvorträge (9000 ↔ 3272) always carry Konto 9000 and BU 40   */
+/*    ("Aufhebung der Automatik") on the Automatikkonto 3272, so DATEV */
+/*    does not compute USt on an opening balance a second time. The    */
+/*    same holds for every line on an Automatikkonto booked without    */
+/*    VAT, e.g. the "Ausgleich Saldovortrag" part of a payment         */
+/*    (Geldkonto an 3272): Automatikkonto as Gegenkonto, BU 40.        */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -186,6 +192,37 @@ function buSchluessel(account: Account | undefined, vatRate: number | null): str
   return "";
 }
 
+/* Kinds whose account governs a line's VAT itself (the engine's
+   vatAccount): Erlös-, Aufwands- and durchlaufende Konten. */
+const VAT_GOVERNING_KINDS = new Set<Account["kind"]>([
+  "erloes",
+  "aufwand",
+  "durchlaufend",
+]);
+
+/**
+ * A line on an Automatikkonto that deliberately carries no VAT needs BU 40
+ * ("Aufhebung der Automatik"), else DATEV would compute USt from the
+ * account. That is the case when the line has no VAT rate and its other
+ * account does not govern the VAT itself — i.e. the Automatikkonto was
+ * the line's only tax account (Saldovortrag 9000 ↔ 3272, Ausgleich eines
+ * Saldovortrags Geldkonto an 3272). A charge 3272 an 1370/4830 keeps no
+ * BU: there the Erlös-/Durchlaufkonto governs, and the Automatik on 3272
+ * releases the Anzahlungs-USt as usual.
+ */
+function suspendsAutomatik(
+  soll: Account | undefined,
+  haben: Account | undefined,
+  vatRate: number | null,
+): boolean {
+  if (vatRate != null || !soll || !haben) return false;
+  const governs = (account: Account) => VAT_GOVERNING_KINDS.has(account.kind);
+  return (
+    (AUTOMATIK_KONTEN.has(soll.number) && !governs(haben)) ||
+    (AUTOMATIK_KONTEN.has(haben.number) && !governs(soll))
+  );
+}
+
 export type DatevExport = { filename: string; bytes: Uint8Array };
 
 export function generateDatevExport(
@@ -251,12 +288,25 @@ export function generateDatevExport(
     // Gegenkonto. Steht das steuerrelevante (nicht-automatische)
     // Konto im Soll, wird die Buchung gedreht, damit der Schlüssel
     // am Gegenkonto landet (z. B. Ausgabe: 1800 "H" an 6530 BU 9).
-    const flip =
-      buSchluessel(soll, row.vatRate) !== "" && buSchluessel(haben, row.vatRate) === "";
+    // Automatikkonto ohne USt (Saldovortrag 9000 ↔ 3272, Ausgleich eines
+    // Saldovortrags 1800 an 3272): das Automatikkonto wird Gegenkonto
+    // und bekommt BU 40, damit DATEV keine USt herausrechnet.
+    const suspend = suspendsAutomatik(soll, haben, row.vatRate);
+    const vortrag = soll?.kind === "vortrag" || haben?.kind === "vortrag";
+    const flip = suspend
+      ? AUTOMATIK_KONTEN.has(row.sollKonto)
+      : vortrag
+        ? haben?.kind === "vortrag"
+        : buSchluessel(soll, row.vatRate) !== "" &&
+          buSchluessel(haben, row.vatRate) === "";
     const konto = flip ? row.habenKonto : row.sollKonto;
     const gegenkonto = flip ? row.sollKonto : row.habenKonto;
     const kennzeichen = flip ? '"H"' : '"S"';
-    const bu = buSchluessel(flip ? soll : haben, row.vatRate);
+    const bu = suspend
+      ? '"40"'
+      : vortrag
+        ? ""
+        : buSchluessel(flip ? soll : haben, row.vatRate);
 
     const fields = new Array<string>(DATEV_COLUMN_COUNT).fill("");
     fields[COL.umsatz] = datevAmount(row.amountCents);

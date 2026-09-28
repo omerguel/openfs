@@ -11,11 +11,13 @@ import {
   createConversation,
   deleteConversation,
   ensureChatTables,
+  findStudentConversation,
   getConversation,
   listConversations,
   listMessages,
   markRead,
   sendMessage,
+  sendStudentMessage,
 } from "./chat";
 import { openDb } from "./db";
 import { ValidationError } from "./engine";
@@ -113,6 +115,39 @@ describe("sendMessage", () => {
 
   test("unknown conversation → ValidationError", () => {
     expect(() => sendMessage(db, 9999, "Hallo")).toThrow(ValidationError);
+  });
+});
+
+describe("sendStudentMessage", () => {
+  test("appends a 'schueler' message and raises the unread counter", () => {
+    const [first] = listConversations(db);
+    markRead(db, first!.id);
+    const message = sendStudentMessage(db, first!.id, "Bin 5 Minuten später da.");
+    expect(message.sender).toBe("schueler");
+    sendStudentMessage(db, first!.id, "Sorry!");
+    const after = getConversation(db, first!.id);
+    expect(after.unread).toBe(2);
+    expect(after.lastMessage).toBe("Sorry!");
+    // A school reply clears it again.
+    sendMessage(db, first!.id, "Kein Problem.");
+    expect(getConversation(db, first!.id).unread).toBe(0);
+  });
+
+  test("caps the length of portal messages", () => {
+    const [first] = listConversations(db);
+    expect(() => sendStudentMessage(db, first!.id, "x".repeat(2001))).toThrow(
+      "maximal 2000",
+    );
+  });
+
+  test("findStudentConversation ignores orphaned threads", () => {
+    const student = createStudent(db, uniqStudent("Pia Portal"));
+    expect(findStudentConversation(db, student.id)).toBeNull();
+    const conversation = createConversation(db, {
+      student_id: student.id,
+      student_name: "Pia Portal",
+    });
+    expect(findStudentConversation(db, student.id)?.id).toBe(conversation.id);
   });
 });
 

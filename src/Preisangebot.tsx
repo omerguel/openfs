@@ -4,14 +4,15 @@
 /* /api/price-plans and editable through PricePlanDialog.              */
 /* ------------------------------------------------------------------ */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Edit3, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { markPricesReviewed } from "@/components/dashboard/SetupChecklist";
 import { PageHeader } from "./components/PageHeader.tsx";
 import { PricePlanDialog } from "./components/preise/PricePlanDialog";
 import { deletePricePlan, usePricePlans } from "@/hooks/use-price-plans";
-import type { PricePlanRecord } from "@/lib/price-plan";
+import { formatGuaranteedPeriod, type PricePlanRecord } from "@/lib/price-plan";
 import { formatEuro } from "@/lib/money";
 import {
   AlertDialog,
@@ -57,7 +58,12 @@ function PlanCard({
       <CardHeader>
         <CardTitle>{plan.name}</CardTitle>
         <CardDescription>
-          Garantierter Zeitraum {plan.guaranteedMonths} Monate
+          {(plan.classes ?? []).length > 0
+            ? `Klasse ${(plan.classes ?? []).join(", ")}`
+            : "Alle Klassen"}
+          {formatGuaranteedPeriod(plan.guaranteedMonths)
+            ? ` · ${formatGuaranteedPeriod(plan.guaranteedMonths)}`
+            : ""}
         </CardDescription>
         <CardAction>
           <div className="flex items-center gap-1">
@@ -94,7 +100,7 @@ function PlanCard({
             <TableBody>
               {plan.components.map((component) => (
                 <TableRow key={component.label}>
-                  <TableCell>
+                  <TableCell className="whitespace-normal">
                     {component.label}
                     {component.durationMin != null && (
                       <span className="text-muted-foreground">
@@ -121,6 +127,8 @@ function PlanCard({
 }
 
 export function Preisangebot() {
+  // Opening the page ticks "Preise prüfen" on the dashboard checklist.
+  useEffect(() => markPricesReviewed(), []);
   const { plans, loading, refresh } = usePricePlans();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editPlan, setEditPlan] = useState<PricePlanRecord | null>(null);
@@ -211,8 +219,8 @@ export function Preisangebot() {
           <AlertDialogHeader>
             <AlertDialogTitle>Preisplan „{deleteTarget?.name}" löschen?</AlertDialogTitle>
             <AlertDialogDescription>
-              Fahrschüler mit diesem Tarif fallen auf den Standardtarif zurück. Diese
-              Aktion kann nicht rückgängig gemacht werden.
+              Fahrschüler/innen mit diesem Tarif erhalten den ersten passenden Preisplan
+              ihrer Klasse. Der Preisplan kann unter „Archiv" wiederhergestellt werden.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

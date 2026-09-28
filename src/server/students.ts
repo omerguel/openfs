@@ -5,11 +5,39 @@
 
 import type { Database, SQLQueryBindings } from "./sqlite";
 
-import type { Student } from "../lib/student-data";
+import { parseContractPriceOverrides } from "../lib/contract-prices";
+import { defaultPlanForClasses } from "../lib/price-plan";
+import { getCompany } from "./db";
+import { listPricePlans } from "./price-plans";
+import type { Companion, Student, TheoryManual } from "../lib/student-data";
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
+import {
+  instructorNameSql,
+  resolveInstructorId,
+  resolveVehicleId,
+  vehicleNameSql,
+} from "./refs";
+import { deriveStudentFacts, type StudentFacts } from "./student-facts";
 
-export type StudentRecord = Student & { id: number };
+export type StudentRecord = Student & {
+  id: number;
+  instructorId: number | null;
+  vehicleId: number | null;
+  /** Derived from the ledger; `balance` is its display string. */
+  balanceCents: number;
+};
+
+/** The student as a Fahrlehrer/in may see it: no balance, no prices. */
+export function withoutMoney(student: StudentRecord): StudentRecord {
+  return { ...student, balance: "", balanceCents: 0, contractPrices: {} };
+}
+
+/** Write payload: display names or ids for the instructor/vehicle links. */
+export type StudentInput = Partial<Student> & {
+  instructorId?: number | null;
+  vehicleId?: number | null;
+};
 
 type StudentRow = {
   id: number;
@@ -27,18 +55,50 @@ type StudentRow = {
   status: Student["status"];
   instructor: string;
   vehicle: string;
-  balance: string;
-  last_lesson: string;
-  next_lesson: string;
+  instructor_id: number | null;
+  vehicle_id: number | null;
   progress: number;
-  lessons: string;
   documents: string;
   theory: string;
   price_plan_id: number | null;
   license_date: string | null;
+  contract_prices: string | null;
+  companion: string | null;
+  open_documents: string | null;
 };
 
-const toStudent = (row: StudentRow): StudentRecord => {
+function parseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return (JSON.parse(raw) as T) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const DEFAULT_THEORY: TheoryManual = { preExams: "Keine", exam: "Nicht geplant" };
+
+/** Stored theory JSON → the hand-kept fields (older rows also carry the
+ *  since-derived lastLogin/status/progress; they are dropped here). */
+function parseTheory(raw: string): TheoryManual {
+  try {
+    const value = JSON.parse(raw) as Partial<TheoryManual> | null;
+    return {
+      preExams:
+        typeof value?.preExams === "string" ? value.preExams : DEFAULT_THEORY.preExams,
+      exam: typeof value?.exam === "string" ? value.exam : DEFAULT_THEORY.exam,
+    };
+  } catch {
+    return { ...DEFAULT_THEORY };
+  }
+}
+
+function withDerivedTheory(manual: TheoryManual, facts: StudentFacts): Student["theory"] {
+  const { exam, ...derived } = facts.theory;
+  return { ...manual, ...derived, exam: exam ?? manual.exam };
+}
+
+const toStudent = (row: StudentRow, facts: StudentFacts): StudentRecord => {
   const record: StudentRecord = {
     id: row.id,
     firstName: row.first_name,
@@ -55,35 +115,55 @@ const toStudent = (row: StudentRow): StudentRecord => {
     status: row.status,
     instructor: row.instructor,
     vehicle: row.vehicle,
-    balance: row.balance,
-    lastLesson: row.last_lesson,
-    nextLesson: row.next_lesson,
+    instructorId: row.instructor_id,
+    vehicleId: row.vehicle_id,
+    balance: facts.balance,
+    balanceCents: facts.balanceCents,
+    lastLesson: facts.lastLesson,
+    nextLesson: facts.nextLesson,
     progress: row.progress,
-    lessons: JSON.parse(row.lessons),
+    lessons: facts.lessons,
     documents: JSON.parse(row.documents),
-    theory: JSON.parse(row.theory),
+    theory: withDerivedTheory(parseTheory(row.theory), facts),
     pricePlanId: row.price_plan_id,
+    contractPrices: parseJson(row.contract_prices, {}),
+    companion: parseJson<Companion | null>(row.companion, null),
+    openDocuments: parseJson<string[]>(row.open_documents, []),
   };
   if (row.license_date) record.licenseDate = row.license_date;
   return record;
 };
 
-const SELECT = `SELECT id, first_name, last_name, birthday, phone, email, address,
-  classes, driving_school, registration_date, contract_number, customer_number,
-  status, instructor, vehicle, balance, last_lesson, next_lesson, progress,
-  lessons, documents, theory, price_plan_id, license_date FROM students`;
+const SELECT = `SELECT s.id, s.first_name, s.last_name, s.birthday, s.phone, s.email,
+  s.address, s.classes, s.driving_school, s.registration_date, s.contract_number,
+  s.customer_number, s.status, s.instructor_id, s.vehicle_id,
+  ${instructorNameSql("s")} AS instructor, ${vehicleNameSql("s")} AS vehicle,
+  s.progress, s.documents, s.theory, s.price_plan_id, s.license_date,
+  s.contract_prices, s.companion, s.open_documents FROM students s`;
+
+function withFacts(db: Database, rows: StudentRow[]): StudentRecord[] {
+  const facts = deriveStudentFacts(
+    db,
+    rows.map((row) => ({
+      id: row.id,
+      customerNumber: row.customer_number,
+      classes: row.classes,
+    })),
+  );
+  return rows.map((row) => toStudent(row, facts.get(row.id)!));
+}
 
 export function listStudents(db: Database): StudentRecord[] {
-  return db
-    .query<StudentRow, []>(`${SELECT} ORDER BY last_name, first_name`)
-    .all()
-    .map(toStudent);
+  return withFacts(
+    db,
+    db.query<StudentRow, []>(`${SELECT} ORDER BY s.last_name, s.first_name`).all(),
+  );
 }
 
 export function getStudent(db: Database, id: number): StudentRecord {
-  const row = db.query<StudentRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db.query<StudentRow, [number]>(`${SELECT} WHERE s.id = ?`).get(id);
   if (!row) throw new ValidationError("Fahrschüler/in nicht gefunden.");
-  return toStudent(row);
+  return withFacts(db, [row])[0]!;
 }
 
 const STRING_KEYS = [
@@ -98,19 +178,56 @@ const STRING_KEYS = [
   "registrationDate",
   "contractNumber",
   "customerNumber",
-  "instructor",
-  "vehicle",
-  "balance",
-  "lastLesson",
-  "nextLesson",
 ] as const;
 
 type StringKey = (typeof STRING_KEYS)[number];
 
 /* Merge a partial payload over current values, trimming strings and
-   rejecting anything that would leave the record unusable. */
-function normalize(input: Partial<Student>, current: Student): Student {
-  const next: Student = { ...current };
+   rejecting anything that would leave the record unusable. Only the
+   hand-kept theory fields are stored (theory.progress/status/… are
+   derived from attendance on read). */
+type StudentData = Omit<Student, "theory"> & {
+  instructorId: number | null;
+  vehicleId: number | null;
+  theory: TheoryManual;
+};
+
+function normalizeCompanion(input: unknown): Companion | null {
+  if (input === null) return null;
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new ValidationError("Feld 'companion' muss ein Objekt oder null sein.");
+  }
+  const { name, phone } = input as Partial<Companion>;
+  if (
+    (name !== undefined && typeof name !== "string") ||
+    (phone !== undefined && typeof phone !== "string")
+  ) {
+    throw new ValidationError("Begleitperson: Name und Telefon müssen Texte sein.");
+  }
+  const clean = { name: (name ?? "").trim(), phone: (phone ?? "").trim() };
+  return clean.name || clean.phone ? clean : null;
+}
+
+function normalize(
+  db: Database,
+  input: StudentInput,
+  current: StudentData | StudentRecord,
+): StudentData {
+  const next: StudentData = {
+    ...current,
+    theory: { preExams: current.theory.preExams, exam: current.theory.exam },
+  };
+
+  next.instructorId = resolveInstructorId(
+    db,
+    { id: input.instructorId, name: input.instructor },
+    current.instructorId,
+  );
+  next.vehicleId = resolveVehicleId(
+    db,
+    { id: input.vehicleId, name: input.vehicle },
+    current.vehicleId,
+  );
 
   for (const key of STRING_KEYS) {
     const value = input[key as StringKey];
@@ -136,25 +253,64 @@ function normalize(input: Partial<Student>, current: Student): Student {
     next.progress = Math.round(progress);
   }
 
-  if (input.lessons !== undefined) {
-    if (!Array.isArray(input.lessons)) {
-      throw new ValidationError("Feld 'lessons' muss eine Liste sein.");
-    }
-    next.lessons = input.lessons;
-  }
+  // balance, lastLesson, nextLesson and lessons are derived on read
+  // (student-facts.ts) — values sent by older clients are ignored.
 
   if (input.documents !== undefined) {
     if (!Array.isArray(input.documents)) {
       throw new ValidationError("Feld 'documents' muss eine Liste sein.");
     }
-    next.documents = input.documents;
+    // Only checklist entries live here; uploaded files go through
+    // POST /api/students/:id/files (student-files.ts).
+    for (const entry of input.documents as unknown[]) {
+      if (typeof entry === "string") continue;
+      if (typeof entry === "object" && entry !== null && "kind" in entry) {
+        throw new ValidationError(
+          "Dateien werden nicht mehr in 'documents' gespeichert. Bitte über POST /api/students/:id/files hochladen.",
+        );
+      }
+      throw new ValidationError("Feld 'documents' darf nur Texte enthalten.");
+    }
+    next.documents = (input.documents as string[])
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  if (input.openDocuments !== undefined) {
+    if (
+      !Array.isArray(input.openDocuments) ||
+      input.openDocuments.some((entry) => typeof entry !== "string")
+    ) {
+      throw new ValidationError("Feld 'openDocuments' darf nur Texte enthalten.");
+    }
+    next.openDocuments = [
+      ...new Set(input.openDocuments.map((entry) => entry.trim()).filter(Boolean)),
+    ];
+  }
+
+  if (input.contractPrices !== undefined) {
+    const parsed = parseContractPriceOverrides(input.contractPrices);
+    if (!parsed.ok) throw new ValidationError(parsed.error);
+    next.contractPrices = parsed.value;
+  }
+
+  if (input.companion !== undefined) {
+    next.companion = normalizeCompanion(input.companion);
   }
 
   if (input.theory !== undefined) {
     if (typeof input.theory !== "object" || input.theory === null) {
       throw new ValidationError("Feld 'theory' muss ein Objekt sein.");
     }
-    next.theory = input.theory;
+    // progress, status, attendedUnits, lastSession … are derived — ignored.
+    const { preExams, exam } = input.theory as Partial<TheoryManual>;
+    for (const [key, value] of Object.entries({ preExams, exam })) {
+      if (value !== undefined && typeof value !== "string") {
+        throw new ValidationError(`Feld 'theory.${key}' muss ein Text sein.`);
+      }
+    }
+    if (preExams !== undefined) next.theory.preExams = preExams.trim();
+    if (exam !== undefined) next.theory.exam = exam.trim();
   }
 
   if (input.pricePlanId !== undefined) {
@@ -193,7 +349,9 @@ function normalize(input: Partial<Student>, current: Student): Student {
   return next;
 }
 
-const EMPTY: Student = {
+const EMPTY: StudentData = {
+  instructorId: null,
+  vehicleId: null,
   firstName: "",
   lastName: "",
   birthday: "",
@@ -214,13 +372,7 @@ const EMPTY: Student = {
   progress: 0,
   lessons: [],
   documents: [],
-  theory: {
-    lastLogin: "Noch nie",
-    preExams: "Keine",
-    exam: "Nicht geplant",
-    status: "Aktiv",
-    progress: 0,
-  },
+  theory: { ...DEFAULT_THEORY },
 };
 
 /* SQLite UNIQUE violations on the number columns become user-readable
@@ -236,7 +388,7 @@ function guardUnique<T>(write: () => T): T {
   }
 }
 
-function writeParams(data: Student) {
+function writeParams(data: StudentData) {
   return [
     data.firstName,
     data.lastName,
@@ -250,31 +402,39 @@ function writeParams(data: Student) {
     data.contractNumber,
     data.customerNumber,
     data.status,
-    data.instructor,
-    data.vehicle,
-    data.balance,
-    data.lastLesson,
-    data.nextLesson,
+    data.instructorId,
+    data.vehicleId,
     data.progress,
-    JSON.stringify(data.lessons),
     JSON.stringify(data.documents),
     JSON.stringify(data.theory),
     data.pricePlanId ?? null,
     data.licenseDate ?? null,
+    JSON.stringify(data.contractPrices ?? {}),
+    data.companion ? JSON.stringify(data.companion) : null,
+    JSON.stringify(data.openDocuments ?? []),
   ] as const;
 }
 
-export function createStudent(db: Database, input: Partial<Student>): StudentRecord {
-  const data = normalize(input, EMPTY);
+export function createStudent(db: Database, input: StudentInput): StudentRecord {
+  const data = normalize(db, input, EMPTY);
+  // No plan chosen: pin the class default so the student's prices no
+  // longer shift when plans are reordered or added later.
+  if (!data.drivingSchool && tableExists(db, "settings")) {
+    data.drivingSchool = getCompany(db).name;
+  }
+  if (input.pricePlanId === undefined && tableExists(db, "price_plans")) {
+    data.pricePlanId =
+      defaultPlanForClasses(listPricePlans(db), data.classes)?.id ?? null;
+  }
   const row = guardUnique(() =>
     db
       .query<{ id: number }, SQLQueryBindings[]>(
         `INSERT INTO students (
            first_name, last_name, birthday, phone, email, address, classes,
            driving_school, registration_date, contract_number, customer_number,
-           status, instructor, vehicle, balance, last_lesson, next_lesson,
-           progress, lessons, documents, theory, price_plan_id, license_date
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           status, instructor_id, vehicle_id, progress, documents, theory,
+           price_plan_id, license_date, contract_prices, companion, open_documents
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
       )
       .get(...writeParams(data)),
@@ -285,19 +445,19 @@ export function createStudent(db: Database, input: Partial<Student>): StudentRec
 export function updateStudent(
   db: Database,
   id: number,
-  input: Partial<Student>,
+  input: StudentInput,
 ): StudentRecord {
   const current = getStudent(db, id);
-  const data = normalize(input, current);
+  const data = normalize(db, input, current);
   const write = db.transaction(() => {
     db.prepare(
       `UPDATE students SET
          first_name = ?, last_name = ?, birthday = ?, phone = ?, email = ?,
          address = ?, classes = ?, driving_school = ?, registration_date = ?,
-         contract_number = ?, customer_number = ?, status = ?, instructor = ?,
-         vehicle = ?, balance = ?, last_lesson = ?, next_lesson = ?,
-         progress = ?, lessons = ?, documents = ?, theory = ?,
-         price_plan_id = ?, license_date = ?
+         contract_number = ?, customer_number = ?, status = ?, instructor_id = ?,
+         vehicle_id = ?, progress = ?, documents = ?, theory = ?,
+         price_plan_id = ?, license_date = ?, contract_prices = ?, companion = ?,
+         open_documents = ?
        WHERE id = ?`,
     ).run(...writeParams(data), id);
     // Chat threads carry a denormalized student_name next to their
@@ -315,7 +475,24 @@ export function updateStudent(
   return getStudent(db, id);
 }
 
-export function deleteStudent(db: Database, id: number): void {
+/** Why a student leaves the active list — shown in Archiv and Verträge. */
+export const ARCHIVE_REASONS: Record<string, string> = {
+  abgeschlossen: "Ausbildung abgeschlossen",
+  abgebrochen: "Ausbildung abgebrochen",
+  wechsel: "Wechsel zu anderer Fahrschule",
+  sonstiges: "Sonstiges",
+  loeschung: "Löschung auf Antrag (Art. 17 DSGVO)",
+};
+
+export function deleteStudent(
+  db: Database,
+  id: number,
+  options: { reason?: string | null } = {},
+): void {
+  const reason = options.reason ?? null;
+  if (reason != null && !(reason in ARCHIVE_REASONS)) {
+    throw new ValidationError("Ungültiger Grund für die Archivierung.");
+  }
   const student = getStudent(db, id); // throws ValidationError if unknown
   const remove = db.transaction(() => {
     // Remember which theory groups and chats pointed here so a restore
@@ -336,13 +513,28 @@ export function deleteStudent(db: Database, id: number): void {
           .all(id)
           .map((row) => row.id)
       : [];
+    // Termine too: restore re-links them, and the retention job
+    // (retention.ts) finds them to pseudonymise the name later.
+    const calendarEvents = tableExists(db, "calendar_events")
+      ? db
+          .query<{ id: number }, [number]>(
+            "SELECT id FROM calendar_events WHERE student_id = ?",
+          )
+          .all(id)
+          .map((row) => row.id)
+      : [];
     archiveRow(
       db,
       "student",
       id,
       `${student.firstName} ${student.lastName}`.trim() ||
         `Vertrag ${student.contractNumber}`,
-      { theoryGroups: theoryGroups.map((group) => group.id), conversations },
+      {
+        theoryGroups: theoryGroups.map((group) => group.id),
+        conversations,
+        calendarEvents,
+      },
+      reason ? ARCHIVE_REASONS[reason] : undefined,
     );
     // Drop the id from member lists — a ghost id would keep counting
     // toward the group capacity (theory-groups.ts validates against
@@ -373,9 +565,25 @@ export function deleteStudent(db: Database, id: number): void {
         id,
       );
     }
+    // A Terminanfrage keeps its history but loses the conversion link.
+    if (tableExists(db, "appointment_requests")) {
+      const cols = db
+        .query<{ name: string }, []>("PRAGMA table_info(appointment_requests)")
+        .all();
+      if (cols.some((c) => c.name === "student_id")) {
+        db.prepare(
+          "UPDATE appointment_requests SET student_id = NULL WHERE student_id = ?",
+        ).run(id);
+      }
+    }
     // Theory attendance is operational data, not a compliance record.
     if (tableExists(db, "theory_attendance")) {
       db.prepare("DELETE FROM theory_attendance WHERE student_id = ?").run(id);
+    }
+    // Schülerportal links die with the student — a restore from the
+    // Archiv does not bring them back (the office issues a new one).
+    if (tableExists(db, "portal_tokens")) {
+      db.prepare("DELETE FROM portal_tokens WHERE student_id = ?").run(id);
     }
     // lesson_attestations are deliberately untouched: retained compliance
     // records (FahrSchAusbO) — no UPDATE, no DELETE.

@@ -5,7 +5,12 @@
 /* Ausblenden, Löschen) persist and survive reloads.                   */
 /* ------------------------------------------------------------------ */
 
+import { useQuery } from "@tanstack/react-query";
+
 import { parseOrThrow, useFetchList } from "@/lib/api";
+import type { GoogleImportResult, GoogleReviewSummary } from "@/server/reviews";
+
+export type { GoogleImportResult, GoogleReviewSummary };
 
 export const REVIEW_SOURCES = ["Google", "Facebook", "Webseite", "Intern"] as const;
 export type ReviewSource = (typeof REVIEW_SOURCES)[number];
@@ -22,9 +27,11 @@ export type Review = {
   reply: string;
   status: ReviewStatus;
   date: string; // ISO "YYYY-MM-DD"
+  /** Set for imported reviews (Google). */
+  externalId: string | null;
 };
 
-export type ReviewInput = Omit<Review, "id">;
+export type ReviewInput = Omit<Review, "id" | "externalId">;
 
 export async function fetchReviews(): Promise<Review[]> {
   const data = await parseOrThrow<{ reviews: Review[] }>(await fetch("/api/reviews"));
@@ -67,4 +74,19 @@ export function useReviews() {
     refresh,
   } = useFetchList(["reviews"], fetchReviews, "Bewertungen konnten nicht geladen werden");
   return { reviews, loading, refresh };
+}
+
+export async function importGoogleReviews(): Promise<GoogleImportResult> {
+  return parseOrThrow<GoogleImportResult>(
+    await fetch("/api/reviews/import/google", { method: "POST" }),
+  );
+}
+
+export function useGoogleReviewSummary() {
+  const query = useQuery({
+    queryKey: ["reviews-google"],
+    queryFn: async () =>
+      parseOrThrow<GoogleReviewSummary>(await fetch("/api/reviews/google")),
+  });
+  return { summary: query.data ?? null, refresh: query.refetch };
 }

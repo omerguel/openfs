@@ -25,7 +25,7 @@ import {
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
-import { EventEditDialog } from "./components/EventEditDialog.tsx";
+import { EventEditDialog, type EventSaveOptions } from "./components/EventEditDialog.tsx";
 import {
   createCalendarEvent,
   deleteCalendarEvent,
@@ -33,9 +33,15 @@ import {
   updateCalendarEvent,
   useCalendarEvents,
 } from "@/hooks/use-calendar-events";
-import { useInstructors, UNASSIGNED_INSTRUCTOR } from "@/hooks/use-instructors";
+import {
+  instructorName,
+  useInstructors,
+  UNASSIGNED_INSTRUCTOR,
+} from "@/hooks/use-instructors";
 import { updateStudent, useStudents, type StudentRecord } from "@/hooks/use-students";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
+import { useVehicles } from "@/hooks/use-vehicles";
+import { UNASSIGNED_VEHICLE } from "@/lib/vehicle-options";
 import {
   TODAY,
   addDays,
@@ -49,12 +55,10 @@ import {
   examStats,
   examTypeLabel,
   groupExamsByDate,
-  rankByReadiness,
-  suggestedExamType,
+  rankForExamPlanning,
   upcomingExams,
   type ExamEventType,
 } from "@/lib/exams";
-import type { TheoryStatus } from "@/lib/student-data";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,13 +96,6 @@ const examBadgeClass: Record<ExamEventType, string> = {
   Theorieprüfung: "border-transparent bg-sky-500/10 text-sky-600",
   "Vorstellung zur prakt. Prüfung":
     "border-transparent bg-emerald-500/10 text-emerald-600",
-};
-
-const theoryBadgeClass: Record<TheoryStatus, string> = {
-  Bereit: "border-transparent bg-emerald-500/10 text-emerald-600",
-  "In Prüfung": "border-transparent bg-amber-500/10 text-amber-600",
-  Aktiv: "border-transparent bg-sky-500/10 text-sky-600",
-  Pausiert: "border-transparent bg-muted text-muted-foreground",
 };
 
 const studentName = (student: StudentRecord) =>
@@ -319,16 +316,28 @@ function ExamListSkeleton() {
 /* Prüfungsreife panel                                                 */
 /* ------------------------------------------------------------------ */
 
+const STAGE_DOT: Record<string, string> = {
+  theorie_bestanden: "bg-emerald-500",
+  theorie_fertig: "bg-emerald-500",
+  gebucht: "bg-sky-500",
+  in_ausbildung: "bg-amber-500",
+};
+
 function ReadinessPanel({
   students,
+  events,
   loading,
   onPlan,
 }: {
   students: StudentRecord[];
+  events: CalEvent[];
   loading: boolean;
-  onPlan: (type: ExamEventType, name: string) => void;
+  onPlan: (type: ExamEventType, student: StudentRecord) => void;
 }) {
-  const ranked = useMemo(() => rankByReadiness(students), [students]);
+  const ranked = useMemo(
+    () => rankForExamPlanning(students, events, toISODate(TODAY)),
+    [students, events],
+  );
 
   return (
     <Card size="sm" className="h-fit">
@@ -338,8 +347,8 @@ function ReadinessPanel({
           Prüfungsreife
         </CardTitle>
         <CardDescription>
-          Aktive Fahrschüler nach Ausbildungsstand — wer ist bereit für die nächste
-          Prüfung?
+          Wer ist bereit für die nächste Prüfung? Gebuchte Prüfungen und Ergebnisse kommen
+          aus dem Kalender, der Theoriestand aus der Anwesenheit.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -353,17 +362,16 @@ function ReadinessPanel({
               <EmptyMedia variant="icon">
                 <UserCheck />
               </EmptyMedia>
-              <EmptyTitle>Keine aktiven Fahrschüler</EmptyTitle>
+              <EmptyTitle>Keine offenen Prüfungen</EmptyTitle>
               <EmptyDescription>
-                Sobald Fahrschüler aktiv sind, erscheinen sie hier sortiert nach
-                Fortschritt.
+                Aktive Fahrschüler ohne bestandene Prüfung erscheinen hier.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
-          ranked.map((student, index) => {
+          ranked.map(({ student, readiness }, index) => {
             const name = studentName(student);
-            const examType = suggestedExamType(student);
+            const theory = student.theory;
             return (
               <div key={student.id} className="flex flex-col gap-2">
                 {index > 0 && <Separator />}
@@ -372,37 +380,50 @@ function ReadinessPanel({
                     {name}
                   </span>
                   <Badge variant="outline">Klasse {student.classes}</Badge>
-                  <Badge
-                    variant="outline"
-                    className={theoryBadgeClass[student.theory.status]}
-                  >
-                    Theorie: {student.theory.status}
-                  </Badge>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Progress
-                    value={student.progress}
-                    aria-label={`Praxis-Fortschritt von ${name}`}
-                    className="flex-1"
+                <p className="flex items-center gap-1.5 text-xs">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      STAGE_DOT[readiness.stage],
+                    )}
                   />
-                  <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
-                    {student.progress}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs text-muted-foreground">
-                    Theorie {student.theory.progress}% · Prüfung: {student.theory.exam}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onPlan(examType, name)}
-                  >
-                    <CalendarPlus data-icon="inline-start" />
-                    {examTypeLabel[examType]} planen
-                  </Button>
-                </div>
+                  {readiness.status}
+                </p>
+                <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                  <dt>Praxis</dt>
+                  <dd>
+                    <Progress
+                      value={student.progress}
+                      aria-label={`Praxis-Fortschritt von ${name}`}
+                    />
+                  </dd>
+                  <dd className="text-right tabular-nums">{student.progress} %</dd>
+                  <dt>Theorie</dt>
+                  <dd>
+                    <Progress
+                      value={theory.progress}
+                      aria-label={`Theorie-Fortschritt von ${name}`}
+                    />
+                  </dd>
+                  <dd className="text-right tabular-nums">
+                    {theory.attendedUnits}/{theory.requiredUnits}
+                  </dd>
+                </dl>
+                {readiness.suggestion && (
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onPlan(readiness.suggestion!, student)}
+                    >
+                      <CalendarPlus data-icon="inline-start" />
+                      {examTypeLabel[readiness.suggestion]} planen
+                    </Button>
+                  </div>
+                )}
               </div>
             );
           })
@@ -419,8 +440,9 @@ function ReadinessPanel({
 export function Pruefungsplaner() {
   const { events, loading: eventsLoading, refresh } = useCalendarEvents();
   const { students, loading: studentsLoading } = useStudents();
-  const { names: instructorOptions } = useInstructors();
+  const { instructors, names: instructorOptions } = useInstructors();
   const { vehicleOptions } = useVehicleOptions();
+  const { vehicles } = useVehicles();
   const [editingEvent, setEditingEvent] = useState<CalEvent | null>(null);
 
   const todayISO = toISODate(TODAY);
@@ -439,21 +461,60 @@ export function Pruefungsplaner() {
     [students],
   );
 
-  const openCreateDialog = (type: ExamEventType, student?: string) => {
+  const studentIdByName = useMemo(() => {
+    const byName = new Map<string, number>();
+    for (const student of students) {
+      const name = studentName(student);
+      if (name && !byName.has(name)) byName.set(name, student.id);
+    }
+    return byName;
+  }, [students]);
+
+  /* A vehicle label that exists and is not in the workshop. */
+  const usableVehicle = (label: string | undefined) => {
+    if (!label || label === UNASSIGNED_VEHICLE || !vehicleOptions.includes(label)) {
+      return undefined;
+    }
+    const vehicle = vehicles.find(
+      (candidate) =>
+        label === candidate.model || label === `${candidate.model} · ${candidate.plate}`,
+    );
+    return vehicle?.status === "wartung" ? undefined : label;
+  };
+
+  const openCreateDialog = (type: ExamEventType, student?: StudentRecord) => {
+    // Exams are booked ahead: next working day (Mon–Sat) at 09:00, never
+    // "today 09:00" in the past.
+    let date = addDays(TODAY, 1);
+    if (date.getDay() === 0) date = addDays(date, 1);
+    const instructor =
+      student?.instructor && instructorOptions.includes(student.instructor)
+        ? student.instructor
+        : (instructorOptions[0] ?? UNASSIGNED_INSTRUCTOR);
+    const instructorVehicle = instructors.find(
+      (candidate) => instructorName(candidate) === instructor,
+    )?.vehicle;
+    const practical = type === "Vorstellung zur prakt. Prüfung";
+    const vehicle = practical
+      ? (usableVehicle(student?.vehicle) ??
+        usableVehicle(instructorVehicle) ??
+        vehicleOptions.map(usableVehicle).find(Boolean))
+      : undefined;
     // Deferred so the dropdown finishes closing (and clears its body
-    // `pointer-events: none`) before the dialog mounts — same trick as
-    // the calendar's openNewEventDialog.
+    // `pointer-events: none`) before the dialog mounts.
     setTimeout(
       () =>
         setEditingEvent({
           id: NEW_EXAM_ID,
-          date: todayISO,
+          date: toISODate(date),
           start: "09:00",
-          end: "09:45",
+          end: practical ? "10:00" : "09:45",
           title: examTypeLabel[type],
-          subtitle: student,
+          subtitle: student ? studentName(student) : undefined,
+          studentId: student?.id,
           location: "TÜV Darmstadt",
-          instructor: instructorOptions[0] ?? UNASSIGNED_INSTRUCTOR,
+          instructor,
+          vehicle,
           type,
           tentative: true,
         }),
@@ -461,29 +522,28 @@ export function Pruefungsplaner() {
     );
   };
 
-  const handleEventSave = (id: string, updates: CalEvent) => {
-    const { id: _id, ...payload } = updates;
-    if (id === NEW_EXAM_ID) {
-      void createCalendarEvent(payload)
-        .then(() => {
-          toast.success("Prüfung geplant.");
-          void refresh();
-        })
-        .catch(() => {
-          toast.error("Prüfung konnte nicht erstellt werden.");
-        });
-      return;
-    }
-
-    void updateCalendarEvent(Number(id), payload)
-      .then(() => {
-        toast.success("Prüfung aktualisiert.");
-        void refresh();
-      })
-      .catch(() => {
-        toast.error("Prüfung konnte nicht gespeichert werden.");
-        void refresh();
-      });
+  /* Rejections propagate to the dialog, which shows the message and —
+     for overlaps / absences — offers "Trotzdem speichern". */
+  const handleEventSave = async (
+    id: string,
+    updates: CalEvent,
+    options: EventSaveOptions,
+  ) => {
+    const { id: _id, ...rest } = updates;
+    const payload = {
+      ...rest,
+      studentId: updates.studentId ?? null,
+      lessonKind: updates.lessonKind ?? null,
+      notes: updates.notes ?? "",
+      allowConflicts: options.allowConflicts === true,
+    };
+    const saved =
+      id === NEW_EXAM_ID
+        ? await createCalendarEvent(payload)
+        : await updateCalendarEvent(Number(id), payload);
+    toast.success(id === NEW_EXAM_ID ? "Prüfung geplant." : "Prüfung aktualisiert.");
+    for (const warning of saved.warnings ?? []) toast.warning(warning);
+    void refresh();
   };
 
   const handleEventDelete = (exam: CalEvent) => {
@@ -598,7 +658,7 @@ export function Pruefungsplaner() {
                   <div className="stagger-in flex flex-col gap-4">
                     {dayGroups.map((group) => (
                       <section key={group.date} className="flex flex-col gap-2">
-                        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        <h3 className="text-[11px] font-medium text-muted-foreground">
                           {dayHeading(group.date)}
                         </h3>
                         {group.exams.map((exam) => (
@@ -619,8 +679,9 @@ export function Pruefungsplaner() {
 
             <ReadinessPanel
               students={students}
-              loading={studentsLoading}
-              onPlan={(type, name) => openCreateDialog(type, name)}
+              events={events}
+              loading={studentsLoading || eventsLoading}
+              onPlan={(type, student) => openCreateDialog(type, student)}
             />
           </div>
         </div>
@@ -635,7 +696,9 @@ export function Pruefungsplaner() {
         onSave={handleEventSave}
         instructorOptions={instructorOptions}
         studentOptions={studentOptions}
+        studentIdByName={studentIdByName}
         vehicleOptions={vehicleOptions}
+        events={events}
       />
     </div>
   );

@@ -28,6 +28,42 @@ plan excerpts reflect that working-tree state.
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
+## Blocker round 2026-09-28 — missing workflows + structural fixes
+
+Branch `claude/fahrschule-blockers-4a1uxd`. Baseline 590 tests → 853 tests,
+typecheck/lint/build green, plus `bun run test:e2e` (every route renders in
+Chromium, demo mode). Landed:
+
+- **Structural:** instructor/vehicle links by id (`refs.ts`, migration drops
+  the name columns, legacy archive snapshots still restore); vehicle labels
+  unique per vehicle; student balance / last+next lesson / Sonderfahrten
+  derived on read (`student-facts.ts`, migration drops the hand-typed
+  columns); ledger scoped by customer number instead of name search;
+  browser smoke test in CI.
+- **Billing:** multi-line `guthaben_uebertragung`; exam billing per
+  `plans/design/exam-fee-billing.md` Option A; invoices + Stornorechnungen +
+  Mahnwesen (`invoices.ts`, 4830 for Mahngebühren); instalment plans;
+  SEPA mandates + pain.008.001.02 export (validated against the XSD) +
+  booking + Rücklastschrift.
+- **Scheduling:** series, absences, overlap checks, cancellation/no-show fee,
+  working-time report (subagent, merged).
+- **Communication:** outbox + SMTP client + templates + reminders,
+  Schülerportal with two-way chat (subagent, merged).
+- **Onboarding:** student CSV import (subagent, merged).
+
+Still open / blocked on decisions outside the code:
+
+- **Steuerberater:** 4400 vs 4100 (§ 4 Nr. 21 UStG) for lessons, exam fees,
+  Ausfallentschädigung; 4830 for Mahngebühren; how Anzahlungen on 3272 (19 %)
+  interact with tax-free revenue; the Endrechnung wording on invoices.
+- **SMTP:** delivery against a real provider is untested (needs credentials).
+- **SMS:** needs a provider choice (e.g. sipgate, seven.io) and an account.
+- **Theory learning:** amtlicher Fragenkatalog needs a licence (arge tp 21).
+- **Marketing/reviews sync:** needs Google Business Profile / Meta API access.
+- **Opening balances on import:** Saldenvortrag needs a tax-advisor decision.
+- **`bun audit`:** fails on transitive deps of the `shadcn` CLI (also on
+  `main`); fixed versions were not installable from the registry here.
+
 ## Full-app audit 2026-06-12 — plans 014–027
 
 Audited at commit `160eccc`. Baseline at audit time: 387 tests, typecheck
@@ -50,7 +86,7 @@ isolated worktrees and reviewed (done criteria re-run, diffs read) on
 | 019  | Lesson billing link (confirm-to-bill, per design/lessons-billing.md) | P1 | L | 016 (soft) | DONE (advisor/019-lesson-billing; incl. review fix enforcing guthaben_uebertragung on the bill endpoint) |
 | 020  | Exam results + license milestone + pass-rate KPI | P1 | M | 019 | DONE (advisor/020-exam-results, based on 019) |
 | 023  | Digital Ausbildungsnachweis MVP (per-lesson signature) | P2 | M | 019 | DONE (advisor/023-ausbildungsnachweis, based on 019) |
-| 017  | Route table in App.tsx (+404) | P3 | M | design-refresh commit | TODO (unblocked 2026-06-13 — design refresh landed as `4cd0f9c`; re-run drift check, excerpts were taken from that tree) |
+| 017  | Route table in App.tsx (+404) | P3 | M | design-refresh commit | DONE (superseded: typed TanStack route tree in `src/router.tsx` with `notFoundComponent`) |
 | 018  | Design-system rollout to ~14 remaining pages | P2 | L | design-refresh commit; 017 rec. | TODO (unblocked 2026-06-13, same reason; re-verify excerpts) |
 
 ### Merge notes (014–027)

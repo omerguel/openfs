@@ -48,8 +48,9 @@ function insertPraktischEvent(
   const row = target
     .query<{ id: number }, [string, number | null]>(
       `INSERT INTO calendar_events
-         (date, start, "end", title, instructor, type, student_id)
-       VALUES ('2026-06-10', '09:00', '10:30', 'Fahrstunde', 'Martin Weber', ?, ?)
+         (date, start, "end", title, instructor_id, type, student_id)
+       VALUES ('2026-06-10', '09:00', '10:30', 'Fahrstunde',
+               (SELECT id FROM instructors WHERE last_name = 'Weber'), ?, ?)
        RETURNING id`,
     )
     .get(type, studentId)!;
@@ -136,6 +137,26 @@ describe("createAttestation — happy path", () => {
     });
     const list = listAttestationsForStudent(db, sid);
     expect(list).toHaveLength(2);
+  });
+
+  test("the list carries the lesson date and Fahrtart for the printout", () => {
+    const sid = insertStudent(db);
+    const eid = insertPraktischEvent(db, sid);
+    db.prepare("UPDATE calendar_events SET lesson_kind = 'Nachtfahrt' WHERE id = ?").run(
+      eid,
+    );
+    createAttestation(db, {
+      eventId: eid,
+      studentId: sid,
+      instructor: "",
+      content: "",
+      durationMin: 45,
+      signatureDataUrl: SIG,
+    });
+    expect(listAttestationsForStudent(db, sid)[0]).toMatchObject({
+      lessonDate: "2026-06-10",
+      lessonKind: "Nachtfahrt",
+    });
   });
 });
 

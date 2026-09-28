@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/index.ts",
+    "dev": "NODE_ENV=development bun --hot src/index.ts",
     "build": "rm -rf dist && bun scripts/build-renderer.ts",
     "start": "NODE_ENV=production bun src/index.ts",
     "test": "bun test",
+    "test:e2e": "bun scripts/e2e-smoke.ts",
+    "restore": "bun scripts/restore.ts",
+    "drill": "bun scripts/restore-drill.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "biome check src scripts",
     "format": "biome format --write src scripts"
@@ -38,10 +41,7 @@
     "@types/react-dom": "^19",
     "agentation": "^3.0.2",
     "bun-plugin-tailwind": "^0.1.2",
-    "shadcn": "^4.11.0",
+    "playwright": "1.56.1",
     "tailwindcss": "^4.3.0"
-  },
-  "overrides": {
-    "hono": "4.12.31"
   }
 }

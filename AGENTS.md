@@ -9,6 +9,7 @@ alwaysApply: true
 - `bun test` / `bun run <script>` / `bun install` / `bunx` — never npm/yarn/pnpm/npx.
 - `bun:sqlite` not better-sqlite3; `Bun.serve()` not express; `Bun.file` not fs.readFile.
 - `vite.config.ts` exists as a deliberate shadcn-CLI shim — do not delete it or run vite at runtime.
+- The shadcn CLI is not a dependency (its transitive deps failed `bun audit`). Add components with `bunx shadcn@latest add <component>`; its base CSS is vendored in `src/styles/shadcn-tailwind.css`.
 
 ## What this is
 
@@ -18,9 +19,12 @@ OpenFS is a Fahrschule (driving school) management web app: student records, cal
 
 | Purpose    | Command             | Expected       |
 |------------|---------------------|----------------|
-| Test       | `bun test`          | 586+ pass, 0 fail |
+| Test       | `bun test`          | 1050+ pass, 0 fail |
+| Browser smoke | `bun run test:e2e` | every route ✓ (needs Chromium: `bunx playwright install chromium`) |
+| Restore drill | `bun run drill` | "Drill bestanden" (backup → disaster → restore via real servers; runbook: `docs/operations.md`) |
 | Typecheck  | `bun run typecheck` | exit 0         |
 | Build      | `bun run build`     | exit 0         |
+| Audit      | `bun audit`         | no vulnerabilities |
 
 The test count grows over time — fewer tests than last documented is the red flag, not an exact-number mismatch.
 
@@ -40,15 +44,33 @@ The accounting module enforces GoBD: immutable bookings, Storno-only corrections
 
 **The only permitted write paths are `createTransaction` and `stornoTransaction` in `src/server/engine.ts`.**
 Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
+The one documented exception is `pseudonymiseExpiredCustomer` in `src/server/engine.ts` (DSGVO Löschkonzept, `docs/datenschutz/loeschkonzept.md`): once every record of a customer is past its retention period (10 years), it replaces names and addresses; amounts, numbers, rows and sequences stay unchanged. It refuses while any record of that customer is still inside the period. Do not add other exceptions.
 
-### Name-keyed soft references
-`students`, `calendar_events`, and `theory_groups` reference instructors and vehicles by **display name**, not by id. When an instructor or vehicle is renamed or deleted, every reference must be updated (see cascade in `src/server/instructors.ts` ~lines 174–186). New cross-references should use ids instead.
+### Instructor / vehicle references
+`students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record). A vehicle's "Fahrlehrer/in" is not stored on the vehicle: it is derived from `instructors.vehicle_id` (Stammfahrzeug); setting it on a vehicle moves that instructor's Stammfahrzeug (`src/server/vehicles.ts`).
+
+### Navigation & page access
+`src/lib/navigation.ts` is the single config for the grouped sidebar, the route guard in `App.tsx` ("Kein Zugriff" page) and the global search. A new page = one entry in `NAV_GROUPS` with `access` (`all` | `office` = Inhaber+Büro | `owner`); pages without a menu entry go into `EXTRA_ROUTES`. Keep it in line with the API rules in `src/server/auth.ts`. Menu items whose route is not registered in `src/router.tsx` are hidden automatically. Old URLs redirect (`/profil`, `/schulprofil` → `/fahrschule?tab=…`, `/kalendar` → `/kalender`).
+
+### Forms
+Dirty state is derived by comparing the draft with the server data (see `src/lib/settings-form.ts`) — never set state from `onInputCapture`/`onClickCapture`: React flushes capture-phase updates and restores controlled inputs before `onChange` runs, which drops the first keystroke. Use `FormField` (`src/components/FormField.tsx`) for label, required marker (`*` + `aria-required`) and inline error.
+
+### Auth
+All `/api` routes are wrapped by `protectApiRoutes` (`src/server/auth.ts`): session required, role checked, writes audited; every write (public ones too) must be JSON (415), same-origin and within the body cap (`src/server/request-guards.ts`). A new endpoint is protected automatically; making one public means adding it to `PUBLIC_ROUTES` deliberately. Fahrlehrer/innen get **only** what `FAHRLEHRER_ALLOWED` lists (deny by default) — add a new endpoint there only if the role's pages need it, and keep `src/lib/navigation.ts` and the pages in line (no request that answers 403 for the role). Every new route also needs an entry in the `POLICY` table of `src/server/security.test.ts`, which sweeps all routes × roles and fails for a route without a decision. Never store a usable access token (session, invite, portal link) in plain text — not in tables and not in outbox bodies (use `OUTBOX_SECRET_PLACEHOLDER` + `registerOutboxSecret`, `src/server/mail.ts`). Route-level tests mount factories directly (unprotected); `src/server/auth.test.ts` covers the guard. The current user is available via `currentUser()` (`request-context.ts`).
+
+### Multi-tenancy
+In `MULTI_TENANT=1` mode the route table is built **once** over a context database (`createContextDb()` in `src/server/tenancy.ts`) that forwards to the current request's school DB. Consequences for new code:
+- Never compute DB-bound state at route-factory time (no `const stmt = db.prepare(...)` outside handlers); do it per request.
+- A module that creates tables lazily must also be called from `prepareSchoolDb` (`src/server/bootstrap.ts`), so every school's DB gets them.
+- Background work (schedulers) runs per school via `startSchoolJobs`; don't start timers in route factories.
+- `src/server/tenancy.test.ts` checks isolation between two schools — extend it for new cross-cutting features.
 
 ### Tests
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.
 - Test files are co-located as `*.test.ts` alongside the module they test.
 - Never read from or write to `data/fahrschule.db` in tests.
-- No DOM test framework (by decision) — backend tests only.
+- No DOM unit-test framework (by decision). UI coverage comes from `scripts/e2e-smoke.ts`: it boots the app in `DEMO_MODE` (in-memory DB, production mode with the security headers), opens every route parsed from `src/router.tsx` in Chromium and fails on page/console errors or 5xx API responses; a second pass signs in as Fahrlehrer/in and fails on any 401/403 (office pages must show "Kein Zugriff"). `E2E_PORT` pins the port.
+ New pages are covered automatically; add tab labels to `CLICK_THROUGH` for tab-heavy pages and interaction regressions to `FORM_CHECKS`. Route params are resolved in `resolveParams` (`$studentId`, `$token`, `$inviteToken`). Keep pure UI logic in `src/lib/` with unit tests.
 
 ### UI
 - All user-visible strings are German.

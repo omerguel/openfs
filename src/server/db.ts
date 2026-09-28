@@ -9,6 +9,9 @@
 /* ------------------------------------------------------------------ */
 
 import { openSqlite, type Database } from "./sqlite";
+import { ensureAbsenceTables } from "./absences";
+import { instructorIdByName, migrateNameColumn, vehicleIdByName } from "./refs";
+import { ensureAuthTables } from "./auth";
 
 import type { AccountKind, CompanyProfile } from "../lib/accounting-types";
 import { PRICE_PLAN_SEED } from "../lib/price-plan";
@@ -73,6 +76,7 @@ CREATE TABLE IF NOT EXISTS price_plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   guaranteed_months INTEGER NOT NULL DEFAULT 0,
+  classes TEXT NOT NULL DEFAULT '[]',
   components TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -91,13 +95,9 @@ CREATE TABLE IF NOT EXISTS students (
   contract_number TEXT NOT NULL UNIQUE,
   customer_number TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  balance TEXT NOT NULL DEFAULT '0,00 EUR',
-  last_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
-  next_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
+  instructor_id INTEGER REFERENCES instructors(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
   progress INTEGER NOT NULL DEFAULT 0,
-  lessons TEXT NOT NULL DEFAULT '[]',
   documents TEXT NOT NULL DEFAULT '[]',
   theory TEXT NOT NULL DEFAULT '{}',
   price_plan_id INTEGER REFERENCES price_plans(id),
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS instructors (
   phone TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   classes TEXT NOT NULL DEFAULT '',
-  vehicle TEXT NOT NULL DEFAULT '',
+  vehicle_id INTEGER REFERENCES vehicles(id),
   since TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -142,8 +142,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER REFERENCES instructors(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -160,7 +160,119 @@ CREATE TABLE IF NOT EXISTS archive (
   deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Rechnungen (§ 14 UStG): immutable documents over already-booked
+-- charges (guthaben_uebertragung). Corrections only via a Storno-
+-- rechnung (kind 'storno', storno_of → original). Numbers come from the
+-- gapless per-year sequence 'rechnung:<year>'.
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_nr TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL CHECK (kind IN ('rechnung', 'storno')),
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  student_id INTEGER,
+  student_customer_no TEXT NOT NULL,
+  recipient_name TEXT NOT NULL,
+  recipient_address TEXT NOT NULL DEFAULT '',
+  student_contract_no TEXT NOT NULL DEFAULT '',
+  student_classes TEXT NOT NULL DEFAULT '',
+  issuer TEXT NOT NULL,
+  lines TEXT NOT NULL,
+  total_cents INTEGER NOT NULL,
+  prepaid_cents INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  storno_of INTEGER REFERENCES invoices(id),
+  storno_reason TEXT,
+  storniert_by INTEGER REFERENCES invoices(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(student_customer_no);
+
+CREATE TABLE IF NOT EXISTS invoice_items (
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+  PRIMARY KEY (invoice_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tx ON invoice_items(transaction_id);
+
+-- Mahnwesen: one row per Zahlungserinnerung/Mahnung (level 1–3).
+CREATE TABLE IF NOT EXISTS invoice_reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3),
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  open_cents INTEGER NOT NULL,
+  fee_cents INTEGER NOT NULL DEFAULT 0,
+  fee_transaction_id INTEGER REFERENCES transactions(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (invoice_id, level)
+);
+
+-- SEPA-Lastschriftmandate. No FK on student_id: the mandate is a signed
+-- document that stays on record even if the student is deleted.
+CREATE TABLE IF NOT EXISTS sepa_mandates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  mandate_ref TEXT NOT NULL UNIQUE,
+  account_holder TEXT NOT NULL,
+  iban TEXT NOT NULL,
+  bic TEXT NOT NULL DEFAULT '',
+  signed_on TEXT NOT NULL,
+  revoked_on TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sepa_mandates_student ON sepa_mandates(student_id);
+
+-- Ratenpläne: expected Anzahlungen with due dates. A paid rate links
+-- the zahlung_guthaben transaction that settled it.
+CREATE TABLE IF NOT EXISTS instalment_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  customer_no TEXT NOT NULL,
+  title TEXT NOT NULL,
+  total_cents INTEGER NOT NULL CHECK (total_cents > 0),
+  cancelled_on TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS instalments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL REFERENCES instalment_plans(id),
+  seq INTEGER NOT NULL,
+  due_date TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  payment_transaction_id INTEGER REFERENCES transactions(id),
+  UNIQUE (plan_id, seq)
+);
+
+-- SEPA-Lastschrift-Sammler (pain.008.001.02). The generated XML is kept
+-- verbatim as the record of what was submitted to the bank.
+CREATE TABLE IF NOT EXISTS sepa_collections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  msg_id TEXT NOT NULL UNIQUE,
+  collection_date TEXT NOT NULL,
+  total_cents INTEGER NOT NULL,
+  xml TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sepa_collection_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  collection_id INTEGER NOT NULL REFERENCES sepa_collections(id),
+  mandate_id INTEGER NOT NULL REFERENCES sepa_mandates(id),
+  source_type TEXT NOT NULL CHECK (source_type IN ('invoice', 'instalment')),
+  source_id INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  sequence_type TEXT NOT NULL CHECK (sequence_type IN ('FRST', 'RCUR')),
+  end_to_end_id TEXT NOT NULL UNIQUE,
+  remittance TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'exportiert'
+    CHECK (status IN ('exportiert', 'gebucht', 'zurueckgegeben')),
+  payment_transaction_id INTEGER REFERENCES transactions(id),
+  return_reason TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_customer ON transactions(student_customer_no);
 CREATE INDEX IF NOT EXISTS idx_bookings_transaction ON bookings(transaction_id);
 `;
 
@@ -252,6 +364,14 @@ export const SKR04_ACCOUNTS: AccountSeed[] = [
   },
   { number: "4300", name: "Erlöse 7 % USt", kind: "erloes", vatRate: 7, vatLabel: "7%" },
   {
+    // Mahngebühren (pauschalierter Schadensersatz) — nicht steuerbar.
+    number: "4830",
+    name: "Sonstige betriebliche Erträge (nicht steuerbar)",
+    kind: "erloes",
+    vatRate: null,
+    vatLabel: "nicht steuerbar",
+  },
+  {
     number: "4400",
     name: "Erlöse 19 % USt",
     kind: "erloes",
@@ -295,6 +415,14 @@ export const SKR04_ACCOUNTS: AccountSeed[] = [
     vatLabel: "0%",
   },
   { number: "7685", name: "Kfz-Steuern", kind: "aufwand", vatRate: 0, vatLabel: "0%" },
+  {
+    // Eröffnungssalden (Datenübernahme aus der Vorgängersoftware).
+    number: "9000",
+    name: "Saldenvorträge, Sachkonten",
+    kind: "vortrag",
+    vatRate: null,
+    vatLabel: "Nicht zutreffend",
+  },
 ];
 
 /* Databases created before the SKR-04 switch hold SKR-03 numbers.       */
@@ -375,15 +503,57 @@ export const DEFAULT_COMPANY: CompanyProfile = {
   ustIdNr: "",
   beraterNr: "",
   mandantNr: "",
+  bankName: "",
+  iban: "",
+  bic: "",
+  glaeubigerId: "",
+  inhaber: "",
+  registergericht: "",
+  registernummer: "",
+  aufsichtsbehoerde: "",
+  datenschutzEmail: "",
+  impressumZusatz: "",
 };
 
-export function openDb(path = "data/fahrschule.db"): Database {
+export type OpenDbOptions = {
+  /** Fill an empty database with the demo school (staff, students,
+      Termine, bookings, chats, …). Off for a real school — it starts
+      empty and is set up through the first-run wizard. Omitted: keeps
+      the stored choice (default on, which tests and old DBs rely on). */
+  demoData?: boolean;
+};
+
+/* Whether demo seeds may run on this database (settings 'demo_data'). */
+export function demoDataEnabled(db: Database): boolean {
+  try {
+    const row = db
+      .query<{ value: string }, []>("SELECT value FROM settings WHERE key = 'demo_data'")
+      .get();
+    return row?.value !== "false";
+  } catch {
+    return true; // minimal test schemas without a settings table
+  }
+}
+
+export function openDb(
+  path = "data/fahrschule.db",
+  options: OpenDbOptions = {},
+): Database {
   const db = openSqlite(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(DDL);
+  ensureAuthTables(db);
+  if (options.demoData !== undefined) {
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES ('demo_data', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(String(options.demoData));
+  }
+  const demo = demoDataEnabled(db);
   migrateSkr03ToSkr04(db);
   migrateStudentPricePlan(db);
+  migrateStudentContractFields(db);
   migrateCalendarEventBilling(db);
   // student_id is added by migrateCalendarEventBilling, so this index can
   // only be created after that migration — not in the base DDL string.
@@ -391,24 +561,76 @@ export function openDb(path = "data/fahrschule.db"): Database {
     "CREATE INDEX IF NOT EXISTS idx_calendar_events_student ON calendar_events(student_id);",
   );
   migrateExamResults(db);
-  initAccounts(db);
-  initSequences(db);
-  initSettings(db);
-  initVehicles(db);
-  initInstructors(db);
-  initStudents(db);
+  migrateCalendarEventScheduling(db);
+  migrateDerivedStudentFields(db);
+  migrateNameColumn(db, "students", { from: "instructor" });
+  migrateNameColumn(db, "students", { from: "vehicle" });
+  migrateNameColumn(db, "instructors", { from: "vehicle" });
+  migrateNameColumn(db, "calendar_events", { from: "instructor" });
+  migrateNameColumn(db, "calendar_events", { from: "vehicle" });
+  initAccounts(db, demo);
+  initSequences(db, demo);
+  initSettings(db, demo);
+  if (demo) {
+    initVehicles(db);
+    initInstructors(db);
+    initStudents(db);
+  }
+  // Price plans are editable tariff templates — useful for a new school too.
   initPricePlans(db);
-  initCalendarEvents(db);
+  if (demo) initCalendarEvents(db);
+  // Calendar create/update checks absences, so the table must always exist.
+  ensureAbsenceTables(db);
   repairSoftReferences(db);
+  migrateVehicleInstructorDetail(db);
   return db;
 }
 
-/* Students, Termine and theory groups reference instructors/vehicles by
-   display name (no FK). Before the rename/delete code paths propagated
-   (instructors.ts/vehicles.ts), edits could leave references pointing
-   at names that no longer exist — invisible in pickers, phantom in
-   lists. Normalize any such orphan to the explicit "unassigned" marker.
-   Idempotent and cheap, so it runs on every open as a safety net. */
+/* Vehicles used to keep their own free-text "Fahrlehrer/in" detail next
+   to the instructor's Stammfahrzeug (instructors.vehicle_id), so the two
+   views drifted apart. The instructor side is the source of truth now
+   (see vehicles.ts): a name only stored on the vehicle is carried over to
+   an instructor without a Stammfahrzeug, then the stored copy is cleared.
+   Idempotent — a cleared detail is skipped. */
+export function migrateVehicleInstructorDetail(db: Database) {
+  const rows = db
+    .query<{ id: number; details: string }, []>("SELECT id, details FROM vehicles")
+    .all();
+  for (const row of rows) {
+    let details: { label: string; value: string }[];
+    try {
+      const parsed = JSON.parse(row.details) as unknown;
+      if (!Array.isArray(parsed)) continue;
+      details = parsed as { label: string; value: string }[];
+    } catch {
+      continue;
+    }
+    const entry = details.find((d) => d?.label === "Fahrlehrer/in");
+    const name = typeof entry?.value === "string" ? entry.value.trim() : "";
+    if (!entry || !name) continue;
+    const instructorId = name === "Nicht zugeteilt" ? null : instructorIdByName(db, name);
+    const taken = db
+      .query<{ n: number }, [number]>(
+        "SELECT count(*) AS n FROM instructors WHERE vehicle_id = ?",
+      )
+      .get(row.id)!.n;
+    if (instructorId !== null && taken === 0) {
+      db.prepare(
+        "UPDATE instructors SET vehicle_id = ? WHERE id = ? AND vehicle_id IS NULL",
+      ).run(row.id, instructorId);
+    }
+    entry.value = "";
+    db.prepare("UPDATE vehicles SET details = ? WHERE id = ?").run(
+      JSON.stringify(details),
+      row.id,
+    );
+  }
+}
+
+/* Safety net for the remaining JSON/soft links (theory-group member
+   lists, chat threads). Instructor/vehicle links are real FKs
+   (instructor_id / vehicle_id) and need no repair. Idempotent and
+   cheap, so it runs on every open. */
 export function repairSoftReferences(db: Database) {
   const tableExists = (name: string) =>
     db
@@ -417,30 +639,7 @@ export function repairSoftReferences(db: Database) {
       )
       .get(name) !== null;
 
-  db.exec(`
-    UPDATE students SET instructor = 'Nicht zugeteilt'
-      WHERE instructor != 'Nicht zugeteilt'
-        AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    UPDATE students SET vehicle = 'Nicht zugeteilt'
-      WHERE vehicle != 'Nicht zugeteilt'
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-    UPDATE instructors SET vehicle = 'Nicht zugeteilt'
-      WHERE vehicle NOT IN ('Nicht zugeteilt', '')
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-    UPDATE calendar_events SET instructor = 'Nicht zugeteilt'
-      WHERE instructor NOT IN ('Nicht zugeteilt', '')
-        AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    UPDATE calendar_events SET vehicle = ''
-      WHERE vehicle != ''
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-  `);
-
   if (tableExists("theory_groups")) {
-    db.exec(`
-      UPDATE theory_groups SET instructor = 'Nicht zugeteilt'
-        WHERE instructor != 'Nicht zugeteilt'
-          AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    `);
     // Drop member ids whose student is gone — ghosts block group capacity.
     const groups = db
       .query<{ id: number; student_ids: string }, []>(
@@ -487,6 +686,24 @@ export function migrateStudentPricePlan(db: Database) {
   db.exec(
     "ALTER TABLE students ADD COLUMN price_plan_id INTEGER REFERENCES price_plans(id)",
   );
+}
+
+/* Columns added to price_plans / students after their tables shipped:
+   the classes a plan is offered for, the per-student contract price
+   overrides (§ 32 FahrlG), the Begleitperson (BF17) and the open
+   checklist entries. */
+export function migrateStudentContractFields(db: Database) {
+  const addMissing = (table: string, column: string, ddl: string) => {
+    const columns = db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addMissing("price_plans", "classes", "classes TEXT NOT NULL DEFAULT '[]'");
+  addMissing("students", "contract_prices", "contract_prices TEXT NOT NULL DEFAULT '{}'");
+  addMissing("students", "companion", "companion TEXT");
+  addMissing("students", "open_documents", "open_documents TEXT NOT NULL DEFAULT '[]'");
 }
 
 /* Databases created before lesson-billing existed lack the student_id
@@ -549,6 +766,75 @@ export function migrateExamResults(db: Database) {
   }
 }
 
+/* Scheduling features on calendar_events — lesson kind (Sonderfahrten),
+   recurring series, and cancellation / no-show with an optional fee
+   booking. Adds each column when absent. Idempotent. */
+export function migrateCalendarEventScheduling(db: Database) {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(calendar_events)")
+    .all()
+    .map((c) => c.name);
+  const add = (name: string, definition: string) => {
+    if (!cols.includes(name)) {
+      db.exec(`ALTER TABLE calendar_events ADD COLUMN ${name} ${definition}`);
+    }
+  };
+  add(
+    "lesson_kind",
+    "TEXT CHECK (lesson_kind IN ('Übungsfahrt','Überlandfahrt','Autobahnfahrt','Nachtfahrt','Grundfahraufgaben'))",
+  );
+  add("series_id", "TEXT");
+  add("cancelled_at", "TEXT");
+  add(
+    "cancellation_kind",
+    "TEXT CHECK (cancellation_kind IN ('abgesagt','nicht_erschienen'))",
+  );
+  add("cancellation_fee_transaction_id", "INTEGER REFERENCES transactions(id)");
+  add("notes", "TEXT NOT NULL DEFAULT ''");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_calendar_events_series ON calendar_events(series_id);",
+  );
+}
+
+/* Best-effort Fahrtart for practical lessons created before lesson_kind
+   existed, read from the title ("Fahrstunde · Autobahn"). Only fills
+   NULLs, so deliberate choices are never overwritten. */
+export function backfillLessonKinds(db: Database) {
+  db.exec(`
+    UPDATE calendar_events SET lesson_kind = CASE
+        WHEN title LIKE '%autobahn%' THEN 'Autobahnfahrt'
+        WHEN title LIKE '%nacht%' OR title LIKE '%dämmerung%' OR title LIKE '%Dämmerung%'
+          THEN 'Nachtfahrt'
+        WHEN title LIKE '%überland%' OR title LIKE '%Überland%' THEN 'Überlandfahrt'
+        WHEN title LIKE '%grundfahraufgabe%' THEN 'Grundfahraufgaben'
+      END
+    WHERE type = 'Praktisch' AND lesson_kind IS NULL
+      AND (title LIKE '%autobahn%' OR title LIKE '%nacht%' OR title LIKE '%dämmerung%'
+        OR title LIKE '%Dämmerung%' OR title LIKE '%überland%' OR title LIKE '%Überland%'
+        OR title LIKE '%grundfahraufgabe%');
+  `);
+}
+
+/* balance, last_lesson, next_lesson and lessons were hand-maintained
+   copies of ledger/calendar data and drifted (a student could show
+   "Bilanz -85,00 EUR" with 450 € Guthaben). They are derived on read now
+   (student-facts.ts); this one-time migration tags old lessons with their
+   Fahrtart so Sonderfahrten keep counting, then drops the columns. */
+export function migrateDerivedStudentFields(db: Database) {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(students)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("balance")) return;
+  const migrate = db.transaction(() => {
+    backfillLessonKinds(db);
+    for (const column of ["balance", "last_lesson", "next_lesson", "lessons"]) {
+      if (cols.includes(column)) db.exec(`ALTER TABLE students DROP COLUMN ${column}`);
+    }
+  });
+  migrate();
+}
+
 /* Seed price plans — the demo tariffs from src/lib/price-plan.ts. After
    this one-time import the DB is the source of truth (/api/price-plans). */
 function initPricePlans(db: Database) {
@@ -557,11 +843,16 @@ function initPricePlans(db: Database) {
     .get()!.n;
   if (count > 0) return;
   const insert = db.prepare(
-    `INSERT INTO price_plans (name, guaranteed_months, components)
-     VALUES (?, ?, ?)`,
+    `INSERT INTO price_plans (name, guaranteed_months, classes, components)
+     VALUES (?, ?, ?, ?)`,
   );
   for (const plan of PRICE_PLAN_SEED) {
-    insert.run(plan.name, plan.guaranteedMonths, JSON.stringify(plan.components));
+    insert.run(
+      plan.name,
+      plan.guaranteedMonths,
+      JSON.stringify(plan.classes ?? []),
+      JSON.stringify(plan.components),
+    );
   }
 }
 
@@ -771,7 +1062,7 @@ function initCalendarEvents(db: Database) {
 
   const insert = db.prepare(
     `INSERT INTO calendar_events
-       (date, start, "end", title, subtitle, location, instructor, vehicle, type, tentative)
+       (date, start, "end", title, subtitle, location, instructor_id, vehicle_id, type, tentative)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const event of CALENDAR_EVENT_SEED) {
@@ -784,12 +1075,26 @@ function initCalendarEvents(db: Database) {
       event.title,
       event.subtitle ?? "",
       event.location ?? "",
-      event.instructor,
-      event.vehicle ?? "",
+      instructorIdByName(db, event.instructor),
+      event.vehicle ? vehicleIdByName(db, event.vehicle) : null,
       event.type,
       event.tentative ? 1 : 0,
     );
   }
+  // The demo titles carry the Fahrtart ("Fahrstunde · Autobahn") and the
+  // subtitle names the student — link both like a real booking would.
+  backfillLessonKinds(db);
+  db.exec(`
+    UPDATE calendar_events
+    SET student_id = (
+      SELECT id FROM students
+      WHERE trim(first_name || ' ' || last_name) = trim(calendar_events.subtitle)
+    )
+    WHERE student_id IS NULL AND type != 'Theorie' AND (
+      SELECT count(*) FROM students
+      WHERE trim(first_name || ' ' || last_name) = trim(calendar_events.subtitle)
+    ) = 1
+  `);
 }
 
 /* Seed students — the demo roster from src/lib/student-data.ts. After this
@@ -803,9 +1108,8 @@ function initStudents(db: Database) {
     `INSERT INTO students (
        first_name, last_name, birthday, phone, email, address, classes,
        driving_school, registration_date, contract_number, customer_number,
-       status, instructor, vehicle, balance, last_lesson, next_lesson,
-       progress, lessons, documents, theory
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       status, instructor_id, vehicle_id, progress, documents, theory
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const s of STUDENT_SEED) {
     insert.run(
@@ -821,13 +1125,9 @@ function initStudents(db: Database) {
       s.contractNumber,
       s.customerNumber,
       s.status,
-      s.instructor,
-      s.vehicle,
-      s.balance,
-      s.lastLesson,
-      s.nextLesson,
+      instructorIdByName(db, s.instructor),
+      vehicleIdByName(db, s.vehicle),
       s.progress,
-      JSON.stringify(s.lessons),
       JSON.stringify(s.documents),
       JSON.stringify(s.theory),
     );
@@ -884,7 +1184,7 @@ function initInstructors(db: Database) {
     .get()!.n;
   if (count > 0) return;
   const insert = db.prepare(
-    `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle, since, status)
+    `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle_id, since, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const i of INSTRUCTOR_SEED) {
@@ -894,20 +1194,19 @@ function initInstructors(db: Database) {
       i.phone,
       i.email,
       i.classes,
-      i.vehicle,
+      vehicleIdByName(db, i.vehicle),
       i.since,
       i.status,
     );
   }
 }
 
-function initAccounts(db: Database) {
-  const count = db
-    .query<{ n: number }, []>("SELECT count(*) AS n FROM accounts")
-    .get()!.n;
-  if (count > 0) return;
+/* Seeds the chart on a fresh database and adds accounts introduced by
+   later versions (e.g. 4830 for Mahngebühren) to existing ones. Existing
+   rows are never touched — INSERT OR IGNORE on the account number. */
+function initAccounts(db: Database, demo: boolean) {
   const insert = db.prepare(
-    `INSERT INTO accounts (number, name, kind, vat_rate, vat_label, active, opening_cents, opening_date)
+    `INSERT OR IGNORE INTO accounts (number, name, kind, vat_rate, vat_label, active, opening_cents, opening_date)
      VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
   );
   for (const a of SKR04_ACCOUNTS) {
@@ -917,25 +1216,47 @@ function initAccounts(db: Database) {
       a.kind,
       a.vatRate,
       a.vatLabel,
-      a.openingCents ?? null,
-      a.openingDate ?? null,
+      // Opening balances are demo figures; a real school enters its own
+      // Kassen-/Bankbestand in the setup wizard.
+      demo ? (a.openingCents ?? null) : null,
+      demo ? (a.openingDate ?? null) : null,
     );
   }
 }
 
-function initSequences(db: Database) {
+function initSequences(db: Database, demo: boolean) {
   const insert = db.prepare(
     "INSERT OR IGNORE INTO sequences (name, value) VALUES (?, ?)",
   );
-  // Start below the demo numbers so the seed lines up with the old UI
-  // (first allocated Beleg becomes T0000124A, first Buchung 00000219A).
-  insert.run("beleg", 123);
-  insert.run("buchung", 218);
+  // Demo: start below the demo numbers so the seed lines up with the old
+  // UI (first Beleg T0000124A, first Buchung 00000219A). A real school
+  // starts at 1.
+  insert.run("beleg", demo ? 123 : 0);
+  insert.run("buchung", demo ? 218 : 0);
 }
 
-function initSettings(db: Database) {
+/* The demo school: DEFAULT_COMPANY plus the owner (the demo login in
+   bootstrap.ts) and authority, so Impressum and Datenschutz are complete. */
+export const DEMO_COMPANY: CompanyProfile = {
+  ...DEFAULT_COMPANY,
+  inhaber: "Sabine Krämer",
+  aufsichtsbehoerde: "Wissenschaftsstadt Darmstadt, Fahrerlaubnisbehörde",
+};
+
+function initSettings(db: Database, demo: boolean) {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('company', ?)").run(
-    JSON.stringify(DEFAULT_COMPANY),
+    JSON.stringify(
+      demo
+        ? DEMO_COMPANY
+        : {
+            ...DEFAULT_COMPANY,
+            name: "",
+            address: "",
+            email: "",
+            phone: "",
+            website: "",
+          },
+    ),
   );
 }
 

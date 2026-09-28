@@ -23,6 +23,8 @@ export type TheoryGroup = {
   time: string;
   room: string;
   instructor: string;
+  /** FK → instructors.id (null = unassigned); `instructor` is its display name. */
+  instructorId?: number | null;
   capacity: number;
   /** Raw membership (student ids) as stored on the server. */
   studentIds: number[];
@@ -96,6 +98,10 @@ export type AttendanceEntry = {
 
 export type AttendanceSession = {
   sessionDate: string;
+  /** Lesson taught ("Grundstoff 9") — "" when not recorded. */
+  topic: string;
+  /** Theorie Termin the session was recorded from, if any. */
+  eventId: number | null;
   entries: AttendanceEntry[];
 };
 
@@ -110,12 +116,13 @@ export async function putAttendance(
   groupId: number,
   sessionDate: string,
   entries: AttendanceEntry[],
+  meta: { topic?: string; eventId?: number | null } = {},
 ): Promise<AttendanceSession[]> {
   const data = await parseOrThrow<{ sessions: AttendanceSession[] }>(
     await fetch(`/api/theory-groups/${groupId}/attendance`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionDate, entries }),
+      body: JSON.stringify({ sessionDate, entries, ...meta }),
     }),
   );
   return data.sessions;

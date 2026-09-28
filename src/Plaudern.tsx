@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle, Plus, Search, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageCircle, Plus, Search, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
@@ -14,6 +14,16 @@ import {
   type Conversation,
 } from "@/hooks/use-chat";
 import { useStudents } from "@/hooks/use-students";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -234,8 +244,8 @@ function NewConversationDialog({
         <DialogHeader>
           <DialogTitle>Neue Unterhaltung</DialogTitle>
           <DialogDescription>
-            Fahrschüler/in auswählen, um eine Unterhaltung zu beginnen. Bestehende
-            Unterhaltungen werden wiederverwendet.
+            Wählen Sie eine Fahrschülerin oder einen Fahrschüler aus. Gibt es schon eine
+            Unterhaltung, wird sie geöffnet.
           </DialogDescription>
         </DialogHeader>
 
@@ -283,6 +293,7 @@ export function Plaudern() {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [isNewOpen, setIsNewOpen] = useState(false);
+  const [deleting, setDeleting] = useState<Conversation | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const selected =
@@ -355,10 +366,6 @@ export function Plaudern() {
   }
 
   async function handleDelete(conversation: Conversation) {
-    const confirmed = window.confirm(
-      `Unterhaltung mit "${conversation.studentName}" wirklich löschen? Alle Nachrichten werden entfernt.`,
-    );
-    if (!confirmed) return;
     try {
       await deleteConversation(conversation.id);
       if (selectedId === conversation.id) setSelectedId(null);
@@ -375,14 +382,13 @@ export function Plaudern() {
         end={
           <Button type="button" size="sm" onClick={() => setIsNewOpen(true)}>
             <Plus data-icon="inline-start" />
-            Neue Unterhaltung
+            <span className="hidden sm:inline">Neue Unterhaltung</span>
+            <span className="sm:hidden">Neu</span>
           </Button>
         }
       >
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
-            Plaudern
-          </h1>
+          <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">Chat</h1>
           <div className="hidden items-center gap-3 text-[11px] text-muted-foreground sm:flex">
             <span className="tabular-nums">
               {conversations.length}{" "}
@@ -401,8 +407,14 @@ export function Plaudern() {
       </PageHeader>
 
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background">
-        {/* Left pane — conversation list */}
-        <aside className="flex w-64 shrink-0 flex-col border-r border-border/70 md:w-80">
+        {/* Left pane — conversation list. Below md only one pane is shown:
+            the list, or the open conversation (with a back button). */}
+        <aside
+          className={cn(
+            "min-w-0 flex-1 flex-col md:flex md:w-80 md:flex-none md:shrink-0 md:border-r md:border-border/70",
+            selected ? "hidden" : "flex",
+          )}
+        >
           <div className="p-3">
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -450,11 +462,23 @@ export function Plaudern() {
         </aside>
 
         {/* Right pane — message thread */}
-        <section className="flex min-w-0 flex-1 flex-col">
+        <section
+          className={cn("min-w-0 flex-1 flex-col md:flex", selected ? "flex" : "hidden")}
+        >
           {selected ? (
             <>
-              <div className="group/thread flex shrink-0 items-center gap-3 border-b border-border/70 px-4 py-2.5">
-                <Avatar>
+              <div className="group/thread flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-2.5 md:gap-3 md:px-4">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 md:hidden"
+                  aria-label="Zurück zur Übersicht"
+                  onClick={() => setSelectedId(null)}
+                >
+                  <ArrowLeft />
+                </Button>
+                <Avatar className="shrink-0">
                   <AvatarFallback>{initials(selected.studentName)}</AvatarFallback>
                 </Avatar>
                 <div className="flex min-w-0 flex-col">
@@ -470,14 +494,14 @@ export function Plaudern() {
                   variant="ghost"
                   size="icon-sm"
                   className={cn(
-                    "ml-auto text-destructive hover:bg-destructive/10 hover:text-destructive",
+                    "ml-auto shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive",
                     // Quiet until the thread header is hovered or the button is focused.
                     "pointer-fine:opacity-0 pointer-fine:transition-opacity pointer-fine:duration-150",
                     "group-hover/thread:opacity-100 group-hover/thread:duration-0",
                     "focus-visible:opacity-100",
                   )}
                   aria-label={`Unterhaltung mit ${selected.studentName} löschen`}
-                  onClick={() => void handleDelete(selected)}
+                  onClick={() => setDeleting(selected)}
                 >
                   <Trash2 />
                 </Button>
@@ -495,7 +519,7 @@ export function Plaudern() {
                   ))}
                   {messages.length === 0 && (
                     <p className="py-8 text-center text-sm text-muted-foreground">
-                      Noch keine Nachrichten — schreib die erste!
+                      Noch keine Nachrichten. Schreiben Sie die erste Nachricht.
                     </p>
                   )}
                   <div ref={bottomRef} />
@@ -531,14 +555,43 @@ export function Plaudern() {
                 </EmptyMedia>
                 <EmptyTitle>Keine Unterhaltung ausgewählt</EmptyTitle>
                 <EmptyDescription>
-                  Wähle links eine Unterhaltung aus oder starte eine neue, um mit deinen
-                  Fahrschülern zu plaudern.
+                  Wählen Sie links eine Unterhaltung aus oder beginnen Sie eine neue, um
+                  Ihren Fahrschülern zu schreiben.
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
         </section>
       </div>
+
+      <AlertDialog
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleting(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unterhaltung löschen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Die Unterhaltung mit {deleting?.studentName} und alle Nachrichten werden
+              endgültig entfernt.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (deleting) void handleDelete(deleting);
+                setDeleting(null);
+              }}
+            >
+              Löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <NewConversationDialog
         open={isNewOpen}

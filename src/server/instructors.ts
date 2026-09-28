@@ -7,8 +7,7 @@ import type { Database } from "./sqlite";
 
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
-
-const UNASSIGNED_INSTRUCTOR = "Nicht zugeteilt";
+import { resolveVehicleId, vehicleNameSql } from "./refs";
 
 export type InstructorStatus = "aktiv" | "inaktiv";
 
@@ -20,11 +19,16 @@ export type Instructor = {
   email: string;
   classes: string;
   vehicle: string;
+  vehicleId: number | null;
   since: string;
   status: InstructorStatus;
 };
 
-export type InstructorInput = Omit<Instructor, "id">;
+export type InstructorInput = Omit<Instructor, "id" | "vehicleId"> & {
+  vehicleId?: number | null;
+};
+
+type InstructorData = Omit<Instructor, "id" | "vehicle">;
 
 type InstructorRow = {
   id: number;
@@ -34,6 +38,7 @@ type InstructorRow = {
   email: string;
   classes: string;
   vehicle: string;
+  vehicle_id: number | null;
   since: string;
   status: InstructorStatus;
 };
@@ -46,22 +51,23 @@ const toInstructor = (row: InstructorRow): Instructor => ({
   email: row.email,
   classes: row.classes,
   vehicle: row.vehicle,
+  vehicleId: row.vehicle_id,
   since: row.since,
   status: row.status,
 });
 
-const SELECT =
-  "SELECT id, first_name, last_name, phone, email, classes, vehicle, since, status FROM instructors";
+const SELECT = `SELECT i.id, i.first_name, i.last_name, i.phone, i.email, i.classes,
+  i.vehicle_id, ${vehicleNameSql("i")} AS vehicle, i.since, i.status FROM instructors i`;
 
 export function listInstructors(db: Database): Instructor[] {
   return db
-    .query<InstructorRow, []>(`${SELECT} ORDER BY last_name, first_name`)
+    .query<InstructorRow, []>(`${SELECT} ORDER BY i.last_name, i.first_name`)
     .all()
     .map(toInstructor);
 }
 
 export function getInstructor(db: Database, id: number): Instructor {
-  const row = db.query<InstructorRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db.query<InstructorRow, [number]>(`${SELECT} WHERE i.id = ?`).get(id);
   if (!row) throw new ValidationError("Fahrlehrer/in nicht gefunden.");
   return toInstructor(row);
 }
@@ -69,10 +75,12 @@ export function getInstructor(db: Database, id: number): Instructor {
 /* Merge a partial payload over current values, trimming strings and
    rejecting anything that would leave the record unusable. */
 function normalize(
+  db: Database,
   input: Partial<InstructorInput>,
-  current: InstructorInput,
-): InstructorInput {
-  const str = (key: keyof InstructorInput): string => {
+  current: InstructorData,
+): InstructorData {
+  type TextKey = "firstName" | "lastName" | "phone" | "email" | "classes" | "since";
+  const str = (key: TextKey): string => {
     const value = input[key];
     if (value === undefined) return current[key];
     if (typeof value !== "string") {
@@ -81,13 +89,17 @@ function normalize(
     return value.trim();
   };
 
-  const next: InstructorInput = {
+  const next: InstructorData = {
     firstName: str("firstName"),
     lastName: str("lastName"),
     phone: str("phone"),
     email: str("email"),
     classes: str("classes"),
-    vehicle: str("vehicle"),
+    vehicleId: resolveVehicleId(
+      db,
+      { id: input.vehicleId, name: input.vehicle },
+      current.vehicleId,
+    ),
     since: str("since"),
     status: current.status,
   };
@@ -106,13 +118,13 @@ function normalize(
   return next;
 }
 
-const EMPTY: InstructorInput = {
+const EMPTY: InstructorData = {
   firstName: "",
   lastName: "",
   phone: "",
   email: "",
   classes: "",
-  vehicle: "",
+  vehicleId: null,
   since: "",
   status: "aktiv",
 };
@@ -121,13 +133,13 @@ export function createInstructor(
   db: Database,
   input: Partial<InstructorInput>,
 ): Instructor {
-  const data = normalize(input, EMPTY);
+  const data = normalize(db, input, EMPTY);
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string, string, string, string]
+      [string, string, string, string, string, number | null, string, string]
     >(
-      `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle, since, status)
+      `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle_id, since, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
@@ -136,7 +148,7 @@ export function createInstructor(
       data.phone,
       data.email,
       data.classes,
-      data.vehicle,
+      data.vehicleId,
       data.since,
       data.status,
     )!;
@@ -149,52 +161,24 @@ export function updateInstructor(
   input: Partial<InstructorInput>,
 ): Instructor {
   const current = getInstructor(db, id);
-  const data = normalize(input, current);
-  const oldName = `${current.firstName} ${current.lastName}`.trim();
-  const newName = `${data.firstName} ${data.lastName}`.trim();
-  const write = db.transaction(() => {
-    db.prepare(
-      `UPDATE instructors
-       SET first_name = ?, last_name = ?, phone = ?, email = ?, classes = ?, vehicle = ?, since = ?, status = ?
-       WHERE id = ?`,
-    ).run(
-      data.firstName,
-      data.lastName,
-      data.phone,
-      data.email,
-      data.classes,
-      data.vehicle,
-      data.since,
-      data.status,
-      id,
-    );
-    // Students, Termine and theory groups reference instructors by
-    // display name — a rename must follow, or they keep pointing at a
-    // name that no longer exists. (Namesakes would be carried along
-    // too; the name-keyed schema cannot tell them apart.)
-    if (newName !== oldName && oldName) {
-      db.prepare("UPDATE students SET instructor = ? WHERE instructor = ?").run(
-        newName,
-        oldName,
-      );
-      db.prepare("UPDATE calendar_events SET instructor = ? WHERE instructor = ?").run(
-        newName,
-        oldName,
-      );
-      if (tableExists(db, "theory_groups")) {
-        db.prepare("UPDATE theory_groups SET instructor = ? WHERE instructor = ?").run(
-          newName,
-          oldName,
-        );
-      }
-      if (tableExists(db, "lesson_attestations")) {
-        db.prepare(
-          "UPDATE lesson_attestations SET instructor = ? WHERE instructor = ?",
-        ).run(newName, oldName);
-      }
-    }
-  });
-  write();
+  const data = normalize(db, input, current);
+  // Students, Termine and theory groups link by instructor_id, so a
+  // rename needs no cascade — display names are derived on read.
+  db.prepare(
+    `UPDATE instructors
+     SET first_name = ?, last_name = ?, phone = ?, email = ?, classes = ?, vehicle_id = ?, since = ?, status = ?
+     WHERE id = ?`,
+  ).run(
+    data.firstName,
+    data.lastName,
+    data.phone,
+    data.email,
+    data.classes,
+    data.vehicleId,
+    data.since,
+    data.status,
+    id,
+  );
   return getInstructor(db, id);
 }
 
@@ -202,46 +186,36 @@ export function deleteInstructor(db: Database, id: number): void {
   const instructor = getInstructor(db, id);
   const name = `${instructor.firstName} ${instructor.lastName}`.trim();
 
-  const remove = db.transaction(() => {
-    // Remember who was assigned so a restore can re-link them.
-    const students = db
-      .query<{ id: number }, [string]>("SELECT id FROM students WHERE instructor = ?")
-      .all(name)
-      .map((row) => row.id);
-    const theoryGroups = tableExists(db, "theory_groups")
+  const linked = (table: string): number[] =>
+    tableExists(db, table)
       ? db
-          .query<{ id: number }, [string]>(
-            "SELECT id FROM theory_groups WHERE instructor = ?",
+          .query<{ id: number }, [number]>(
+            `SELECT id FROM ${table} WHERE instructor_id = ?`,
           )
-          .all(name)
+          .all(id)
           .map((row) => row.id)
       : [];
-    const calendarEvents = db
-      .query<{ id: number }, [string]>(
-        "SELECT id FROM calendar_events WHERE instructor = ?",
-      )
-      .all(name)
-      .map((row) => row.id);
+
+  const remove = db.transaction(() => {
+    // Remember who was assigned so a restore can re-link them.
+    const students = linked("students");
+    const theoryGroups = linked("theory_groups");
+    const calendarEvents = linked("calendar_events");
     archiveRow(db, "instructor", id, name || "Fahrlehrer/in", {
       students,
       theoryGroups,
       calendarEvents,
     });
-    db.prepare("UPDATE students SET instructor = ? WHERE instructor = ?").run(
-      UNASSIGNED_INSTRUCTOR,
-      name,
-    );
-    if (theoryGroups.length > 0) {
-      db.prepare("UPDATE theory_groups SET instructor = ? WHERE instructor = ?").run(
-        UNASSIGNED_INSTRUCTOR,
-        name,
-      );
+    for (const table of ["students", "theory_groups", "calendar_events"]) {
+      if (tableExists(db, table)) {
+        db.prepare(
+          `UPDATE ${table} SET instructor_id = NULL WHERE instructor_id = ?`,
+        ).run(id);
+      }
     }
-    if (calendarEvents.length > 0) {
-      db.prepare("UPDATE calendar_events SET instructor = ? WHERE instructor = ?").run(
-        UNASSIGNED_INSTRUCTOR,
-        name,
-      );
+    // Absences only describe this instructor's calendar — they go with them.
+    if (tableExists(db, "instructor_absences")) {
+      db.prepare("DELETE FROM instructor_absences WHERE instructor_id = ?").run(id);
     }
     // lesson_attestations keep the instructor name on purpose: they record
     // who actually gave the lesson — rewriting would falsify a compliance record.

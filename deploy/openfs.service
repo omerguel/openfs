@@ -1,0 +1,51 @@
+# systemd unit for OpenFS. Install:
+#   useradd --system --home-dir /var/lib/openfs --shell /usr/sbin/nologin openfs
+#   cp deploy/openfs.service /etc/systemd/system/openfs.service
+#   install -m 640 -o root -g openfs deploy/openfs.env.example /etc/openfs/openfs.env
+#   systemctl daemon-reload && systemctl enable --now openfs
+# Logs: journalctl -u openfs -f        Status: systemctl status openfs
+
+[Unit]
+Description=OpenFS Fahrschulverwaltung
+Documentation=file:///opt/openfs/docs/operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openfs
+Group=openfs
+# The checkout (read-only for the service): git clone … /opt/openfs && bun install
+WorkingDirectory=/opt/openfs
+Environment=NODE_ENV=production
+# Secrets and settings (DB_PATH, S3_*, SMTP_*, TRUST_PROXY=1, …).
+EnvironmentFile=/etc/openfs/openfs.env
+ExecStart=/usr/local/bin/bun src/index.ts
+Restart=on-failure
+RestartSec=5
+# SIGTERM, then SIGKILL after 20 s. SQLite (WAL) recovers from either.
+TimeoutStopSec=20
+
+# Data lives in /var/lib/openfs (created with the right owner by systemd).
+StateDirectory=openfs
+StateDirectoryMode=0750
+UMask=0027
+
+# Hardening: the service can only write its state directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/openfs
+# Bun's transpiler cache would go to $HOME; not needed in production.
+Environment=BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+
+[Install]
+WantedBy=multi-user.target

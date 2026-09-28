@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS students (
   contract_number TEXT NOT NULL UNIQUE,
   customer_number TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   balance TEXT NOT NULL DEFAULT '0,00 EUR',
   last_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
   next_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS instructors (
   phone TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   classes TEXT NOT NULL DEFAULT '',
-  vehicle TEXT NOT NULL DEFAULT '',
+  vehicle_id INTEGER,
   since TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -124,14 +124,15 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   student_id INTEGER,
   billed_transaction_id INTEGER,
-  exam_result TEXT
+  exam_result TEXT,
+  cancelled_at TEXT
 );
 `;
 
@@ -161,10 +162,16 @@ function insertStudent(status: "aktiv" | "inaktiv", registrationDate: string) {
   );
 }
 
+const FIRST_NAMES: Record<string, string> = {
+  Weber: "Martin",
+  Aksoy: "Nadine",
+  Kappel: "Sven",
+};
+
 function insertInstructor(status: "aktiv" | "inaktiv", lastName: string) {
   db.prepare(
     "INSERT INTO instructors (first_name, last_name, status) VALUES (?, ?, ?)",
-  ).run("Test", lastName, status);
+  ).run(FIRST_NAMES[lastName] ?? "Test", lastName, status);
 }
 
 let vehicleSeq = 0;
@@ -182,10 +189,23 @@ function insertEvent(
   type: string,
   instructor = "Martin Weber",
 ) {
+  const [first = "", last = ""] = instructor.split(" ");
+  let row = db
+    .query<{ id: number }, [string, string]>(
+      "SELECT id FROM instructors WHERE first_name = ? AND last_name = ?",
+    )
+    .get(first, last);
+  if (!row) {
+    row = db
+      .query<{ id: number }, [string, string]>(
+        "INSERT INTO instructors (first_name, last_name) VALUES (?, ?) RETURNING id",
+      )
+      .get(first, last)!;
+  }
   db.prepare(
-    `INSERT INTO calendar_events (date, start, "end", title, instructor, type)
+    `INSERT INTO calendar_events (date, start, "end", title, instructor_id, type)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(date, start, end, "Termin", instructor, type);
+  ).run(date, start, end, "Termin", row.id, type);
 }
 
 function insertAccounts() {
@@ -251,7 +271,7 @@ describe("studentStatistics", () => {
     insertStudent("inaktiv", "09.03.2026");
     insertStudent("aktiv", ""); // no date — counted in totals, not per month
 
-    const stats = studentStatistics(db);
+    const stats = studentStatistics(db, new Date(2026, 4, 20));
     expect(stats.total).toBe(5);
     expect(stats.aktiv).toBe(4);
     expect(stats.inaktiv).toBe(1);
@@ -260,6 +280,36 @@ describe("studentStatistics", () => {
       { month: "2026-04", count: 1 },
       { month: "2026-05", count: 2 },
     ]);
+  });
+
+  test("months without signups count as 0 up to the current month", () => {
+    insertStudent("aktiv", "12.05.2026");
+    insertStudent("aktiv", "03.09.2026");
+    const stats = studentStatistics(db, new Date(2026, 10, 2));
+    expect(stats.registrationsPerMonth).toEqual([
+      { month: "2026-05", count: 1 },
+      { month: "2026-06", count: 0 },
+      { month: "2026-07", count: 0 },
+      { month: "2026-08", count: 0 },
+      { month: "2026-09", count: 1 },
+      { month: "2026-10", count: 0 },
+      { month: "2026-11", count: 0 },
+    ]);
+  });
+
+  test("year boundaries roll over", () => {
+    insertStudent("aktiv", "15.11.2025");
+    const stats = studentStatistics(db, new Date(2026, 1, 1));
+    expect(stats.registrationsPerMonth.map((r) => r.month)).toEqual([
+      "2025-11",
+      "2025-12",
+      "2026-01",
+      "2026-02",
+    ]);
+  });
+
+  test("no registrations → empty list", () => {
+    expect(studentStatistics(db).registrationsPerMonth).toEqual([]);
   });
 });
 
@@ -511,5 +561,20 @@ describe("examStatistics", () => {
     expect(theorie.bestanden).toBe(1);
     expect(praktisch.total).toBe(1);
     expect(praktisch.nicht_bestanden).toBe(1);
+  });
+});
+
+describe("cancelled Termine", () => {
+  test("are left out of lesson counts and instructor utilization", () => {
+    insertEvent("2026-06-01", "09:00", "09:45", "Praktisch");
+    insertEvent("2026-06-02", "09:00", "09:45", "Praktisch");
+    db.prepare(
+      "UPDATE calendar_events SET cancelled_at = '2026-05-30' WHERE date = ?",
+    ).run("2026-06-02");
+    expect(lessonStatistics(db).total).toBe(1);
+    expect(instructorStatistics(db).utilization[0]).toMatchObject({
+      events: 1,
+      minutes: 45,
+    });
   });
 });

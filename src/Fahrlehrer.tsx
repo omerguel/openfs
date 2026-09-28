@@ -1,8 +1,11 @@
-import { useState } from "react";
-import { GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { CalendarOff, GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
+import { AbsencesDialog } from "./components/fahrlehrer/AbsencesDialog.tsx";
+import { WorkingTimeReport } from "./components/fahrlehrer/WorkingTimeReport.tsx";
 import { panelActionsClass, panelInteractiveClass } from "./components/Panel.tsx";
 import {
   createInstructor,
@@ -32,8 +35,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { RequiredLegend, RequiredMark } from "@/components/FormField";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { useVehicleOptions } from "@/hooks/use-vehicle-options";
+import { UNASSIGNED_VEHICLE } from "@/lib/vehicle-options";
 import {
   Select,
   SelectContent,
@@ -43,6 +50,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOTS: Record<InstructorInput["status"], string> = {
@@ -122,6 +130,30 @@ function InstructorDialog({
   onSave: () => void;
   onDelete?: () => void;
 }) {
+  const { vehicleOptions } = useVehicleOptions();
+  const [submitted, setSubmitted] = useState(false);
+  useEffect(() => {
+    if (open) setSubmitted(false);
+  }, [open]);
+  const errors = {
+    firstName: draft.firstName.trim() ? null : "Bitte den Vornamen angeben.",
+    lastName: draft.lastName.trim() ? null : "Bitte den Nachnamen angeben.",
+    since: /^(\d{4}|\d{1,2}\/\d{4}|\d{4}-\d{2}(-\d{2})?)?$/.test(draft.since.trim())
+      ? null
+      : "Bitte als Jahr (z. B. 2019) oder MM/JJJJ angeben.",
+  };
+  const shown = submitted ? errors : { firstName: null, lastName: null, since: null };
+  const submit = () => {
+    setSubmitted(true);
+    if (!errors.firstName && !errors.lastName && !errors.since) onSave();
+  };
+  const errorText = (id: string, message: string | null) =>
+    message ? (
+      <span id={id} role="alert" className="text-xs text-destructive">
+        {message}
+      </span>
+    ) : null;
+
   function update<Key extends keyof InstructorInput>(
     key: Key,
     value: InstructorInput[Key],
@@ -139,20 +171,36 @@ function InstructorDialog({
 
         <FieldGroup className="grid gap-4 sm:grid-cols-2">
           <Field>
-            <FieldLabel htmlFor="instructor-first-name">Vorname</FieldLabel>
+            <FieldLabel htmlFor="instructor-first-name">
+              Vorname
+              <RequiredMark />
+            </FieldLabel>
             <Input
               id="instructor-first-name"
+              aria-required
+              aria-invalid={shown.firstName ? true : undefined}
+              aria-describedby={
+                shown.firstName ? "instructor-first-name-error" : undefined
+              }
               value={draft.firstName}
               onChange={(event) => update("firstName", event.target.value)}
             />
+            {errorText("instructor-first-name-error", shown.firstName)}
           </Field>
           <Field>
-            <FieldLabel htmlFor="instructor-last-name">Nachname</FieldLabel>
+            <FieldLabel htmlFor="instructor-last-name">
+              Nachname
+              <RequiredMark />
+            </FieldLabel>
             <Input
               id="instructor-last-name"
+              aria-required
+              aria-invalid={shown.lastName ? true : undefined}
+              aria-describedby={shown.lastName ? "instructor-last-name-error" : undefined}
               value={draft.lastName}
               onChange={(event) => update("lastName", event.target.value)}
             />
+            {errorText("instructor-last-name-error", shown.lastName)}
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-classes">Ausbildungsklassen</FieldLabel>
@@ -186,6 +234,7 @@ function InstructorDialog({
             <FieldLabel htmlFor="instructor-phone">Telefon</FieldLabel>
             <Input
               id="instructor-phone"
+              type="tel"
               value={draft.phone}
               onChange={(event) => update("phone", event.target.value)}
             />
@@ -201,23 +250,39 @@ function InstructorDialog({
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-vehicle">Stammfahrzeug</FieldLabel>
-            <Input
+            <NativeSelect
               id="instructor-vehicle"
-              placeholder="z. B. VW Golf"
-              value={draft.vehicle}
+              value={draft.vehicle || UNASSIGNED_VEHICLE}
               onChange={(event) => update("vehicle", event.target.value)}
-            />
+              className="w-full"
+            >
+              {(vehicleOptions.includes(draft.vehicle) || !draft.vehicle
+                ? vehicleOptions
+                : [draft.vehicle, ...vehicleOptions]
+              ).map((option) => (
+                <NativeSelectOption key={option} value={option}>
+                  {option}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-since">Dabei seit</FieldLabel>
             <Input
               id="instructor-since"
-              placeholder="z. B. 03/2019"
+              inputMode="numeric"
+              maxLength={10}
+              placeholder="z. B. 2019"
+              aria-invalid={shown.since ? true : undefined}
               value={draft.since}
-              onChange={(event) => update("since", event.target.value)}
+              onChange={(event) =>
+                update("since", event.target.value.replace(/[^\d/-]/g, ""))
+              }
             />
+            {errorText("instructor-since-error", shown.since)}
           </Field>
         </FieldGroup>
+        <RequiredLegend />
 
         <DialogFooter className="gap-2 sm:justify-between">
           {onDelete ? (
@@ -239,12 +304,8 @@ function InstructorDialog({
                 Abbrechen
               </Button>
             </DialogClose>
-            <Button
-              type="button"
-              disabled={saving || !draft.firstName.trim() || !draft.lastName.trim()}
-              onClick={onSave}
-            >
-              Speichern
+            <Button type="button" disabled={saving} onClick={submit}>
+              {saving ? "Speichert …" : "Speichern"}
             </Button>
           </div>
         </DialogFooter>
@@ -256,9 +317,11 @@ function InstructorDialog({
 function InstructorCard({
   instructor,
   onEdit,
+  onAbsences,
 }: {
   instructor: Instructor;
   onEdit: () => void;
+  onAbsences: () => void;
 }) {
   const fullName = instructorName(instructor);
   const details = [
@@ -281,6 +344,16 @@ function InstructorCard({
           <div className={cn("flex items-center gap-1.5", panelActionsClass)}>
             <StatusBadge status={instructor.status} />
             <div className="flex items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Abwesenheiten von ${fullName}`}
+                title="Abwesenheiten"
+                onClick={onAbsences}
+              >
+                <CalendarOff />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -316,10 +389,13 @@ function InstructorCard({
 
 export function Fahrlehrer() {
   const { instructors, loading, refresh } = useInstructors();
+  const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<InstructorInput>(emptyDraft);
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<"uebersicht" | "arbeitszeiten">("uebersicht");
+  const [absencesFor, setAbsencesFor] = useState<Instructor | null>(null);
 
   const startCreating = () => {
     setDraft(emptyDraft);
@@ -336,8 +412,11 @@ export function Fahrlehrer() {
     try {
       await action();
       await refresh();
+      // The Stammfahrzeug is also shown on the vehicle ("Fahrlehrer/in").
+      await queryClient.invalidateQueries({ queryKey: ["vehicles"] });
       setCreating(false);
       setEditingId(null);
+      toast.dismiss();
       toast.success(success);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Speichern fehlgeschlagen.");
@@ -350,7 +429,7 @@ export function Fahrlehrer() {
     if (editingId === null) return;
     const name = `${draft.firstName} ${draft.lastName}`.trim();
     const confirmed = window.confirm(
-      `${name || "Diese/n Fahrlehrer/in"} wirklich löschen? Zugeordnete Fahrschüler werden auf „Nicht zugeteilt“ gesetzt.`,
+      `${name || "Diese/n Fahrlehrer/in"} wirklich löschen? Zugeordnete Fahrschüler werden auf „Nicht zugeteilt“ gesetzt, eingetragene Abwesenheiten werden gelöscht.`,
     );
     if (!confirmed) return;
 
@@ -364,15 +443,34 @@ export function Fahrlehrer() {
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <Button type="button" size="sm" onClick={startCreating}>
-            <Plus data-icon="inline-start" />
-            Fahrlehrer/in hinzufügen
-          </Button>
+          view === "uebersicht" ? (
+            <Button type="button" size="sm" onClick={startCreating}>
+              <Plus data-icon="inline-start" />
+              Fahrlehrer/in hinzufügen
+            </Button>
+          ) : undefined
         }
-      />
+      >
+        <ToggleGroup
+          type="single"
+          value={view}
+          onValueChange={(value) => {
+            if (value) setView(value as typeof view);
+          }}
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label="Ansicht"
+        >
+          <ToggleGroupItem value="uebersicht">Übersicht</ToggleGroupItem>
+          <ToggleGroupItem value="arbeitszeiten">Arbeitszeiten</ToggleGroupItem>
+        </ToggleGroup>
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
-        {loading ? (
+        {view === "arbeitszeiten" ? (
+          <WorkingTimeReport />
+        ) : loading ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:gap-5">
             {Array.from({ length: 3 }, (_, index) => (
               <Skeleton key={index} className="h-40 rounded-lg" />
@@ -390,6 +488,7 @@ export function Fahrlehrer() {
                 key={instructor.id}
                 instructor={instructor}
                 onEdit={() => startEditing(instructor)}
+                onAbsences={() => setAbsencesFor(instructor)}
               />
             ))}
           </div>
@@ -420,6 +519,15 @@ export function Fahrlehrer() {
         }
         onDelete={removeEditingInstructor}
       />
+
+      {absencesFor && (
+        <AbsencesDialog
+          instructor={absencesFor}
+          onOpenChange={(open) => {
+            if (!open) setAbsencesFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }

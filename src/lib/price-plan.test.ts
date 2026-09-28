@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveLessonPrice, type PricePlanRecord } from "@/lib/price-plan";
+import {
+  resolveEventCharges,
+  resolveLessonPrice,
+  type PricePlanRecord,
+} from "@/lib/price-plan";
 
 /** Minimal helper to build a PricePlanRecord for tests. */
 function makePlan(overrides: Partial<PricePlanRecord> = {}): PricePlanRecord {
@@ -54,5 +58,55 @@ describe("resolveLessonPrice", () => {
     });
     const result = resolveLessonPrice(plan);
     expect(result!.priceCents).toBe(55_00);
+  });
+});
+
+describe("resolveEventCharges", () => {
+  const exam = makePlan({
+    components: [
+      {
+        label: "Fahrübungsstunde",
+        durationMin: 45,
+        priceCents: 65_00,
+        eventType: "Praktisch",
+      },
+      {
+        label: "Praktische Prüfung",
+        priceCents: 280_00,
+        eventType: "Vorstellung zur prakt. Prüfung",
+      },
+      {
+        label: "TÜV-Gebühr Praxis",
+        priceCents: 129_83,
+        erloesKonto: "1370",
+        eventType: "Vorstellung zur prakt. Prüfung",
+      },
+    ],
+  });
+
+  test("every component tagged with the event type becomes a line", () => {
+    expect(resolveEventCharges(exam, "Vorstellung zur prakt. Prüfung")).toEqual([
+      { label: "Praktische Prüfung", priceCents: 280_00, habenKonto: "4400" },
+      { label: "TÜV-Gebühr Praxis", priceCents: 129_83, habenKonto: "1370" },
+    ]);
+  });
+
+  test("untagged legacy plans fall back to the known labels", () => {
+    const legacy = makePlan({
+      components: [
+        { label: "Theorieprüfung", priceCents: 130_00 },
+        { label: "Fahrübungsstunde", priceCents: 65_00 },
+      ],
+    });
+    expect(resolveEventCharges(legacy, "Theorieprüfung")).toEqual([
+      { label: "Theorieprüfung", priceCents: 130_00, habenKonto: "4400" },
+    ]);
+  });
+
+  test("no plan or nothing priced → empty", () => {
+    expect(resolveEventCharges(undefined, "Praktisch")).toEqual([]);
+    expect(resolveEventCharges(makePlan({ components: [] }), "Theorieprüfung")).toEqual(
+      [],
+    );
   });
 });

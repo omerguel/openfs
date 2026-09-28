@@ -178,10 +178,18 @@ describe("students", () => {
     expect(student.progress).toBe(50);
   });
 
-  test("createStudent: lessons not an array → ValidationError", () => {
-    expect(() => createStudent(db, makeStudent({ lessons: "not-an-array" }))).toThrow(
-      ValidationError,
+  test("createStudent: derived fields sent by the client are ignored", () => {
+    const student = createStudent(
+      db,
+      makeStudent({
+        lessons: "not-an-array",
+        balance: "999,00 EUR",
+        nextLesson: "morgen",
+      }),
     );
+    expect(student.balance).toBe("0,00 EUR");
+    expect(student.nextLesson).toBe("Nicht geplant");
+    expect(Array.isArray(student.lessons)).toBe(true);
   });
 
   test("createStudent: pricePlanId 0 → ValidationError", () => {

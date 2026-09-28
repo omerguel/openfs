@@ -27,5 +27,26 @@ jobs:
         run: bun run lint
       - name: Test
         run: bun test
+      - name: Restore drill (backup, disaster, restore; single + multi-tenant)
+        run: bun run drill
       - name: Build
         run: bun run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Browser smoke test (every route, demo mode)
+        run: bun run test:e2e

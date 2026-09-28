@@ -10,7 +10,13 @@
 import type { Student } from "@/lib/student-data";
 import { parseOrThrow, useFetchList } from "@/lib/api";
 
-export type StudentRecord = Student & { id: number };
+/* instructorId/vehicleId are the real links; the display names in
+   `instructor`/`vehicle` are derived by the server. */
+export type StudentRecord = Student & {
+  id: number;
+  instructorId?: number | null;
+  vehicleId?: number | null;
+};
 
 export async function fetchStudents(): Promise<StudentRecord[]> {
   const data = await parseOrThrow<{ students: StudentRecord[] }>(
@@ -42,9 +48,12 @@ export async function updateStudent(
   );
 }
 
-export async function deleteStudent(id: number): Promise<void> {
+/** Archives the student (restorable from /archiv); `reason` is one of
+ *  abgeschlossen | abgebrochen | wechsel | sonstiges. */
+export async function deleteStudent(id: number, reason?: string): Promise<void> {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
   await parseOrThrow<{ ok: true }>(
-    await fetch(`/api/students/${id}`, { method: "DELETE" }),
+    await fetch(`/api/students/${id}${query}`, { method: "DELETE" }),
   );
 }
 

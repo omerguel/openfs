@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { ScaledPreview } from "@/components/ScaledPreview";
 import { fetchAttestationsForStudent } from "@/hooks/use-ausbildungsnachweis";
 import type { StudentRecord } from "@/hooks/use-students";
 import type { CompanyProfile } from "@/lib/accounting-types";
@@ -109,6 +110,7 @@ function NachweisSheet({
           <tr className="border-b border-black/30 text-left text-[11px] uppercase tracking-wide text-black/60">
             <th className="py-1.5 pr-2 font-medium">Datum</th>
             <th className="py-1.5 pr-2 text-right font-medium">Dauer (Min)</th>
+            <th className="py-1.5 pr-2 font-medium">Fahrtart</th>
             <th className="py-1.5 pr-2 font-medium">Fahrlehrer</th>
             <th className="py-1.5 pr-2 font-medium">Unterrichtsinhalt</th>
             <th className="py-1.5 font-medium">Unterschrift</th>
@@ -118,11 +120,12 @@ function NachweisSheet({
           {attestations.map((att) => (
             <tr key={att.id} className="border-b border-black/10">
               <td className="py-1.5 pr-2 align-top">
-                {formatIsoDate(att.signedAt.slice(0, 10))}
+                {formatIsoDate(att.lessonDate ?? att.signedAt.slice(0, 10))}
               </td>
               <td className="py-1.5 pr-2 text-right align-top tabular-nums">
                 {att.durationMin}
               </td>
+              <td className="py-1.5 pr-2 align-top">{att.lessonKind || "Übungsfahrt"}</td>
               <td className="py-1.5 pr-2 align-top">{att.instructor || "–"}</td>
               <td className="py-1.5 pr-2 align-top whitespace-pre-wrap">
                 {att.content || "–"}
@@ -143,7 +146,7 @@ function NachweisSheet({
             <td className="py-2 pr-2 text-right font-semibold tabular-nums">
               {totalMinutes}
             </td>
-            <td colSpan={3} className="py-2 text-black/60">
+            <td colSpan={4} className="py-2 text-black/60">
               {attestations.length}{" "}
               {attestations.length === 1 ? "Fahrstunde" : "Fahrstunden"}
             </td>
@@ -174,7 +177,11 @@ export function AusbildungsnachweisPrintDialog({
     fetchAttestationsForStudent(student.id)
       .then((list) => {
         if (cancelled) return;
-        setAttestations(list.toSorted((a, b) => a.signedAt.localeCompare(b.signedAt)));
+        setAttestations(
+          list.toSorted((a, b) =>
+            (a.lessonDate ?? a.signedAt).localeCompare(b.lessonDate ?? b.signedAt),
+          ),
+        );
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -215,7 +222,7 @@ export function AusbildungsnachweisPrintDialog({
         if (!isOpen) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Ausbildungsnachweis drucken</DialogTitle>
           <DialogDescription>
@@ -230,15 +237,13 @@ export function AusbildungsnachweisPrintDialog({
           </div>
         ) : (
           <>
-            <div className="max-h-[60vh] overflow-auto rounded-lg border shadow-sm">
-              <div className="p-2">
-                <NachweisSheet
-                  student={student}
-                  school={school}
-                  attestations={attestations}
-                />
-              </div>
-            </div>
+            <ScaledPreview className="max-h-[60vh] overflow-y-auto rounded-lg border shadow-sm">
+              <NachweisSheet
+                student={student}
+                school={school}
+                attestations={attestations}
+              />
+            </ScaledPreview>
             {/* Print copy outside the app root — the only thing printed. */}
             {printRoot &&
               createPortal(

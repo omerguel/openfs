@@ -7,6 +7,9 @@
 /* the dashboard, calendar, and Stunden tab share.                      */
 /* ------------------------------------------------------------------ */
 
+import type { CancellationKind } from "./cancellation";
+import type { LessonKind } from "./special-drives";
+
 export type EventType =
   | "Praktisch"
   | "Theorie"
@@ -23,7 +26,11 @@ export type CalEvent = {
   subtitle?: string;
   location?: string;
   instructor: string;
+  /** FK → instructors.id (null = unassigned); `instructor` is its display name. */
+  instructorId?: number | null;
   vehicle?: string;
+  /** FK → vehicles.id (null = none); `vehicle` is its display label. */
+  vehicleId?: number | null;
   type: EventType;
   tentative?: boolean;
   /** FK → students.id; set when the event was created for a known student
@@ -37,7 +44,29 @@ export type CalEvent = {
   billedActive?: boolean;
   /** Exam result — only present on exam-type events that have been graded. */
   examResult?: "bestanden" | "nicht_bestanden";
+  /** Kind of practical drive (Sonderfahrt) — only on "Praktisch". */
+  lessonKind?: LessonKind;
+  /** Shared by all occurrences of one recurring series. */
+  seriesId?: string;
+  /** Set when the lesson was cancelled / the student did not show up.
+      The event stays in the calendar as struck-through history. */
+  cancelledAt?: string;
+  cancellationKind?: CancellationKind;
+  /** FK → transactions.id of the Ausfallentschädigung, if charged. */
+  cancellationFeeTransactionId?: number;
+  /** Derived: fee booked and not storniert. */
+  cancellationFeeActive?: boolean;
+  /** Derived: booked Ausfallentschädigung in cents. */
+  cancellationFeeCents?: number;
+  /** Free-text note for this lesson (Abholort, Lernstand, …). */
+  notes?: string;
+  /** Non-blocking hints returned by create/update (never stored). */
+  warnings?: string[];
 };
+
+/* Cancelled lessons stay visible but no longer count anywhere. */
+export const isCancelled = (event: { cancelledAt?: string }) =>
+  Boolean(event.cancelledAt);
 
 /* The app's notion of "today" — drives week anchoring/highlighting.
    Events themselves are persisted in the DB (see use-calendar-events). */
@@ -84,6 +113,11 @@ export const eventPresets: EventPreset[] = [
 /* A "Fahrstunde" is a regular practical driving lesson. Theory lessons,
    exams, exam prep and other appointments are NOT Fahrstunden. */
 export const isFahrstunde = (event: { type: EventType }) => event.type === "Praktisch";
+
+/* Exams are billable like Fahrstunden (Vorstellungsentgelt + Prüfgebühr),
+   through the multi-line charge dialog. */
+export const isExamEvent = (event: { type: EventType }) =>
+  event.type === "Theorieprüfung" || event.type === "Vorstellung zur prakt. Prüfung";
 
 export const nonFahrstundeTypes = eventTypeOptions.filter(
   (type) => !isFahrstunde({ type }),

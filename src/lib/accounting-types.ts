@@ -12,7 +12,9 @@ export type AccountKind =
   | "steuer"
   | "erloes"
   | "privat"
-  | "aufwand";
+  | "aufwand"
+  /** Saldenvortragskonto (SKR 04: 9000) — opening balances only. */
+  | "vortrag";
 
 export type Account = {
   number: string;
@@ -26,12 +28,13 @@ export type Account = {
   openingDate: string | null;
 };
 
-export type PaymentMethod = "bar" | "ueberweisung" | "ec";
+export type PaymentMethod = "bar" | "ueberweisung" | "ec" | "lastschrift";
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   bar: "Bar",
   ueberweisung: "Überweisung",
   ec: "EC-Karte",
+  lastschrift: "SEPA-Lastschrift",
 };
 
 export type TransactionType =
@@ -39,14 +42,26 @@ export type TransactionType =
   | "direktzahlung"
   | "guthaben_uebertragung"
   | "transfer"
-  | "ausgabe";
+  | "ausgabe"
+  | "saldovortrag";
 
+/* Human labels — explanations live in src/lib/account-labels.ts. */
 export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
-  zahlung_guthaben: "Zahlung auf Guthaben",
-  direktzahlung: "Direktzahlung",
-  guthaben_uebertragung: "Guthabenübertragung auf Kosten",
-  transfer: "Transfer",
+  zahlung_guthaben: "Einzahlung Ausbildungskonto",
+  direktzahlung: "Sofort bezahlte Leistung",
+  guthaben_uebertragung: "Leistung abgerechnet",
+  transfer: "Umbuchung Kasse/Bank",
   ausgabe: "Ausgabe",
+  saldovortrag: "Saldovortrag",
+};
+
+/** Opening balance of a student taken over from the previous software:
+ *  guthaben = the student has credit, forderung = the student owes. */
+export type SaldovortragDirection = "guthaben" | "forderung";
+
+export const SALDOVORTRAG_DIRECTION_LABELS: Record<SaldovortragDirection, string> = {
+  guthaben: "Guthaben des Fahrschülers",
+  forderung: "Offener Betrag (Forderung)",
 };
 
 /** Snapshot of the student at booking time (GoBD: receipts stay stable). */
@@ -56,6 +71,12 @@ export type StudentRef = {
   address: string;
   contractNo: string;
   classes: string;
+};
+
+export type ChargeLine = {
+  habenKonto: string;
+  amountCents: number;
+  description: string;
 };
 
 export type CreateTransactionInput =
@@ -81,10 +102,16 @@ export type CreateTransactionInput =
   | {
       type: "guthaben_uebertragung";
       date: string;
+      /** Total; with `lines` it must equal their sum (or be omitted). */
       amountCents: number;
-      habenKonto: string; // 8400 | 8300 | 8100 | 1590
+      /** Required unless `lines` is given. */
+      habenKonto?: string; // 4400 | 4300 | 4100 | 1370
       student: StudentRef;
       description: string;
+      /** Multi-line charge (e.g. exam: Vorstellungsentgelt + TÜV-Gebühr as
+          durchlaufender Posten) — one transaction, one booking per line,
+          VAT per line from its own Haben account. Replaces habenKonto. */
+      lines?: ChargeLine[];
     }
   | {
       type: "transfer";
@@ -102,6 +129,16 @@ export type CreateTransactionInput =
       aufwandKonto: string;
       paymentMethod?: PaymentMethod;
       description: string;
+    }
+  | {
+      /** Saldenvortrag: guthaben → 9000 an 3272, forderung → 3272 an 9000.
+          Beleg number, no VAT split, at most one active per student. */
+      type: "saldovortrag";
+      date: string;
+      amountCents: number;
+      direction: SaldovortragDirection;
+      student: StudentRef;
+      description?: string;
     };
 
 export type LedgerRow = {
@@ -115,6 +152,13 @@ export type LedgerRow = {
   vatLabel: string;
   incomeCents: number | null;
   expenseCents: number | null;
+  /** From the student's point of view (Guthabenkonto 3272): what the
+      booking credited (payment, Guthaben-Vortrag) and what it charged
+      (Leistung, offener Saldovortrag). A Direktzahlung is both. Null for
+      bookings without a student. Sum(credit − debit) over active rows =
+      the student's balance. */
+  studentCreditCents: number | null;
+  studentDebitCents: number | null;
   storniert: boolean;
   isStorno: boolean;
   stornoReason: string | null;
@@ -188,4 +232,23 @@ export type CompanyProfile = {
   beraterNr: string;
   /** DATEV-Mandantennummer (1–99999) — required for the export */
   mandantNr: string;
+  /** Bankverbindung — printed on Rechnungen, creditor account for SEPA. */
+  bankName: string;
+  iban: string;
+  bic: string;
+  /** SEPA-Gläubiger-Identifikationsnummer (e.g. DE98ZZZ09999999999). */
+  glaeubigerId: string;
+  /* Impressum / Datenschutz (public /impressum and /datenschutz pages). */
+  /** Inhaber/in bzw. vertretungsberechtigte Person. */
+  inhaber: string;
+  /** Registergericht — optional, only for registered companies. */
+  registergericht: string;
+  /** Handelsregisternummer — optional (e.g. "HRB 12345"). */
+  registernummer: string;
+  /** Behörde, die die Fahrschulerlaubnis erteilt hat (Aufsichtsbehörde). */
+  aufsichtsbehoerde: string;
+  /** Kontakt für Datenschutzanfragen — falls leer, gilt `email`. */
+  datenschutzEmail: string;
+  /** Freitext, der am Ende des Impressums erscheint. */
+  impressumZusatz: string;
 };
