@@ -648,6 +648,10 @@ export type ListFilter = {
   /** Exact student customer number (the booking's student snapshot). */
   customerNo?: string;
   status?: "all" | "active" | "storniert";
+  /** Ledger only: leave out rows that move no money (charges, Saldovorträge). */
+  cashOnly?: boolean;
+  /** Journal only: by date, newest first (default) or oldest first. */
+  sort?: "asc" | "desc";
 };
 
 function matchesFilter(tx: TransactionRow, filter: ListFilter): boolean {
@@ -737,6 +741,7 @@ export function listLedger(db: Database, filter: ListFilter): LedgerResponse {
     if (!matchesFilter(tx, { from: filter.from, to: filter.to })) continue;
     inRange += net;
     if (!matchesFilter(tx, filter)) continue;
+    if (filter.cashOnly && inflow === 0 && outflow === 0) continue;
 
     const isTransfer = tx.type === "transfer";
     rows.push({
@@ -811,8 +816,14 @@ export function listJournal(db: Database, filter: ListFilter): JournalRow[] {
       });
     }
   }
-  // Journal is sorted by Buchungsnummer, newest first.
-  return rows.sort((a, b) => b.buchungNr.localeCompare(a.buchungNr));
+  // Journal is sorted by Buchungsdatum (newest first unless sort=asc);
+  // the Buchungsnummer orders bookings of the same day.
+  const direction = filter.sort === "asc" ? 1 : -1;
+  return rows.sort(
+    (a, b) =>
+      direction *
+      (a.date.localeCompare(b.date) || a.buchungNr.localeCompare(b.buchungNr)),
+  );
 }
 
 /* ----------------------------- Quittung ---------------------------- */

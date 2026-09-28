@@ -22,6 +22,7 @@ import { calendarSeriesRoutes } from "./calendar-series";
 import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
+import { accountingReportRoutes } from "./accounting-reports";
 import { instalmentRoutes } from "./instalments";
 import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
@@ -71,6 +72,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
   return {
     ...authRoutes(db, options.auth),
     ...accountingRoutes(db),
+    ...accountingReportRoutes(db),
     ...archiveRoutes(db, fileStore),
     ...calendarEventRoutes(db),
     ...calendarSeriesRoutes(db),
