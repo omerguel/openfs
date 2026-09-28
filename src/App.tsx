@@ -1,43 +1,27 @@
 import "./index.css";
-import { useEffect, useRef, useState } from "react";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import { Agentation } from "agentation";
 import {
-  Archive,
-  BarChart3,
-  BookOpen,
-  Building2,
-  CalendarCheck,
-  CalendarClock,
-  CalendarDays,
-  Car,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
-  DatabaseBackup,
-  FileText,
-  FileUp,
-  GraduationCap,
-  Heart,
-  LayoutGrid,
-  LogOut,
-  Mail,
-  Megaphone,
-  MessageCircle,
-  Receipt,
-  Tag,
-  User,
-  UserPlus,
-  Users,
-  FileSpreadsheet,
   KeyRound,
-  UserCog,
+  LogOut,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { AuthGate } from "@/components/auth/AuthGate";
 import { ChangePasswordDialog } from "@/components/auth/ChangePasswordDialog";
-import { canSeeRoute, logout, ROLE_LABELS, useAuthStatus } from "@/hooks/use-auth";
+import { NoAccess } from "@/components/auth/NoAccess";
+import { GlobalSearch } from "@/components/GlobalSearch";
+import { logout, ROLE_LABELS, useAuthStatus } from "@/hooks/use-auth";
+import {
+  canSeeRoute,
+  DEFAULT_COLLAPSED_GROUPS,
+  type NavGroup,
+  visibleNav,
+} from "@/lib/navigation";
 import { Toaster } from "@/components/ui/sonner";
 import {
   Collapsible,
@@ -56,66 +40,17 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarInset,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   SidebarProvider,
+  useSidebar,
 } from "@/components/ui/sidebar";
 
-type IconCmp = React.ComponentType<{ className?: string }>;
-
-const navItems: { label: string; Icon: IconCmp; route?: string }[] = [
-  { label: "Home", Icon: LayoutGrid, route: "/" },
-  { label: "Profil", Icon: User, route: "/profil" },
-  { label: "Theorie", Icon: BookOpen, route: "/theorie" },
-  // { label: "Unterricht", Icon: Users },
-  { label: "Schüler Anmeldung", Icon: UserPlus, route: "/neue-schueler" },
-];
-
-const navGroups: {
-  label: string;
-  Icon: IconCmp;
-  items: { label: string; Icon: IconCmp; route: string }[];
-}[] = [
-  {
-    label: "Marketing",
-    Icon: Megaphone,
-    items: [
-      { label: "Marketing", Icon: Megaphone, route: "/marketing" },
-      { label: "Schulprofil", Icon: Building2, route: "/schulprofil" },
-      { label: "Preisangebot", Icon: Tag, route: "/preisangebot" },
-      { label: "Bewertungen", Icon: Heart, route: "/bewertungen" },
-    ],
-  },
-  {
-    label: "Verwaltung",
-    Icon: CalendarClock,
-    items: [
-      { label: "Terminanfragen", Icon: CalendarClock, route: "/terminanfragen" },
-      { label: "Fahrschule", Icon: Building2, route: "/fahrschule" },
-      { label: "Kalender", Icon: CalendarDays, route: "/kalendar" },
-      { label: "Fahrlehrer/in", Icon: Users, route: "/fahrlehrer" },
-      { label: "Fahrzeuge", Icon: Car, route: "/fahrzeuge" },
-      { label: "Fahrschüler", Icon: GraduationCap, route: "/fahrschueler" },
-      { label: "Theorie Gruppen", Icon: BookOpen, route: "/theorie-gruppen" },
-      { label: "Buchhaltung", Icon: Receipt, route: "/buchhaltung" },
-      { label: "Rechnungen", Icon: FileSpreadsheet, route: "/rechnungen" },
-      { label: "Statistik", Icon: BarChart3, route: "/statistik" },
-      { label: "Plaudern", Icon: MessageCircle, route: "/plaudern" },
-      { label: "Nachrichten", Icon: Mail, route: "/nachrichten" },
-      { label: "Verträge", Icon: FileText, route: "/vertraege" },
-      { label: "Prüfungsplaner", Icon: CalendarCheck, route: "/pruefungsplaner" },
-      { label: "Datenimport", Icon: FileUp, route: "/import" },
-      { label: "Datensicherung", Icon: DatabaseBackup, route: "/datensicherung" },
-    ],
-  },
-];
-
-type NavGroup = (typeof navGroups)[number];
+/* The menu itself lives in src/lib/navigation.ts (NAV_GROUPS) — one config
+   for sidebar, route guard and search. */
 
 const activeSidebarItemClass =
   "group/sidebar-link hover:z-10 overflow-visible select-none hover:bg-transparent active:bg-transparent data-active:bg-transparent data-active:hover:bg-transparent data-active:active:bg-transparent transition-[background-color] duration-100 ease-out data-active:duration-0 motion-reduce:transition-none";
@@ -123,74 +58,121 @@ const activeSidebarItemClass =
 function SidebarLinkHoverEffect() {
   return (
     <span aria-hidden="true" className="pointer-events-none absolute inset-0 z-0">
-      <span className="absolute inset-2 rounded-sm bg-sidebar-accent opacity-0 transition-[top,right,bottom,left,opacity] duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/sidebar-link:inset-y-0 group-hover/sidebar-link:-inset-x-1 group-hover/sidebar-link:opacity-100 group-focus-visible/sidebar-link:inset-y-0 group-focus-visible/sidebar-link:-inset-x-1 group-focus-visible/sidebar-link:opacity-100 group-data-[active=true]/sidebar-link:inset-y-0 group-data-[active=true]/sidebar-link:-inset-x-1 group-data-[active=true]/sidebar-link:opacity-100 motion-reduce:transition-none" />
+      <span className="absolute inset-1 rounded-sm bg-sidebar-accent opacity-0 transition-[top,right,bottom,left,opacity] duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/sidebar-link:inset-y-0 group-hover/sidebar-link:-inset-x-1 group-hover/sidebar-link:opacity-100 group-focus-visible/sidebar-link:inset-y-0 group-focus-visible/sidebar-link:-inset-x-1 group-focus-visible/sidebar-link:opacity-100 group-data-[active=true]/sidebar-link:inset-y-0 group-data-[active=true]/sidebar-link:-inset-x-1 group-data-[active=true]/sidebar-link:opacity-100 motion-reduce:transition-none" />
     </span>
   );
 }
 
-function SidebarNavGroup({ group, path }: { group: NavGroup; path: string }) {
-  const { label, Icon, items } = group;
-  const activeItem = items.find((item) => item.route === path);
+/* Collapsed groups are remembered per browser (a convenience only —
+   storage may be unavailable, then the defaults apply). */
+const COLLAPSED_KEY = "openfs:nav-collapsed";
+
+function readCollapsed(): string[] {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : DEFAULT_COLLAPSED_GROUPS;
+  } catch {
+    return DEFAULT_COLLAPSED_GROUPS;
+  }
+}
+
+function useCollapsedGroups() {
+  const [collapsed, setCollapsed] = useState<string[]>(readCollapsed);
+  const toggle = useCallback((id: string, open: boolean) => {
+    setCollapsed((current) => {
+      const next = open
+        ? current.filter((g) => g !== id)
+        : [...new Set([...current, id])];
+      try {
+        window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next));
+      } catch {
+        // storage unavailable — keep the in-memory state
+      }
+      return next;
+    });
+  }, []);
+  return { collapsed, toggle };
+}
+
+function isActive(route: string, path: string) {
+  return route === "/" ? path === "/" : path === route || path.startsWith(`${route}/`);
+}
+
+function SidebarNavGroup({
+  group,
+  path,
+  open,
+  onOpenChange,
+}: {
+  group: NavGroup;
+  path: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  const containsActive = group.items.some((item) => isActive(item.route, path));
+  // The group of the current page is always shown open.
+  const expanded = open || containsActive;
 
   return (
-    <SidebarGroup className="z-10 px-1 py-2 group-data-[collapsible=icon]:p-2">
-      <SidebarMenu>
-        <Collapsible defaultOpen className="group/collapsible">
-          <SidebarMenuItem>
-            <CollapsibleTrigger asChild>
-              <SidebarMenuButton
-                tooltip={label}
-                className="hover:bg-transparent active:bg-transparent data-open:hover:bg-transparent"
-              >
-                <Icon />
-                <span>{label}</span>
-                <ChevronRight className="ml-auto transition-transform duration-200 ease-drawer motion-reduce:transition-none group-data-[state=open]/collapsible:rotate-90" />
-              </SidebarMenuButton>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-drawer data-[state=open]:grid-rows-[1fr] data-[state=open]:opacity-100 motion-reduce:transition-none">
-              <SidebarMenuSub className="min-h-0 overflow-hidden">
-                {items.map(({ label: subLabel, Icon: SubIcon, route }) => (
-                  <SidebarMenuSubItem key={subLabel}>
-                    <SidebarMenuSubButton
-                      asChild
-                      isActive={path === route}
-                      className={activeSidebarItemClass}
-                    >
-                      <Link
-                        to={route}
-                        draggable={false}
-                        aria-current={path === route ? "page" : undefined}
-                      >
-                        <SidebarLinkHoverEffect />
-                        <SubIcon className="relative z-10" />
-                        <span className="relative z-10">{subLabel}</span>
-                      </Link>
-                    </SidebarMenuSubButton>
-                  </SidebarMenuSubItem>
-                ))}
-              </SidebarMenuSub>
-            </CollapsibleContent>
-            {activeItem && (
-              <SidebarMenuSub className="group-data-[state=open]/collapsible:hidden">
-                <SidebarMenuSubItem>
-                  <SidebarMenuSubButton
+    <Collapsible
+      open={expanded}
+      onOpenChange={onOpenChange}
+      className="group/collapsible"
+      asChild
+    >
+      <SidebarGroup className="z-10 px-1 py-0.5">
+        <SidebarGroupLabel asChild>
+          <CollapsibleTrigger
+            disabled={containsActive}
+            className="h-7 w-full cursor-pointer justify-between text-[11px] font-semibold tracking-wide text-sidebar-foreground/60 uppercase hover:text-sidebar-foreground disabled:cursor-default"
+          >
+            {group.label}
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                "transition-transform duration-200 ease-drawer motion-reduce:transition-none",
+                expanded && "rotate-90",
+                containsActive && "opacity-0",
+              )}
+            />
+          </CollapsibleTrigger>
+        </SidebarGroupLabel>
+        <CollapsibleContent>
+          <SidebarMenu className="gap-0">
+            {group.items.map(({ label, Icon, route }) => {
+              const active = isActive(route, path);
+              return (
+                <SidebarMenuItem key={route}>
+                  <SidebarMenuButton
                     asChild
-                    isActive
-                    className={activeSidebarItemClass}
+                    tooltip={label}
+                    isActive={active}
+                    className={cn(activeSidebarItemClass, "h-8 md:h-7")}
                   >
-                    <Link to={activeItem.route} draggable={false} aria-current="page">
+                    <Link
+                      to={route}
+                      draggable={false}
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => {
+                        if (isMobile) setOpenMobile(false);
+                      }}
+                    >
                       <SidebarLinkHoverEffect />
-                      <activeItem.Icon className="relative z-10" />
-                      <span className="relative z-10">{activeItem.label}</span>
+                      <Icon className="relative z-10" />
+                      <span className="relative z-10 truncate">{label}</span>
                     </Link>
-                  </SidebarMenuSubButton>
-                </SidebarMenuSubItem>
-              </SidebarMenuSub>
-            )}
-          </SidebarMenuItem>
-        </Collapsible>
-      </SidebarMenu>
-    </SidebarGroup>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+        </CollapsibleContent>
+      </SidebarGroup>
+    </Collapsible>
   );
 }
 
@@ -225,12 +207,15 @@ function scrollSidebarNavigationDown() {
 
 function AppSidebar({ path }: { path: string }) {
   const auth = useAuthStatus();
+  const router = useRouter();
   const user = auth.data?.user ?? null;
   const role = user?.role;
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const { collapsed, toggle } = useCollapsedGroups();
   const contentRef = useRef<HTMLDivElement | null>(null);
   const sidebarCanScrollDownRef = useRef(false);
   const [sidebarCanScrollDown, setSidebarCanScrollDown] = useState(false);
+  const groups = visibleNav(role, (route) => route in router.routesByPath);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -249,6 +234,8 @@ function AppSidebar({ path }: { path: string }) {
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateFooterFade);
     observer?.observe(content);
+    const list = content.firstElementChild;
+    if (list) observer?.observe(list);
 
     return () => {
       content.removeEventListener("scroll", updateFooterFade);
@@ -259,69 +246,18 @@ function AppSidebar({ path }: { path: string }) {
 
   return (
     <Sidebar variant="inset">
-      <SidebarContent ref={contentRef}>
-        <SidebarGroup className="z-10 px-1 py-2 group-data-[collapsible=icon]:p-2">
-          <SidebarMenu>
-            {navItems.map(({ label, Icon, route }) => (
-              <SidebarMenuItem key={label}>
-                {route ? (
-                  <SidebarMenuButton
-                    asChild
-                    tooltip={label}
-                    isActive={path === route}
-                    className={activeSidebarItemClass}
-                  >
-                    <Link
-                      to={route}
-                      draggable={false}
-                      aria-current={path === route ? "page" : undefined}
-                    >
-                      <SidebarLinkHoverEffect />
-                      <Icon className="relative z-10" />
-                      <span className="relative z-10">{label}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                ) : (
-                  <SidebarMenuButton tooltip={label} disabled aria-disabled>
-                    <Icon />
-                    <span>{label}</span>
-                  </SidebarMenuButton>
-                )}
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
-
-        {navGroups.map((group) => {
-          const items = group.items.filter((item) => canSeeRoute(role, item.route));
-          return items.length > 0 ? (
-            <SidebarNavGroup key={group.label} group={{ ...group, items }} path={path} />
-          ) : null;
-        })}
-
-        {/* Archiv — Papierkorb für versehentlich gelöschte Einträge */}
-        <SidebarGroup className="z-10 px-1 py-2 group-data-[collapsible=icon]:p-2">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                asChild
-                tooltip="Archiv"
-                isActive={path === "/archiv"}
-                className={activeSidebarItemClass}
-              >
-                <Link
-                  to="/archiv"
-                  draggable={false}
-                  aria-current={path === "/archiv" ? "page" : undefined}
-                >
-                  <SidebarLinkHoverEffect />
-                  <Archive className="relative z-10" />
-                  <span className="relative z-10">Archiv</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
+      <SidebarContent ref={contentRef} className="gap-0 py-1">
+        <div className="flex flex-col gap-0.5">
+          {groups.map((group) => (
+            <SidebarNavGroup
+              key={group.id}
+              group={group}
+              path={path}
+              open={!collapsed.includes(group.id)}
+              onOpenChange={(open) => toggle(group.id, open)}
+            />
+          ))}
+        </div>
       </SidebarContent>
 
       <SidebarFooter
@@ -377,14 +313,6 @@ function AppSidebar({ path }: { path: string }) {
                 align="start"
                 className="w-(--radix-popper-anchor-width) min-w-56"
               >
-                {role === "inhaber" && (
-                  <DropdownMenuItem asChild>
-                    <Link to="/benutzer">
-                      <UserCog />
-                      Benutzer &amp; Protokoll
-                    </Link>
-                  </DropdownMenuItem>
-                )}
                 <DropdownMenuItem onSelect={() => setPasswordOpen(true)}>
                   <KeyRound />
                   Passwort ändern
@@ -416,16 +344,43 @@ export function App() {
   );
 }
 
+/* A new page starts at the top: every page has its own scroll container,
+   but a reused component (e.g. /fahrschueler/1 → /fahrschueler/2) or the
+   mobile document scroll would otherwise keep the old position. */
+function useResetScrollOnNavigate(
+  path: string,
+  root: React.RefObject<HTMLElement | null>,
+) {
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+    const main = root.current;
+    if (!main) return;
+    main.scrollTop = 0;
+    for (const element of main.querySelectorAll<HTMLElement>(
+      ".overflow-auto, .overflow-y-auto, [data-slot=scroll-area-viewport]",
+    )) {
+      if (element.scrollTop > 0) element.scrollTop = 0;
+    }
+  }, [path, root]);
+}
+
 function AppShell() {
   const path = useRouterState({ select: (state) => state.location.pathname });
+  const role = useAuthStatus().data?.user?.role;
+  const insetRef = useRef<HTMLElement | null>(null);
+  useResetScrollOnNavigate(path, insetRef);
 
   return (
     <TooltipProvider delayDuration={300}>
       <SidebarProvider className="bg-sidebar">
         <AppSidebar path={path} />
-        <SidebarInset className="h-[calc(100svh-1rem)] min-h-0 !bg-transparent !shadow-none md:!m-2 md:!rounded-lg">
-          <Outlet />
+        <SidebarInset
+          ref={insetRef}
+          className="h-[calc(100svh-1rem)] min-h-0 !bg-transparent !shadow-none md:!m-2 md:!rounded-lg"
+        >
+          {canSeeRoute(role, path) ? <Outlet /> : <NoAccess path={path} />}
         </SidebarInset>
+        <GlobalSearch />
       </SidebarProvider>
       <Toaster />
       {process.env.NODE_ENV === "development" && <DevAgentation />}
