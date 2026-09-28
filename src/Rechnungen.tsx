@@ -11,7 +11,9 @@ import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
 import { CreateInvoiceDialog } from "@/components/rechnungen/CreateInvoiceDialog";
+import { InstalmentsTab } from "@/components/rechnungen/InstalmentsTab";
 import { InvoiceList } from "@/components/rechnungen/InvoiceList";
+import { SepaTab } from "@/components/rechnungen/SepaTab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -38,11 +40,13 @@ import type { InvoicingSettings } from "@/lib/invoice-types";
 import { formatCents, parseEuroToCents } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-type TabKey = "rechnungen" | "offen" | "einstellungen";
+type TabKey = "rechnungen" | "offen" | "raten" | "lastschrift" | "einstellungen";
 
 const TABS: { value: TabKey; label: string }[] = [
   { value: "rechnungen", label: "Rechnungen" },
   { value: "offen", label: "Offene Posten" },
+  { value: "raten", label: "Ratenpläne" },
+  { value: "lastschrift", label: "Lastschriften" },
   { value: "einstellungen", label: "Einstellungen" },
 ];
 
@@ -333,6 +337,8 @@ export function Rechnungen() {
           <CardContent>
             {tab === "rechnungen" && <InvoicesTab />}
             {tab === "offen" && <OpenItemsTab />}
+            {tab === "raten" && <InstalmentsTab />}
+            {tab === "lastschrift" && <SepaTab />}
             {tab === "einstellungen" && <SettingsTab />}
           </CardContent>
         </Card>
