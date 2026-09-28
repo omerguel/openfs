@@ -42,6 +42,23 @@ describe("Protokoll descriptions", () => {
     ).toBe("Anmeldung fehlgeschlagen (x@fs.de)");
   });
 
+  test("deletion runs show their counts", () => {
+    expect(
+      describeAudit({
+        method: "LOESCHLAUF",
+        path: "/api/admin/retention/run?trigger=automatisch&anfragen=2&schueler=1",
+        status: 200,
+      }).label,
+    ).toBe("Automatischer Löschlauf: 2 Anfragen, 1 Schüler anonymisiert");
+    expect(
+      describeAudit({
+        method: "POST",
+        path: "/api/admin/privacy/students/4/erasure",
+        status: 200,
+      }).label,
+    ).toBe("Löschung auf Antrag (Art. 17) ausgeführt");
+  });
+
   test("unknown endpoints fall back to a neutral label", () => {
     expect(describeAudit({ method: "POST", path: "/api/neu", status: 200 }).label).toBe(
       "Änderung",
