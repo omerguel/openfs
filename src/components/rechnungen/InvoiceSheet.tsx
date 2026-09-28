@@ -128,13 +128,17 @@ export function InvoiceSheet({ invoice }: { invoice: Invoice }) {
             <th className="py-1.5 pr-2 font-medium">Leistung</th>
             <th className="py-1.5 pr-2 text-right font-medium">Netto</th>
             <th className="py-1.5 pr-2 text-right font-medium">USt</th>
-            <th className="py-1.5 text-right font-medium">Brutto, EUR</th>
+            <th className="whitespace-nowrap py-1.5 text-right font-medium">
+              Brutto, EUR
+            </th>
           </tr>
         </thead>
         <tbody>
           {invoice.lines.map((line, index) => (
             <tr key={index} className="border-b border-black/10 align-top">
-              <td className="py-1.5 pr-2 tabular-nums">{formatIsoDate(line.date)}</td>
+              <td className="whitespace-nowrap py-1.5 pr-2 tabular-nums">
+                {formatIsoDate(line.date)}
+              </td>
               <td className="py-1.5 pr-2">
                 {line.description}
                 {line.durchlaufend && " *"}
@@ -144,7 +148,7 @@ export function InvoiceSheet({ invoice }: { invoice: Invoice }) {
               <td className="py-1.5 pr-2 text-right tabular-nums">
                 {formatCents(line.netCents)}
               </td>
-              <td className="py-1.5 pr-2 text-right tabular-nums">
+              <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums">
                 {line.vatRate == null ? "—" : `${line.vatRate} %`}
               </td>
               <td className="py-1.5 text-right tabular-nums">
