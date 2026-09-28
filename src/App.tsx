@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   FileText,
+  FileUp,
   GraduationCap,
   Heart,
   LayoutGrid,
@@ -98,6 +99,7 @@ const navGroups: {
       { label: "Plaudern", Icon: MessageCircle, route: "/plaudern" },
       { label: "Verträge", Icon: FileText, route: "/vertraege" },
       { label: "Prüfungsplaner", Icon: CalendarCheck, route: "/pruefungsplaner" },
+      { label: "Datenimport", Icon: FileUp, route: "/import" },
     ],
   },
 ];
