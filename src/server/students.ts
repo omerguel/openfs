@@ -403,6 +403,17 @@ export function deleteStudent(db: Database, id: number): void {
         id,
       );
     }
+    // A Terminanfrage keeps its history but loses the conversion link.
+    if (tableExists(db, "appointment_requests")) {
+      const cols = db
+        .query<{ name: string }, []>("PRAGMA table_info(appointment_requests)")
+        .all();
+      if (cols.some((c) => c.name === "student_id")) {
+        db.prepare(
+          "UPDATE appointment_requests SET student_id = NULL WHERE student_id = ?",
+        ).run(id);
+      }
+    }
     // Theory attendance is operational data, not a compliance record.
     if (tableExists(db, "theory_attendance")) {
       db.prepare("DELETE FROM theory_attendance WHERE student_id = ?").run(id);

@@ -15,6 +15,7 @@ import {
   type CalendarEvent,
   type CalendarEventType,
 } from "./calendar-events";
+import { campaignIdByTrackingCode } from "./campaigns";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
 import {
@@ -45,9 +46,18 @@ export type AppointmentRequest = {
   type: CalendarEventType;
   status: AppointmentRequestStatus;
   createdAt: string;
+  /** Campaign whose tracking link (/anfrage?kampagne=…) brought the request. */
+  campaignId: number | null;
+  campaignName: string | null;
+  /** Student created from this request ("Als Fahrschüler anlegen"). */
+  studentId: number | null;
+  studentName: string | null;
 };
 
-export type AppointmentRequestInput = Omit<AppointmentRequest, "id" | "createdAt">;
+export type AppointmentRequestInput = Omit<
+  AppointmentRequest,
+  "id" | "createdAt" | "campaignId" | "campaignName" | "studentId" | "studentName"
+>;
 
 /* Calendar event overlapping a request's slot — shown as a warning on
    the /terminanfragen page before the office accepts the request. */
@@ -87,6 +97,10 @@ type AppointmentRequestRow = {
   type: CalendarEventType;
   status: AppointmentRequestStatus;
   created_at: string;
+  campaign_id: number | null;
+  campaign_name: string | null;
+  student_id: number | null;
+  student_name: string | null;
 };
 
 /* ----------------------------- schema ----------------------------- */
@@ -227,8 +241,28 @@ const CONFLICTING_SEED: SeedRow = [
   "offen",
 ];
 
+/* Lead attribution + conversion links, added after the table shipped.
+   No FKs: campaigns/students live in other modules and are optional
+   in unit-test schemas; deletes clear the links explicitly. */
+function migrateRequestLinks(db: Database): void {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(appointment_requests)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("campaign_id")) {
+    db.exec("ALTER TABLE appointment_requests ADD COLUMN campaign_id INTEGER");
+  }
+  if (!cols.includes("student_id")) {
+    db.exec("ALTER TABLE appointment_requests ADD COLUMN student_id INTEGER");
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_appointment_requests_campaign ON appointment_requests(campaign_id)",
+  );
+}
+
 export function ensureAppointmentRequestTables(db: Database): void {
   db.exec(TABLE_DDL);
+  migrateRequestLinks(db);
 
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM appointment_requests")
@@ -259,10 +293,33 @@ const toRequest = (row: AppointmentRequestRow): AppointmentRequest => ({
   type: row.type,
   status: row.status,
   createdAt: row.created_at,
+  campaignId: row.campaign_id,
+  campaignName: row.campaign_name,
+  studentId: row.student_name === null ? null : row.student_id,
+  studentName: row.student_name,
 });
 
-const SELECT =
-  "SELECT id, name, phone, email, message, requested_date, requested_time, type, status, created_at FROM appointment_requests";
+const tableExists = (db: Database, name: string) =>
+  db
+    .query<{ n: number }, [string]>(
+      "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(name)!.n > 0;
+
+/* Campaign/student names are joined when their tables exist (the unit
+   tests run this module on a bare schema). */
+function selectSql(db: Database): string {
+  const campaign = tableExists(db, "campaigns")
+    ? "(SELECT c.name FROM campaigns c WHERE c.id = r.campaign_id)"
+    : "NULL";
+  const student = tableExists(db, "students")
+    ? "(SELECT trim(s.first_name || ' ' || s.last_name) FROM students s WHERE s.id = r.student_id)"
+    : "NULL";
+  return `SELECT r.id, r.name, r.phone, r.email, r.message, r.requested_date,
+    r.requested_time, r.type, r.status, r.created_at, r.campaign_id, r.student_id,
+    ${campaign} AS campaign_name, ${student} AS student_name
+    FROM appointment_requests r`;
+}
 
 /* Calendar events overlapping the requested slot, assuming the same
    60min default duration the accept flow uses. */
@@ -295,7 +352,7 @@ function findConflictingEvents(
 export function listAppointmentRequests(db: Database): AppointmentRequestWithConflicts[] {
   return db
     .query<AppointmentRequestRow, []>(
-      `${SELECT} ORDER BY requested_date, requested_time, id`,
+      `${selectSql(db)} ORDER BY r.requested_date, r.requested_time, r.id`,
     )
     .all()
     .map(toRequest)
@@ -309,7 +366,9 @@ export function listAppointmentRequests(db: Database): AppointmentRequestWithCon
 }
 
 export function getAppointmentRequest(db: Database, id: number): AppointmentRequest {
-  const row = db.query<AppointmentRequestRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db
+    .query<AppointmentRequestRow, [number]>(`${selectSql(db)} WHERE r.id = ?`)
+    .get(id);
   if (!row) throw new ValidationError("Terminanfrage nicht gefunden.");
   return toRequest(row);
 }
@@ -428,19 +487,29 @@ function normalize(
 
 /* ------------------------------ writes ---------------------------- */
 
+/* Tracking code sent by the public form (?kampagne= / utm_campaign).
+   Unknown or malformed codes are ignored — a stale flyer link must
+   never make the request itself fail. */
+function resolveCampaign(db: Database, code: unknown): number | null {
+  if (typeof code !== "string" || !code.trim() || code.length > 100) return null;
+  if (!tableExists(db, "campaigns")) return null;
+  return campaignIdByTrackingCode(db, code);
+}
+
 export function createAppointmentRequest(
   db: Database,
-  input: Partial<AppointmentRequestInput>,
+  input: Partial<AppointmentRequestInput> & { campaign?: unknown },
 ): AppointmentRequest {
   const data = normalize(input, EMPTY);
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string, string, string, string]
+      [string, string, string, string, string, string, string, string, number | null]
     >(
       `INSERT INTO appointment_requests
-         (name, phone, email, message, requested_date, requested_time, type, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+         (name, phone, email, message, requested_date, requested_time, type, status,
+          campaign_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       data.name,
@@ -451,8 +520,38 @@ export function createAppointmentRequest(
       data.requestedTime,
       data.type,
       data.status,
+      resolveCampaign(db, input.campaign),
     )!;
   return getAppointmentRequest(db, row.id);
+}
+
+/* "Als Fahrschüler anlegen": link the request to the student created
+   from it (null unlinks). The link turns a tracked lead into a signup
+   for the campaign statistics. */
+export function linkAppointmentRequestStudent(
+  db: Database,
+  id: number,
+  studentId: unknown,
+): AppointmentRequest {
+  getAppointmentRequest(db, id); // 404 → ValidationError
+  if (studentId !== null) {
+    if (typeof studentId !== "number" || !Number.isInteger(studentId) || studentId <= 0) {
+      throw new ValidationError(
+        "Feld 'studentId' muss eine Fahrschüler-ID oder null sein.",
+      );
+    }
+    const exists =
+      tableExists(db, "students") &&
+      db
+        .query<{ n: number }, [number]>("SELECT count(*) AS n FROM students WHERE id = ?")
+        .get(studentId)!.n > 0;
+    if (!exists) throw new ValidationError("Fahrschüler/in nicht gefunden.");
+  }
+  db.prepare("UPDATE appointment_requests SET student_id = ? WHERE id = ?").run(
+    studentId as number | null,
+    id,
+  );
+  return getAppointmentRequest(db, id);
 }
 
 export function updateAppointmentRequest(
@@ -616,7 +715,9 @@ export function appointmentRequestRoutes(
           return json(
             createAppointmentRequest(
               db,
-              (await req.json()) as Partial<AppointmentRequestInput>,
+              (await req.json()) as Partial<AppointmentRequestInput> & {
+                campaign?: unknown;
+              },
             ),
             201,
           );
@@ -647,6 +748,20 @@ export function appointmentRequestRoutes(
           // Body is optional — accept with the requested slot by default.
           const body = (await req.json().catch(() => ({}))) as AcceptOverrides;
           return json(acceptAppointmentRequest(db, parseId(req.params.id), body));
+        })(),
+    },
+
+    "/api/appointment-requests/:id/student": {
+      PUT: (req: BunRequest<"/api/appointment-requests/:id/student">) =>
+        handle(async () => {
+          const body = (await req.json().catch(() => ({}))) as { studentId?: unknown };
+          return json(
+            linkAppointmentRequestStudent(
+              db,
+              parseId(req.params.id),
+              body.studentId ?? null,
+            ),
+          );
         })(),
     },
 
