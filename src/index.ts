@@ -10,6 +10,7 @@ import { buildApiRoutes } from "./server/app-routes";
 import { ensureMailTables, startMailScheduler } from "./server/mail";
 import { createSmtpTransport, smtpConfigFromEnv } from "./server/smtp";
 import { localIsoDate, queueLessonReminders } from "./server/notifications";
+import { ensurePortalTables } from "./server/portal";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
@@ -26,6 +27,7 @@ seedTransactions(db);
 ensureTheoryGroupTables(db);
 ensureAttestationTables(db);
 ensureMailTables(db);
+ensurePortalTables(db);
 
 /* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
    local time on, so nobody gets a mail at midnight) and deliver the

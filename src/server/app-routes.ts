@@ -11,6 +11,7 @@ import { branchRoutes } from "./branches";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { mailRoutes, type MailRouteOptions } from "./mail";
+import { portalRoutes } from "./portal";
 import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
@@ -50,5 +51,8 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     ...statisticsRoutes(db),
     ...attestationRoutes(db),
     ...mailRoutes(db, options.mail),
+    // Second deliberate public surface besides /anfrage: token-gated,
+    // rate-limited Schülerportal endpoints (/api/portal/:token…).
+    ...portalRoutes(db),
   };
 }
