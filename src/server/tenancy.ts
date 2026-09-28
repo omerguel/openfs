@@ -32,9 +32,11 @@ import {
   createRateLimiter,
   err,
   handle,
+  isHttpsRequest,
   json,
   type RateLimit,
   type RequestIPSource,
+  requestHost,
 } from "./http";
 import { requestContext } from "./request-context";
 import { applySetup } from "./setup";
@@ -106,9 +108,7 @@ export function tenantSlugFromHost(
   return sub.includes(".") ? undefined : sub;
 }
 
-export function requestHost(req: Request): string | null {
-  return req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-}
+export { requestHost } from "./http";
 
 /* ------------------------------------------------------------------ */
 /* registry                                                            */
@@ -494,11 +494,7 @@ export function platformRoutes(
             address: text("address"),
             phone: text("phone"),
           });
-          const proto =
-            new URL(req.url).protocol === "https:" ||
-            req.headers.get("x-forwarded-proto") === "https"
-              ? "https"
-              : "http";
+          const proto = isHttpsRequest(req) ? "https" : "http";
           const port = requestHost(req)?.match(/:\d+$/)?.[0] ?? "";
           return json(
             {

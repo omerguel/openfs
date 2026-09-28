@@ -1,6 +1,6 @@
 /* Multi-tenant mode end to end: two schools on one server must never see
-   each other's data, sessions or files. Hosts are sent via
-   X-Forwarded-Host (what the reverse proxy sets). In-memory databases
+   each other's data, sessions or files. Hosts are sent via the Host
+   header (X-Forwarded-Host only counts with TRUST_PROXY=1, see http.ts). In-memory databases
    throughout (TENANTS_DIR ":memory:"). */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -55,7 +55,7 @@ const at = (slug: string | null, init: RequestInit & { cookie?: string } = {}) =
   ...init,
   headers: {
     "Content-Type": "application/json",
-    "X-Forwarded-Host": slug ? `${slug}.${BASE}` : BASE,
+    Host: slug ? `${slug}.${BASE}` : BASE,
     ...(init.cookie ? { cookie: init.cookie } : {}),
     ...init.headers,
   },
