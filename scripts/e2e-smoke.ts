@@ -19,6 +19,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 /* Tabs worth clicking per page (visible button/tab labels). */
 const CLICK_THROUGH: Record<string, string[]> = {
+  "/fahrlehrer": ["Arbeitszeiten"],
   "/rechnungen": ["Offene Posten", "Ratenpläne", "Lastschriften", "Einstellungen"],
   "/fahrschueler/$studentId": [
     "Stundenübersicht",

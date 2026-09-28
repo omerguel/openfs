@@ -6,7 +6,13 @@
 
 # OpenFS
 
-Management software for German driving schools (Fahrschulen). It covers the full operational workflow: a week-based lesson calendar, student and instructor management, vehicle fleet tracking, configurable price plans, and a GoBD-shaped double-entry accounting engine (SKR 04, immutable bookings, Storno-only corrections, gapless receipt sequences) with Quittungen printing and DATEV CSV export. On top of that: lesson billing (confirm-to-bill per lesson, plus batch billing), exam result tracking with a Prüfungsplaner, a digital Ausbildungsnachweis (signed per lesson, printable per student), theory attendance, statistics, a chat with students, e-mail notifications through an outbox (confirmations, reminders, free-text mails), a per-student Schülerportal at `/portal/:token`, and a public appointment request form at `/anfrage`.
+Management software for German driving schools (Fahrschulen). It covers the full operational workflow: a week-based lesson calendar, student and instructor management, vehicle fleet tracking, configurable price plans, and a GoBD-shaped double-entry accounting engine (SKR 04, immutable bookings, Storno-only corrections, gapless receipt sequences) with Quittungen printing and DATEV CSV export. On top of that:
+
+- **Billing & receivables:** lesson billing (per lesson or batch), exam billing (Vorstellungsentgelt + TÜV/DEKRA fee as durchlaufender Posten in one booking), § 14 UStG invoices with gapless numbers and Stornorechnungen, open items with FIFO payment matching, a three-level Mahnwesen, instalment plans (Ratenpläne) and SEPA direct debit (mandates, pain.008 export for the bank portal, booking and Rücklastschriften).
+- **Scheduling:** recurring lessons, instructor absences, overlap checks for instructors and vehicles, lesson kinds with Sonderfahrten progress (class B minimums), cancellations and no-shows with an optional Ausfallentschädigung, and a working-time report with the 495-minute daily limit for practical instruction.
+- **Training records:** exam results with a Prüfungsplaner, a digital Ausbildungsnachweis (signed per lesson, printable), theory attendance, statistics.
+- **Communication:** e-mail through an outbox (confirmations, reminders, cancellations, free-text mails), a per-student Schülerportal at `/portal/:token` with a two-way chat, and a public appointment request form at `/anfrage`.
+- **Onboarding:** CSV import of the student register from other software (column mapping, preview, all-or-nothing commit).
 
 Currently a single-tenant Bun web app; being rebuilt as a multi-tenant SaaS (one portal per school at `schoolname.openfs.de`) — see `plans/saas-plan.md`.
 
@@ -23,6 +29,7 @@ Currently a single-tenant Bun web app; being rebuilt as a multi-tenant SaaS (one
 bun install              # install dependencies
 bun dev                  # dev server with HMR at http://localhost:3000
 bun test                 # run the test suite
+bun run test:e2e         # browser smoke test over every route (needs Chromium)
 bun run typecheck        # type-check without emitting
 bun run build            # production renderer bundle → dist/
 bun run start            # production server
