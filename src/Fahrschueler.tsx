@@ -192,7 +192,7 @@ export function Fahrschueler() {
             onClick={() => void navigate({ to: "/neue-schueler" })}
           >
             <UserPlus data-icon="inline-start" />
-            Schüler Anmeldung
+            Schüler anmelden
           </Button>
         }
       >

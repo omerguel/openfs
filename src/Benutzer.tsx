@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/* Benutzer & Protokoll (Inhaber only): staff accounts with their role, */
+/* Benutzer + Protokoll (Inhaber only): staff accounts with their role, */
 /* activation and password reset, plus the audit log of every change.  */
 /* The server enforces the same rules (auth.ts).                        */
 /* ------------------------------------------------------------------ */
@@ -65,7 +65,8 @@ type AuditEntry = {
 
 const ROLE_HINTS: Record<Role, string> = {
   inhaber: "Alles, inkl. Benutzerverwaltung, Protokoll und Datensicherung.",
-  buero: "Alles außer Benutzerverwaltung, Protokoll und Datensicherung.",
+  buero:
+    "Alles außer Benutzerverwaltung, Protokoll und Datensicherung; Steuer- und Bankdaten nur lesend.",
   fahrlehrer: "Kalender, Ausbildungsnachweise, Theorie, Chat — keine Finanzen.",
 };
 
