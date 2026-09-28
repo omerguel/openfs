@@ -8,6 +8,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { useSchoolProfile } from "@/hooks/use-school-profile";
+import { LegalLinks } from "@/components/legal/LegalPage";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -271,6 +272,10 @@ export function Anfrage() {
             </CardContent>
           </Card>
         )}
+
+        <footer className="flex justify-center">
+          <LegalLinks />
+        </footer>
       </div>
     </div>
   );
