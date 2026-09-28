@@ -1,4 +1,4 @@
-import { ForbiddenError, ValidationError } from "./errors";
+import { BusyError, ForbiddenError, ValidationError } from "./errors";
 
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -20,6 +20,13 @@ export function handle<A extends unknown[]>(
       }
       if (error instanceof ForbiddenError) {
         return err(error.message, 403);
+      }
+      if (error instanceof BusyError) {
+        return err(error.message, 503);
+      }
+      // req.json() on a malformed body: a client error, not a crash.
+      if (error instanceof SyntaxError) {
+        return err("Ungültige Anfrage (kein gültiges JSON).", 400);
       }
       console.error(error);
       return err("Interner Fehler.", 500);
