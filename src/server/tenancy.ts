@@ -38,6 +38,7 @@ import {
 } from "./http";
 import { requestContext } from "./request-context";
 import { applySetup } from "./setup";
+import type { SmsConfig } from "./sms";
 import type { SmtpConfig } from "./smtp";
 import { type Database, openSqlite } from "./sqlite";
 
@@ -513,6 +514,7 @@ export function platformRoutes(
 
 export type TenantApiOptions = {
   smtp: SmtpConfig | null;
+  sms?: SmsConfig | null;
   /** Base backup settings; each school gets its own sub-directory. */
   backups: BackupConfig | null;
   /** Namespaced per school (TenantFileStore). */
@@ -530,7 +532,7 @@ export function buildTenantApiRoutes(manager: TenantManager, options: TenantApiO
   const scratch = openSqlite(":memory:");
   const api = requestContext.run({ db: scratch, tenant: "_build" }, () =>
     buildApiRoutes(createContextDb(), {
-      mail: { config: options.smtp },
+      mail: { config: options.smtp, sms: options.sms ?? null },
       auth: {
         onSetup: (db, body) => applySetup(db, body),
         loginRateLimit: options.loginRateLimit,

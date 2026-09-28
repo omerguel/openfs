@@ -7,9 +7,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { serve } from "bun";
 
-import type { ImportCommitResult, ImportPreview } from "../lib/student-import";
+import {
+  parseSignedEuro,
+  type ImportCommitResult,
+  type ImportPreview,
+} from "../lib/student-import";
 import { openDb } from "./db";
-import { ValidationError } from "./engine";
+import {
+  createTransaction,
+  listJournal,
+  listStudentBalances,
+  ValidationError,
+} from "./engine";
 import type { Database } from "./sqlite";
 import {
   commitStudentImport,
@@ -210,7 +219,7 @@ describe("previewStudentImport", () => {
     expect(() =>
       previewStudentImport(
         db,
-        body([["A", "B"]], { mapping: { 0: "balance", 1: "lastName" } }),
+        body([["A", "B"]], { mapping: { 0: "iban", 1: "lastName" } }),
       ),
     ).toThrow("Unbekanntes Feld");
     const many = Array.from({ length: MAX_IMPORT_ROWS + 1 }, () => ["A", "B"]);
@@ -236,6 +245,7 @@ describe("commitStudentImport", () => {
       skipped: 1,
       failed: 1,
       imported: 1,
+      openingBalances: 0,
     });
     const students = listStudents(db);
     expect(students).toHaveLength(before + 1);
@@ -321,5 +331,116 @@ describe("HTTP /api/import/students/*", () => {
     const bad = await post("/api/import/students/commit", { rows: [], mapping: {} });
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { error: string }).error).toContain("Vorname");
+  });
+});
+
+/* ------------------------ opening balances ------------------------ */
+
+describe("Saldo column → Saldovortrag", () => {
+  const BALANCE_MAPPING = { ...MAPPING, "8": "balance" };
+  const withBalance = (rows: string[][], options: Record<string, unknown> = {}) => ({
+    rows: [[...HEADER, "Saldo"], ...rows],
+    mapping: BALANCE_MAPPING,
+    options: { hasHeader: true, ...options },
+  });
+  const ROWS = [
+    ["Gina", "Guthaben", "", "20001", "", "", "", "B", "1.250,50"],
+    ["Otto", "Offen", "", "20002", "", "", "", "B", "-85,00"],
+    ["Nora", "Null", "", "20003", "", "", "", "B", ""],
+    ["Tim", "Trailing", "", "20004", "", "", "", "B", "12,00-"],
+  ];
+
+  test("parseSignedEuro reads German signed amounts", () => {
+    expect(parseSignedEuro("1.250,50")).toBe(125_050);
+    expect(parseSignedEuro("-85,00 €")).toBe(-8_500);
+    expect(parseSignedEuro("−85")).toBe(-8_500);
+    expect(parseSignedEuro("12,00-")).toBe(-1_200);
+    expect(parseSignedEuro("+3")).toBe(300);
+    expect(parseSignedEuro("")).toBe(0);
+    expect(parseSignedEuro("-0,00")).toBe(0);
+    expect(parseSignedEuro("12.5")).toBeNull();
+    expect(parseSignedEuro("abc")).toBeNull();
+  });
+
+  test("preview sums Guthaben and open amounts; bad amounts are row errors", () => {
+    const preview = previewStudentImport(
+      db,
+      withBalance([...ROWS, ["Bad", "Betrag", "", "20005", "", "", "", "B", "12.5"]]),
+      NOW,
+    );
+    expect(preview.openingBalances).toEqual({
+      count: 3,
+      creditCents: 125_050,
+      debitCents: 9_700,
+    });
+    const bad = preview.rows.find((r) => r.student.lastName === "Betrag")!;
+    expect(bad.status).toBe("error");
+    expect(bad.errors[0]).toContain("Saldo");
+  });
+
+  test("commit books one Saldovortrag per balance in the same transaction", () => {
+    const result = commitStudentImport(
+      db,
+      withBalance(ROWS, { openingBalanceDate: "2026-09-30" }),
+      NOW,
+    );
+    expect(result).toMatchObject({ imported: 4, openingBalances: 3 });
+    const balances = new Map(
+      listStudentBalances(db).map((row) => [row.customerNo, row.balanceCents]),
+    );
+    expect(balances.get("20001")).toBe(125_050);
+    expect(balances.get("20002")).toBe(-8_500);
+    expect(balances.has("20003")).toBe(false);
+    expect(balances.get("20004")).toBe(-1_200);
+    const vortraege = listJournal(db, {}).filter((row) => row.type === "saldovortrag");
+    expect(vortraege).toHaveLength(3);
+    expect(vortraege.every((row) => row.date === "2026-09-30" && row.belegNr)).toBe(true);
+    // The Saldovortrag of an imported student cannot be booked twice.
+    expect(() =>
+      createTransaction(db, {
+        type: "saldovortrag",
+        date: "2026-10-01",
+        amountCents: 100,
+        direction: "guthaben",
+        student: {
+          customerNo: "20001",
+          name: "Gina Guthaben",
+          address: "",
+          contractNo: "",
+          classes: "B",
+        },
+      }),
+    ).toThrow("bereits ein Saldovortrag");
+  });
+
+  test("balances without a booking date abort the whole import", () => {
+    const before = listStudents(db).length;
+    expect(() => commitStudentImport(db, withBalance(ROWS), NOW)).toThrow(
+      "Buchungsdatum",
+    );
+    expect(listStudents(db)).toHaveLength(before);
+    expect(() =>
+      commitStudentImport(
+        db,
+        withBalance(ROWS, { openingBalanceDate: "30.09.2026" }),
+        NOW,
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  test("a failing booking rolls back students and bookings", () => {
+    const before = listStudents(db).length;
+    const journalBefore = listJournal(db, {}).length;
+    // Deactivate 9000 so the engine rejects the second step.
+    db.prepare("UPDATE accounts SET active = 0 WHERE number = '9000'").run();
+    expect(() =>
+      commitStudentImport(
+        db,
+        withBalance(ROWS, { openingBalanceDate: "2026-09-30" }),
+        NOW,
+      ),
+    ).toThrow("nichts importiert");
+    expect(listStudents(db)).toHaveLength(before);
+    expect(listJournal(db, {})).toHaveLength(journalBefore);
   });
 });

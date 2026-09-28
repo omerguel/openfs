@@ -5,7 +5,7 @@
 
 import type { Database, SQLQueryBindings } from "./sqlite";
 
-import type { Student } from "../lib/student-data";
+import type { Student, TheoryManual } from "../lib/student-data";
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
 import {
@@ -55,6 +55,28 @@ type StudentRow = {
   license_date: string | null;
 };
 
+const DEFAULT_THEORY: TheoryManual = { preExams: "Keine", exam: "Nicht geplant" };
+
+/** Stored theory JSON → the hand-kept fields (older rows also carry the
+ *  since-derived lastLogin/status/progress; they are dropped here). */
+function parseTheory(raw: string): TheoryManual {
+  try {
+    const value = JSON.parse(raw) as Partial<TheoryManual> | null;
+    return {
+      preExams:
+        typeof value?.preExams === "string" ? value.preExams : DEFAULT_THEORY.preExams,
+      exam: typeof value?.exam === "string" ? value.exam : DEFAULT_THEORY.exam,
+    };
+  } catch {
+    return { ...DEFAULT_THEORY };
+  }
+}
+
+function withDerivedTheory(manual: TheoryManual, facts: StudentFacts): Student["theory"] {
+  const { exam, ...derived } = facts.theory;
+  return { ...manual, ...derived, exam: exam ?? manual.exam };
+}
+
 const toStudent = (row: StudentRow, facts: StudentFacts): StudentRecord => {
   const record: StudentRecord = {
     id: row.id,
@@ -81,7 +103,7 @@ const toStudent = (row: StudentRow, facts: StudentFacts): StudentRecord => {
     progress: row.progress,
     lessons: facts.lessons,
     documents: JSON.parse(row.documents),
-    theory: JSON.parse(row.theory),
+    theory: withDerivedTheory(parseTheory(row.theory), facts),
     pricePlanId: row.price_plan_id,
   };
   if (row.license_date) record.licenseDate = row.license_date;
@@ -97,7 +119,11 @@ const SELECT = `SELECT s.id, s.first_name, s.last_name, s.birthday, s.phone, s.e
 function withFacts(db: Database, rows: StudentRow[]): StudentRecord[] {
   const facts = deriveStudentFacts(
     db,
-    rows.map((row) => ({ id: row.id, customerNumber: row.customer_number })),
+    rows.map((row) => ({
+      id: row.id,
+      customerNumber: row.customer_number,
+      classes: row.classes,
+    })),
   );
   return rows.map((row) => toStudent(row, facts.get(row.id)!));
 }
@@ -132,11 +158,24 @@ const STRING_KEYS = [
 type StringKey = (typeof STRING_KEYS)[number];
 
 /* Merge a partial payload over current values, trimming strings and
-   rejecting anything that would leave the record unusable. */
-type StudentData = Student & { instructorId: number | null; vehicleId: number | null };
+   rejecting anything that would leave the record unusable. Only the
+   hand-kept theory fields are stored (theory.progress/status/… are
+   derived from attendance on read). */
+type StudentData = Omit<Student, "theory"> & {
+  instructorId: number | null;
+  vehicleId: number | null;
+  theory: TheoryManual;
+};
 
-function normalize(db: Database, input: StudentInput, current: StudentData): StudentData {
-  const next: StudentData = { ...current };
+function normalize(
+  db: Database,
+  input: StudentInput,
+  current: StudentData | StudentRecord,
+): StudentData {
+  const next: StudentData = {
+    ...current,
+    theory: { preExams: current.theory.preExams, exam: current.theory.exam },
+  };
 
   next.instructorId = resolveInstructorId(
     db,
@@ -200,7 +239,15 @@ function normalize(db: Database, input: StudentInput, current: StudentData): Stu
     if (typeof input.theory !== "object" || input.theory === null) {
       throw new ValidationError("Feld 'theory' muss ein Objekt sein.");
     }
-    next.theory = input.theory;
+    // progress, status, attendedUnits, lastSession … are derived — ignored.
+    const { preExams, exam } = input.theory as Partial<TheoryManual>;
+    for (const [key, value] of Object.entries({ preExams, exam })) {
+      if (value !== undefined && typeof value !== "string") {
+        throw new ValidationError(`Feld 'theory.${key}' muss ein Text sein.`);
+      }
+    }
+    if (preExams !== undefined) next.theory.preExams = preExams.trim();
+    if (exam !== undefined) next.theory.exam = exam.trim();
   }
 
   if (input.pricePlanId !== undefined) {
@@ -262,13 +309,7 @@ const EMPTY: StudentData = {
   progress: 0,
   lessons: [],
   documents: [],
-  theory: {
-    lastLogin: "Noch nie",
-    preExams: "Keine",
-    exam: "Nicht geplant",
-    status: "Aktiv",
-    progress: 0,
-  },
+  theory: { ...DEFAULT_THEORY },
 };
 
 /* SQLite UNIQUE violations on the number columns become user-readable
@@ -415,6 +456,17 @@ export function deleteStudent(db: Database, id: number): void {
       db.prepare("UPDATE calendar_events SET student_id = NULL WHERE student_id = ?").run(
         id,
       );
+    }
+    // A Terminanfrage keeps its history but loses the conversion link.
+    if (tableExists(db, "appointment_requests")) {
+      const cols = db
+        .query<{ name: string }, []>("PRAGMA table_info(appointment_requests)")
+        .all();
+      if (cols.some((c) => c.name === "student_id")) {
+        db.prepare(
+          "UPDATE appointment_requests SET student_id = NULL WHERE student_id = ?",
+        ).run(id);
+      }
     }
     // Theory attendance is operational data, not a compliance record.
     if (tableExists(db, "theory_attendance")) {

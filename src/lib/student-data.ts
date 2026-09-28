@@ -18,12 +18,28 @@ export type Lesson = { label: string; done: string };
  *  not part of the student record — see /api/students/:id/files. */
 export type StudentDocument = string;
 
-export type TheoryProfile = {
-  lastLogin: string;
+/** Theory data kept by hand: the learning app is not integrated (the
+ *  official question catalogue needs a licence), so pre-exam results
+ *  are typed in; the exam date too unless the calendar has one. */
+export type TheoryManual = {
   preExams: string;
   exam: string;
+};
+
+/** Theory course as served by the API — everything but TheoryManual is
+ *  derived from theory_attendance and the calendar (student-facts.ts). */
+export type TheoryProfile = TheoryManual & {
   status: TheoryStatus;
+  /** attendedUnits / requiredUnits in %, capped at 100. */
   progress: number;
+  /** Attended Doppelstunden (theory_attendance, attended = 1). */
+  attendedUnits: number;
+  /** FahrSchAusbO requirement for the student's class (src/lib/theory.ts). */
+  requiredUnits: number;
+  /** "08.06.2026" of the last attended Theoriestunde, or "Noch keine". */
+  lastSession: string;
+  /** ISO date of the last attended Theoriestunde (for sorting). */
+  lastSessionDate: string | null;
 };
 
 export type Student = {
@@ -64,7 +80,10 @@ export type Student = {
   theory: TheoryProfile;
 };
 
-export const students: Student[] = [
+/** Seed shape: only the hand-kept theory fields are stored. */
+export type StudentSeed = Omit<Student, "theory"> & { theory: TheoryManual };
+
+export const students: StudentSeed[] = [
   {
     firstName: "Lena",
     lastName: "Braun",
@@ -92,11 +111,8 @@ export const students: Student[] = [
     ],
     documents: ["Personalausweis", "Passbild", "Sehtest"],
     theory: {
-      lastLogin: "Heute, 08:42",
       preExams: "3 bestanden",
       exam: "18.06.2026",
-      status: "Aktiv",
-      progress: 78,
     },
   },
   {
@@ -126,11 +142,8 @@ export const students: Student[] = [
     ],
     documents: ["Personalausweis", "Anmeldung"],
     theory: {
-      lastLogin: "Gestern, 19:10",
       preExams: "1 offen",
       exam: "Nicht geplant",
-      status: "In Prüfung",
-      progress: 46,
     },
   },
   {
@@ -160,11 +173,8 @@ export const students: Student[] = [
     ],
     documents: ["Personalausweis", "Passbild", "Sehtest", "Erste Hilfe"],
     theory: {
-      lastLogin: "08.06.2026",
       preExams: "5 bestanden",
       exam: "12.06.2026",
-      status: "Bereit",
-      progress: 91,
     },
   },
   {
@@ -194,11 +204,8 @@ export const students: Student[] = [
     ],
     documents: ["Personalausweis"],
     theory: {
-      lastLogin: "05.06.2026",
       preExams: "Keine",
       exam: "Nicht geplant",
-      status: "Aktiv",
-      progress: 32,
     },
   },
   {
@@ -228,11 +235,8 @@ export const students: Student[] = [
     ],
     documents: ["Personalausweis", "Passbild"],
     theory: {
-      lastLogin: "01.06.2026",
       preExams: "2 bestanden",
       exam: "25.06.2026",
-      status: "Pausiert",
-      progress: 64,
     },
   },
 ];

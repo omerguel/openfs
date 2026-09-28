@@ -169,11 +169,12 @@ describe("retryOutboxEntry", () => {
 });
 
 describe("notification settings", () => {
-  test("defaults to everything on", () => {
+  test("defaults to every mail on, SMS reminders off", () => {
     expect(getNotificationSettings(db)).toEqual({
       appointmentMails: true,
       lessonReminders: true,
       lessonCancellations: true,
+      smsReminders: false,
     });
   });
 
@@ -199,7 +200,7 @@ describe("mail routes", () => {
   beforeAll(() => {
     server = serve({
       port: 0,
-      routes: mailRoutes(routeDb, { config: null }),
+      routes: mailRoutes(routeDb, { config: null, sms: null }),
       fetch: () => new Response("not found", { status: 404 }),
     });
   });
@@ -207,7 +208,11 @@ describe("mail routes", () => {
 
   test("GET /api/mail/status reports the missing configuration", async () => {
     const res = await fetch(url("/api/mail/status"));
-    expect(await res.json()).toEqual({ configured: false, from: "" });
+    expect(await res.json()).toEqual({
+      configured: false,
+      from: "",
+      sms: { configured: false, provider: null, from: "" },
+    });
   });
 
   test("POST /api/outbox queues a generic mail with signature", async () => {
@@ -274,6 +279,7 @@ describe("mail routes", () => {
       appointmentMails: false,
       lessonReminders: true,
       lessonCancellations: true,
+      smsReminders: false,
     });
   });
 });

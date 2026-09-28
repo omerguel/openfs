@@ -211,3 +211,20 @@ export function genericMail(
     body: compose([data.body.trim()], school),
   };
 }
+
+/** Short German SMS reminder for tomorrow's Termin. Uses only GSM 03.38
+ *  characters (no en dash / typographic quotes) so it fits one segment
+ *  in the common case. */
+export function lessonReminderSmsText(data: LessonMailData, school: MailSchool): string {
+  const [, month, day] = data.date.split("-");
+  const instructor = assigned(data.instructor);
+  const parts = [
+    `${greeting(data.firstName)} Erinnerung: ${lessonLabel(data.type)} morgen (${day}.${month}.) um ${data.start} Uhr`,
+    instructor ? ` mit ${instructor}` : "",
+    data.location ? `, ${data.location}` : "",
+    ".",
+    school.phone ? ` Absage bitte rechtzeitig: ${school.phone}.` : "",
+    ` ${school.name}`,
+  ];
+  return parts.join("").replace(/[–—]/g, "-");
+}

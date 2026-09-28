@@ -414,6 +414,14 @@ export const SKR04_ACCOUNTS: AccountSeed[] = [
     vatLabel: "0%",
   },
   { number: "7685", name: "Kfz-Steuern", kind: "aufwand", vatRate: 0, vatLabel: "0%" },
+  {
+    // Eröffnungssalden (Datenübernahme aus der Vorgängersoftware).
+    number: "9000",
+    name: "Saldenvorträge, Sachkonten",
+    kind: "vortrag",
+    vatRate: null,
+    vatLabel: "Nicht zutreffend",
+  },
 ];
 
 /* Databases created before the SKR-04 switch hold SKR-03 numbers.       */

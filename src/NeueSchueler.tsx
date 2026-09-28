@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   Building2,
@@ -20,6 +21,10 @@ import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import { createStudent, useStudents } from "@/hooks/use-students";
 import { uploadStudentFile } from "@/hooks/use-student-files";
 import { StudentFilePreview } from "@/components/fahrschueler/DokumenteTab";
+import {
+  linkAppointmentRequestStudent,
+  useAppointmentRequests,
+} from "@/hooks/use-appointment-requests";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -172,8 +177,21 @@ function AutoNumber({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** "Anna Lena Schmidt" → first "Anna Lena", last "Schmidt". */
+function splitName(name: string): { firstName: string; lastName: string } {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return { firstName: parts[0] ?? "", lastName: "" };
+  return { firstName: parts.slice(0, -1).join(" "), lastName: parts.at(-1)! };
+}
+
 export function NeueSchueler() {
   const { students, refresh } = useStudents();
+  const { anfrage } = useSearch({ from: "/_portal/neue-schueler" });
+  const navigate = useNavigate();
+  const { requests } = useAppointmentRequests();
+  const sourceRequest =
+    anfrage === undefined ? null : (requests.find((r) => r.id === anfrage) ?? null);
+  const prefilledFrom = useRef<number | null>(null);
   const { vehicleOptions } = useVehicleOptions();
   const [form, setForm] = useState<FormState>(() => ({
     ...initialForm,
@@ -191,6 +209,19 @@ export function NeueSchueler() {
   useEffect(() => {
     setForm((current) => ({ ...current, ...nextStudentNumbers(students) }));
   }, [students]);
+
+  // Prefill once from the Terminanfrage this page was opened for.
+  useEffect(() => {
+    if (!sourceRequest || prefilledFrom.current === sourceRequest.id) return;
+    prefilledFrom.current = sourceRequest.id;
+    setForm((current) => ({
+      ...current,
+      ...splitName(sourceRequest.name),
+      phone: sourceRequest.phone,
+      email: sourceRequest.email,
+    }));
+    setDirty(true);
+  }, [sourceRequest]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -237,6 +268,17 @@ export function NeueSchueler() {
         ...form,
         progress: 0,
       });
+      if (sourceRequest) {
+        try {
+          await linkAppointmentRequestStudent(sourceRequest.id, created.id);
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? `Anfrage konnte nicht verknüpft werden: ${error.message}`
+              : "Anfrage konnte nicht verknüpft werden.",
+          );
+        }
+      }
       toast.success("Schüler/in angelegt", {
         description: `${form.firstName} ${form.lastName} wurde zur Fahrschule hinzugefügt.`,
       });
@@ -258,6 +300,7 @@ export function NeueSchueler() {
       }
       await refresh();
       reset();
+      if (sourceRequest) void navigate({ to: "/terminanfragen" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Anlegen fehlgeschlagen.");
     } finally {

@@ -24,6 +24,8 @@ export type SchoolProfile = {
   instagram: string;
   facebook: string;
   google_maps_url: string;
+  /** Google Place ID ("ChIJ…") — source of the Google-Bewertungen import. */
+  google_place_id: string;
   /** Always exactly 7 entries, Montag–Sonntag in order. */
   opening_hours: OpeningHoursEntry[];
   services: string[];
@@ -51,6 +53,7 @@ export const DEFAULT_SCHOOL_PROFILE: SchoolProfile = {
   instagram: "",
   facebook: "",
   google_maps_url: "",
+  google_place_id: "",
   opening_hours: WEEK_DAYS.map((day) => ({
     day,
     hours:
@@ -106,6 +109,7 @@ const STRING_FIELDS = [
   "instagram",
   "facebook",
   "google_maps_url",
+  "google_place_id",
 ] as const;
 
 function sanitizeStringList(value: unknown, label: string): string[] {
@@ -182,6 +186,12 @@ export function sanitizeSchoolProfile(
       throw new ValidationError(`Feld '${key}' muss ein Text sein.`);
     }
     next[key] = value.trim();
+  }
+
+  if (next.google_place_id && !/^[A-Za-z0-9_-]{10,300}$/.test(next.google_place_id)) {
+    throw new ValidationError(
+      "Die Google Place ID besteht nur aus Buchstaben, Ziffern, '-' und '_' (z. B. ChIJ…).",
+    );
   }
 
   if ("founded_year" in input) {

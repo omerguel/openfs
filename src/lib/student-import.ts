@@ -7,10 +7,13 @@
 /*  - per-row normalisation (dates → TT.MM.JJJJ, address, classes,     */
 /*    status) and validation with German messages                      */
 /*  - request/response types of /api/import/students/*                 */
+/*  - optional "Saldo" column (German money, negative = student owes),  */
+/*    booked as Saldovortrag on commit                                  */
 /* The server (src/server/student-import.ts) adds DB checks: duplicates,*/
 /* instructor/vehicle lookup and number generation.                    */
 /* ------------------------------------------------------------------ */
 
+import { parseEuroToCents } from "./money";
 import type { StudentStatus } from "./student-data";
 
 export type ImportField =
@@ -31,7 +34,8 @@ export type ImportField =
   | "instructor"
   | "vehicle"
   | "status"
-  | "drivingSchool";
+  | "drivingSchool"
+  | "balance";
 
 /* Synonyms are compared after normalizeHeader(): lower case, umlauts
    transliterated, everything but a–z/0–9 removed ("Geb.-Datum" →
@@ -226,6 +230,13 @@ export const IMPORT_FIELDS: { field: ImportField; label: string; synonyms: strin
         "branch",
       ],
     },
+    {
+      // Deliberately no "Guthaben"/"Offener Betrag" synonyms: their sign
+      // convention is ambiguous. Positive = Guthaben, negative = offen.
+      field: "balance",
+      label: "Saldo (+ Guthaben / − offen)",
+      synonyms: ["saldo", "kontosaldo", "kontostand", "saldovortrag", "balance"],
+    },
   ];
 
 const FIELD_SET = new Set<string>(IMPORT_FIELDS.map((f) => f.field));
@@ -240,6 +251,8 @@ export type ImportMapping = Record<number, ImportField>;
 export type ImportOptions = {
   /** First row holds the column titles (default true). */
   hasHeader?: boolean;
+  /** ISO booking date of the Saldovorträge (required with a Saldo column). */
+  openingBalanceDate?: string;
 };
 
 export type ImportRequest = {
@@ -264,6 +277,8 @@ export type ImportDraft = {
   status: StudentStatus;
   instructor: string;
   vehicle: string;
+  /** Opening balance in cents: > 0 Guthaben, < 0 the student owes, 0 none. */
+  balanceCents: number;
 };
 
 export type ImportRowStatus = "import" | "skip" | "error";
@@ -287,9 +302,26 @@ export type ImportSummary = {
   failed: number;
 };
 
-export type ImportPreview = { rows: ImportRowResult[]; summary: ImportSummary };
+/** Saldovorträge of the importable rows. */
+export type ImportOpeningBalances = {
+  count: number;
+  /** Sum of the Guthaben (positive balances). */
+  creditCents: number;
+  /** Sum of the open amounts (negative balances, as positive cents). */
+  debitCents: number;
+};
 
-export type ImportCommitResult = ImportSummary & { imported: number };
+export type ImportPreview = {
+  rows: ImportRowResult[];
+  summary: ImportSummary;
+  openingBalances: ImportOpeningBalances;
+};
+
+export type ImportCommitResult = ImportSummary & {
+  imported: number;
+  /** Saldovorträge booked in the same transaction. */
+  openingBalances: number;
+};
 
 /* ------------------------------------------------------------------ */
 /* Header mapping                                                      */
@@ -454,6 +486,23 @@ export function composeAddress(parts: {
   return [line1, line2].filter(Boolean).join(", ");
 }
 
+/** German money with sign: "-85,00", "−1.250,50 €", "85,00-" (trailing
+ *  minus as in accounting exports), "+12". "" → 0; garbage → null. */
+export function parseSignedEuro(raw: string): number | null {
+  let value = raw.replace(/\s|€|EUR/gi, "").replace(/\u2212/g, "-");
+  if (!value) return 0;
+  let negative = false;
+  if (value.startsWith("-") || value.endsWith("-")) {
+    negative = true;
+    value = value.startsWith("-") ? value.slice(1) : value.slice(0, -1);
+  } else if (value.startsWith("+")) {
+    value = value.slice(1);
+  }
+  const cents = parseEuroToCents(value);
+  if (cents === null) return null;
+  return negative && cents !== 0 ? -cents : cents;
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /* ------------------------------------------------------------------ */
@@ -508,6 +557,15 @@ export function mapImportRow(
   const classes = normalizeClasses(get("classes"));
   if (!classes) warnings.push("Keine Führerscheinklasse angegeben.");
 
+  const rawBalance = get("balance");
+  let balanceCents = parseSignedEuro(rawBalance);
+  if (balanceCents === null) {
+    errors.push(
+      `Saldo „${rawBalance}“ ist kein gültiger Betrag (z. B. 1.250,00 oder -85,00).`,
+    );
+    balanceCents = 0;
+  }
+
   const address =
     get("address") ||
     composeAddress({
@@ -533,6 +591,7 @@ export function mapImportRow(
       status,
       instructor: get("instructor"),
       vehicle: get("vehicle"),
+      balanceCents,
     },
     errors,
     warnings,

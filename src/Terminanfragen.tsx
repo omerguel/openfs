@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   CalendarDays,
   Check,
@@ -8,6 +9,7 @@ import {
   Phone,
   Trash2,
   TriangleAlert,
+  UserPlus,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -249,12 +251,14 @@ function RequestCard({
   onAccept,
   onDecline,
   onDelete,
+  onCreateStudent,
 }: {
   request: AppointmentRequest;
   saving: boolean;
   onAccept: () => void;
   onDecline: () => void;
   onDelete: () => void;
+  onCreateStudent: () => void;
 }) {
   const contact = [
     { Icon: Phone, value: request.phone },
@@ -298,6 +302,31 @@ function RequestCard({
         {request.message && (
           <p className="text-sm text-muted-foreground">{request.message}</p>
         )}
+        {(request.campaignName || request.studentId !== null) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {request.campaignName && (
+              <span>
+                Über Kampagne{" "}
+                <span className="font-medium text-foreground">
+                  {request.campaignName}
+                </span>
+              </span>
+            )}
+            {request.studentId !== null && (
+              <span className="flex items-center gap-1.5">
+                <span aria-hidden className="size-1.5 rounded-full bg-green-500" />
+                Angelegt als{" "}
+                <Link
+                  to="/fahrschueler/$studentId"
+                  params={{ studentId: String(request.studentId) }}
+                  className="font-medium text-foreground underline-offset-4 hover:underline"
+                >
+                  {request.studentName}
+                </Link>
+              </span>
+            )}
+          </div>
+        )}
         {request.conflicts && request.conflicts.length > 0 && (
           <div className="flex flex-col gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
             <span className="flex items-center gap-1.5 font-medium">
@@ -326,7 +355,19 @@ function RequestCard({
               {request.requestedTime} Uhr
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {request.studentId === null && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={onCreateStudent}
+              >
+                <UserPlus data-icon="inline-start" />
+                Als Fahrschüler anlegen
+              </Button>
+            )}
             {request.status !== "bestätigt" && (
               <Button type="button" size="sm" disabled={saving} onClick={onAccept}>
                 <Check data-icon="inline-start" />
@@ -381,6 +422,7 @@ function RequestCard({
 
 export function Terminanfragen() {
   const { requests, loading, refresh } = useAppointmentRequests();
+  const navigate = useNavigate();
   const { assignableNames: instructorOptions } = useInstructors();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("alle");
   const [acceptingId, setAcceptingId] = useState<number | null>(null);
@@ -499,6 +541,9 @@ export function Terminanfragen() {
                     () => deleteAppointmentRequest(request.id),
                     "Anfrage gelöscht.",
                   )
+                }
+                onCreateStudent={() =>
+                  void navigate({ to: "/neue-schueler", search: { anfrage: request.id } })
                 }
               />
             ))}

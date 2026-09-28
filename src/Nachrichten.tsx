@@ -1,17 +1,27 @@
 /* ------------------------------------------------------------------ */
-/* Nachrichten — E-Mail-Postausgang (/nachrichten). Lists the outbox   */
-/* with status, lets the office resend, copy unsent mails by hand and  */
-/* write a free-text mail. Also hosts the notification toggles and a   */
-/* banner when SMTP is not configured. Data: use-mail.ts.              */
+/* Nachrichten — Postausgang (/nachrichten) for e-mail and SMS. Lists  */
+/* the outbox with channel and status, lets the office resend, copy    */
+/* unsent messages by hand and write a free-text mail or SMS. Also     */
+/* hosts the notification toggles and a banner when SMTP or the SMS    */
+/* provider is not configured. Data: use-mail.ts.                      */
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo, useState } from "react";
-import { Copy, Mail, Plus, RotateCw, TriangleAlert } from "lucide-react";
+import {
+  Copy,
+  Mail,
+  MessageSquareText,
+  Plus,
+  RotateCw,
+  Smartphone,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
 import {
   queueGenericMail,
+  queueSms,
   retryOutboxEntry,
   saveNotificationSettings,
   useMailStatus,
@@ -19,9 +29,11 @@ import {
   useOutbox,
   type MailKind,
   type NotificationSettings,
+  type OutboxChannel,
   type OutboxEntry,
   type OutboxStatus,
 } from "@/hooks/use-mail";
+import { MAX_SMS_SEGMENTS, normalizePhoneNumber, smsSegments } from "@/lib/sms-text";
 import { useStudents } from "@/hooks/use-students";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -76,12 +88,30 @@ const KIND_LABEL: Record<MailKind, string> = {
   request_confirmed: "Terminbestätigung",
   request_declined: "Anfrage abgelehnt",
   lesson_reminder: "Erinnerung",
+  lesson_reminder_sms: "Erinnerung",
   lesson_cancelled: "Terminabsage",
   portal_link: "Portal-Link",
   generic: "Freitext",
 };
 
 type StatusFilter = "all" | OutboxStatus;
+type ChannelFilter = "all" | OutboxChannel;
+
+const CHANNEL_LABEL: Record<OutboxChannel, string> = { email: "E-Mail", sms: "SMS" };
+
+function ChannelLabel({ channel }: { channel: OutboxChannel }) {
+  const Icon = channel === "sms" ? Smartphone : Mail;
+  return (
+    <span className="flex items-center gap-1.5 text-muted-foreground">
+      <Icon aria-hidden className="size-3.5" />
+      {CHANNEL_LABEL[channel]}
+    </span>
+  );
+}
+
+/** Table/detail headline: the subject for mails, the text for SMS. */
+const entryTitle = (entry: OutboxEntry) =>
+  entry.channel === "sms" ? entry.bodyText : entry.subject;
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -106,10 +136,17 @@ function StatusBadge({ status }: { status: OutboxStatus }) {
 }
 
 async function copyMail(entry: OutboxEntry) {
-  const text = `An: ${entry.recipient}\nBetreff: ${entry.subject}\n\n${entry.bodyText}`;
+  const text =
+    entry.channel === "sms"
+      ? `An: ${entry.recipient}\n\n${entry.bodyText}`
+      : `An: ${entry.recipient}\nBetreff: ${entry.subject}\n\n${entry.bodyText}`;
   try {
     await navigator.clipboard.writeText(text);
-    toast.success("E-Mail in die Zwischenablage kopiert.");
+    toast.success(
+      entry.channel === "sms"
+        ? "SMS in die Zwischenablage kopiert."
+        : "E-Mail in die Zwischenablage kopiert.",
+    );
   } catch {
     toast.error("Kopieren nicht möglich.");
   }
@@ -133,6 +170,11 @@ const TOGGLES: { key: keyof NotificationSettings; label: string; hint: string }[
     label: "Terminabsagen",
     hint: "Wenn ein Termin gestrichen wird",
   },
+  {
+    key: "smsReminders",
+    label: "SMS-Erinnerungen",
+    hint: "Am Vortag per SMS, wenn eine Handynummer hinterlegt ist",
+  },
 ];
 
 function NotificationToggles() {
@@ -150,7 +192,7 @@ function NotificationToggles() {
   return (
     <div className="flex flex-wrap gap-x-6 gap-y-3 border-b border-border/70 px-3 py-3">
       <span className="w-full text-sm font-medium sm:w-auto sm:self-center">
-        Automatische E-Mails
+        Automatische Nachrichten
       </span>
       {TOGGLES.map(({ key, label, hint }) => (
         <label
@@ -160,7 +202,7 @@ function NotificationToggles() {
         >
           <Switch
             id={`notify-${key}`}
-            checked={settings?.[key] ?? true}
+            checked={settings?.[key] ?? false}
             disabled={!settings}
             onCheckedChange={(value) => void toggle(key, value)}
           />
@@ -315,6 +357,156 @@ function NewMailDialog({
   );
 }
 
+function NewSmsDialog({
+  open,
+  onOpenChange,
+  onQueued,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onQueued: () => void;
+}) {
+  const { students } = useStudents();
+  const withPhone = useMemo(
+    () => students.filter((student) => normalizePhoneNumber(student.phone) !== null),
+    [students],
+  );
+  const [studentId, setStudentId] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (open) return;
+    setStudentId("");
+    setRecipient("");
+    setText("");
+  }, [open]);
+
+  const pickStudent = (value: string) => {
+    setStudentId(value);
+    const student = withPhone.find((item) => String(item.id) === value);
+    if (student) setRecipient(student.phone);
+  };
+
+  const normalized = recipient.trim() ? normalizePhoneNumber(recipient) : null;
+  const segments = smsSegments(text.trim());
+  const tooLong = segments.segments > MAX_SMS_SEGMENTS;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSending(true);
+    try {
+      await queueSms({
+        recipient,
+        text,
+        studentId: studentId ? Number(studentId) : undefined,
+      });
+      toast.success("SMS in den Postausgang gelegt.");
+      onOpenChange(false);
+      onQueued();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Senden fehlgeschlagen.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>Neue SMS</DialogTitle>
+            <DialogDescription>
+              Kurz halten: bis zu {MAX_SMS_SEGMENTS} SMS-Teile, längere Texte werden
+              gekürzt. Umlaute sind erlaubt, Sonderzeichen wie „–“ verkürzen eine SMS auf
+              70 Zeichen.
+            </DialogDescription>
+          </DialogHeader>
+
+          <FieldGroup className="gap-3">
+            <Field>
+              <FieldLabel htmlFor="sms-student">Fahrschüler/in</FieldLabel>
+              <Select value={studentId} onValueChange={pickStudent}>
+                <SelectTrigger id="sms-student" className="w-full">
+                  <SelectValue placeholder="Aus Fahrschülern mit Telefonnummer wählen" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {withPhone.map((student) => (
+                      <SelectItem key={student.id} value={String(student.id)}>
+                        {student.firstName} {student.lastName}
+                        <span className="text-muted-foreground tabular-nums">
+                          {" "}
+                          · {student.phone}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="sms-recipient">Handynummer</FieldLabel>
+              <Input
+                id="sms-recipient"
+                type="tel"
+                value={recipient}
+                onChange={(event) => {
+                  setRecipient(event.target.value);
+                  setStudentId("");
+                }}
+                placeholder="0151 23456789"
+                required
+              />
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {!recipient.trim()
+                  ? "Ohne Ländervorwahl wird +49 angenommen."
+                  : normalized
+                    ? `Wird gesendet an ${normalized}`
+                    : "Keine gültige Telefonnummer."}
+              </span>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="sms-text">Nachricht</FieldLabel>
+              <Textarea
+                id="sms-text"
+                rows={5}
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                required
+              />
+              <span
+                className={cn(
+                  "text-[11px] tabular-nums text-muted-foreground",
+                  tooLong && "text-amber-700 dark:text-amber-400",
+                )}
+              >
+                {segments.length} Zeichen · {segments.segments}{" "}
+                {segments.segments === 1 ? "SMS" : "SMS-Teile"}
+                {segments.encoding === "ucs2" ? " · Sonderzeichen (70 je SMS)" : ""}
+                {tooLong ? " · wird gekürzt" : ""}
+              </span>
+            </Field>
+          </FieldGroup>
+
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline">
+                Abbrechen
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={sending || !normalized || !text.trim()}>
+              Senden
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MailDetailDialog({
   entry,
   onOpenChange,
@@ -330,9 +522,12 @@ function MailDetailDialog({
         {entry && (
           <>
             <DialogHeader>
-              <DialogTitle className="pr-6">{entry.subject}</DialogTitle>
+              <DialogTitle className="pr-6">
+                {entry.channel === "sms" ? `SMS an ${entry.recipient}` : entry.subject}
+              </DialogTitle>
               <DialogDescription>
-                An {entry.recipient} · {KIND_LABEL[entry.kind] ?? entry.kind} ·{" "}
+                {entry.channel === "sms" ? "SMS" : `An ${entry.recipient}`} ·{" "}
+                {KIND_LABEL[entry.kind] ?? entry.kind} ·{" "}
                 <span className="tabular-nums">{formatCreatedAt(entry.createdAt)}</span>
               </DialogDescription>
             </DialogHeader>
@@ -377,8 +572,10 @@ export function Nachrichten() {
   const { items, loading, refresh } = useOutbox();
   const mailStatus = useMailStatus();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [query, setQuery] = useState("");
   const [isNewOpen, setIsNewOpen] = useState(false);
+  const [isNewSmsOpen, setIsNewSmsOpen] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -391,11 +588,12 @@ export function Nachrichten() {
     return items.filter(
       (entry) =>
         (statusFilter === "all" || entry.status === statusFilter) &&
+        (channelFilter === "all" || entry.channel === channelFilter) &&
         (!needle ||
           entry.recipient.toLowerCase().includes(needle) ||
-          entry.subject.toLowerCase().includes(needle)),
+          entryTitle(entry).toLowerCase().includes(needle)),
     );
-  }, [items, query, statusFilter]);
+  }, [channelFilter, items, query, statusFilter]);
 
   const detail = items.find((entry) => entry.id === detailId) ?? null;
   const unsent = items.filter((entry) => entry.status !== "gesendet").length;
@@ -404,7 +602,11 @@ export function Nachrichten() {
     try {
       await retryOutboxEntry(entry.id);
       await refresh();
-      toast.success("E-Mail wird erneut gesendet.");
+      toast.success(
+        entry.channel === "sms"
+          ? "SMS wird erneut gesendet."
+          : "E-Mail wird erneut gesendet.",
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Aktion fehlgeschlagen.");
     }
@@ -418,10 +620,25 @@ export function Nachrichten() {
             <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Empfänger oder Betreff…"
+              placeholder="Empfänger, Betreff oder Text…"
               aria-label="Nachrichten durchsuchen"
               className="hidden w-48 sm:flex lg:w-64"
             />
+            <Select
+              value={channelFilter}
+              onValueChange={(value) => setChannelFilter(value as ChannelFilter)}
+            >
+              <SelectTrigger className="hidden w-32 lg:flex" aria-label="Kanal filtern">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">Alle Kanäle</SelectItem>
+                  <SelectItem value="email">E-Mail</SelectItem>
+                  <SelectItem value="sms">SMS</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
             <Select
               value={statusFilter}
               onValueChange={(value) => setStatusFilter(value as StatusFilter)}
@@ -440,6 +657,16 @@ export function Nachrichten() {
                 </SelectGroup>
               </SelectContent>
             </Select>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="Neue SMS"
+              onClick={() => setIsNewSmsOpen(true)}
+            >
+              <MessageSquareText data-icon="inline-start" />
+              <span className="hidden sm:inline">Neue SMS</span>
+            </Button>
             <Button type="button" size="sm" onClick={() => setIsNewOpen(true)}>
               <Plus data-icon="inline-start" />
               Neue E-Mail
@@ -452,23 +679,37 @@ export function Nachrichten() {
             Nachrichten
           </h1>
           <span className="hidden text-[11px] text-muted-foreground tabular-nums sm:inline">
-            {items.length} E-Mails · {unsent} nicht gesendet
+            {items.length} Nachrichten · {unsent} nicht gesendet
           </span>
         </div>
       </PageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background">
-        {mailStatus && !mailStatus.configured && (
-          <div className="border-b border-border/70 p-3">
-            <Alert>
-              <TriangleAlert />
-              <AlertTitle>E-Mail-Versand ist nicht eingerichtet</AlertTitle>
-              <AlertDescription>
-                Es sind keine SMTP-Zugangsdaten hinterlegt (SMTP_HOST, SMTP_PORT,
-                SMTP_USER, SMTP_PASS, SMTP_FROM). E-Mails bleiben im Postausgang und
-                können geöffnet und von Hand kopiert werden.
-              </AlertDescription>
-            </Alert>
+        {mailStatus && (!mailStatus.configured || !mailStatus.sms?.configured) && (
+          <div className="flex flex-col gap-2 border-b border-border/70 p-3">
+            {!mailStatus.configured && (
+              <Alert>
+                <TriangleAlert />
+                <AlertTitle>E-Mail-Versand ist nicht eingerichtet</AlertTitle>
+                <AlertDescription>
+                  Es sind keine SMTP-Zugangsdaten hinterlegt (SMTP_HOST, SMTP_PORT,
+                  SMTP_USER, SMTP_PASS, SMTP_FROM). E-Mails bleiben im Postausgang und
+                  können geöffnet und von Hand kopiert werden.
+                </AlertDescription>
+              </Alert>
+            )}
+            {!mailStatus.sms?.configured && (
+              <Alert>
+                <Smartphone />
+                <AlertTitle>SMS-Versand ist nicht eingerichtet</AlertTitle>
+                <AlertDescription>
+                  Kein SMS-Anbieter hinterlegt: SMS_PROVIDER=seven mit SMS_API_KEY
+                  (seven.io) oder SMS_PROVIDER=webhook mit SMS_WEBHOOK_URL, optional
+                  SMS_FROM als Absender (max. 11 Zeichen). SMS bleiben im Postausgang und
+                  können kopiert werden.
+                </AlertDescription>
+              </Alert>
+            )}
           </div>
         )}
 
@@ -488,12 +729,12 @@ export function Nachrichten() {
                   <Mail />
                 </EmptyMedia>
                 <EmptyTitle>
-                  {items.length === 0 ? "Noch keine E-Mails" : "Keine Treffer"}
+                  {items.length === 0 ? "Noch keine Nachrichten" : "Keine Treffer"}
                 </EmptyTitle>
                 <EmptyDescription>
                   {items.length === 0
-                    ? "Bestätigungen, Erinnerungen und eigene Nachrichten erscheinen hier."
-                    : "Filter anpassen, um weitere E-Mails zu sehen."}
+                    ? "Bestätigungen, Erinnerungen, E-Mails und SMS erscheinen hier."
+                    : "Filter anpassen, um weitere Nachrichten zu sehen."}
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
@@ -502,8 +743,9 @@ export function Nachrichten() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-40">Status</TableHead>
+                  <TableHead className="hidden w-24 sm:table-cell">Kanal</TableHead>
                   <TableHead>Empfänger</TableHead>
-                  <TableHead>Betreff</TableHead>
+                  <TableHead>Betreff / Text</TableHead>
                   <TableHead className="hidden lg:table-cell">Art</TableHead>
                   <TableHead className="hidden md:table-cell">Erstellt</TableHead>
                   <TableHead className="w-24 text-right">
@@ -529,8 +771,15 @@ export function Nachrichten() {
                     <TableCell>
                       <StatusBadge status={entry.status} />
                     </TableCell>
-                    <TableCell className="max-w-48 truncate">{entry.recipient}</TableCell>
-                    <TableCell className="max-w-80 truncate">{entry.subject}</TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <ChannelLabel channel={entry.channel} />
+                    </TableCell>
+                    <TableCell className="max-w-48 truncate tabular-nums">
+                      {entry.recipient}
+                    </TableCell>
+                    <TableCell className="max-w-80 truncate">
+                      {entryTitle(entry)}
+                    </TableCell>
                     <TableCell className="hidden text-muted-foreground lg:table-cell">
                       {KIND_LABEL[entry.kind] ?? entry.kind}
                     </TableCell>
@@ -543,7 +792,7 @@ export function Nachrichten() {
                           type="button"
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={`E-Mail an ${entry.recipient} kopieren`}
+                          aria-label={`${CHANNEL_LABEL[entry.channel]} an ${entry.recipient} kopieren`}
                           onClick={(event) => {
                             event.stopPropagation();
                             void copyMail(entry);
@@ -556,7 +805,7 @@ export function Nachrichten() {
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            aria-label={`E-Mail an ${entry.recipient} erneut senden`}
+                            aria-label={`${CHANNEL_LABEL[entry.channel]} an ${entry.recipient} erneut senden`}
                             onClick={(event) => {
                               event.stopPropagation();
                               void retry(entry);
@@ -578,6 +827,11 @@ export function Nachrichten() {
       <NewMailDialog
         open={isNewOpen}
         onOpenChange={setIsNewOpen}
+        onQueued={() => void refresh()}
+      />
+      <NewSmsDialog
+        open={isNewSmsOpen}
+        onOpenChange={setIsNewSmsOpen}
         onQueued={() => void refresh()}
       />
       <MailDetailDialog

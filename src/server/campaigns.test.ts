@@ -28,8 +28,8 @@ const VALID = {
   channel: "Google Ads" as const,
   budgetCents: 50000,
   spentCents: 12000,
-  leads: 40,
-  signups: 5,
+  manualLeads: 40,
+  manualSignups: 5,
   startDate: "2026-06-01",
   endDate: "2026-08-31",
   status: "aktiv" as const,
@@ -142,7 +142,9 @@ describe("createCampaign", () => {
   });
 
   test("non-integer leads → ValidationError", () => {
-    expect(() => createCampaign(db, { ...VALID, leads: 1.5 })).toThrow(ValidationError);
+    expect(() => createCampaign(db, { ...VALID, manualLeads: 1.5 })).toThrow(
+      ValidationError,
+    );
   });
 
   test("string spentCents → ValidationError", () => {
@@ -189,7 +191,7 @@ describe("updateCampaign", () => {
     const created = createCampaign(db, VALID);
     const updated = updateCampaign(db, created.id, {
       spentCents: 25000,
-      leads: 80,
+      manualLeads: 80,
     });
     expect(updated.spentCents).toBe(25000);
     expect(updated.leads).toBe(80);

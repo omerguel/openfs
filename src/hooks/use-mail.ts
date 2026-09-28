@@ -10,13 +10,18 @@ import { parseOrThrow, useFetchList } from "@/lib/api";
 import type {
   MailKind,
   NotificationSettings,
+  OutboxChannel,
   OutboxEntry,
   OutboxStatus,
 } from "@/server/mail";
 
-export type { MailKind, NotificationSettings, OutboxEntry, OutboxStatus };
+export type { MailKind, NotificationSettings, OutboxChannel, OutboxEntry, OutboxStatus };
 
-export type MailStatus = { configured: boolean; from: string };
+export type MailStatus = {
+  configured: boolean;
+  from: string;
+  sms: { configured: boolean; provider: "seven" | "webhook" | null; from: string };
+};
 
 export async function fetchOutbox(): Promise<OutboxEntry[]> {
   const data = await parseOrThrow<{ items: OutboxEntry[] }>(await fetch("/api/outbox"));
@@ -37,6 +42,20 @@ export async function queueGenericMail(input: {
 }): Promise<OutboxEntry> {
   return parseOrThrow<OutboxEntry>(
     await fetch("/api/outbox", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function queueSms(input: {
+  recipient: string;
+  text: string;
+  studentId?: number;
+}): Promise<OutboxEntry> {
+  return parseOrThrow<OutboxEntry>(
+    await fetch("/api/outbox/sms", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),

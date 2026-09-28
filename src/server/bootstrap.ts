@@ -16,11 +16,16 @@ import { countUsers, createUser } from "./auth";
 import { type BackupConfig, startBackupScheduler } from "./backups";
 import type { FileStore } from "./file-store";
 import { ensureMailTables, startMailScheduler } from "./mail";
-import { localIsoDate, queueLessonReminders } from "./notifications";
+import {
+  localIsoDate,
+  queueLessonReminderSms,
+  queueLessonReminders,
+} from "./notifications";
 import { ensurePortalTables } from "./portal";
 import { seedTransactions } from "./seed";
 import type { SmtpConfig } from "./smtp";
 import { createSmtpTransport } from "./smtp";
+import { type SmsConfig, createSmsTransport } from "./sms";
 import { ensureStudentFileTables, migrateInlineDocuments } from "./student-files";
 import { ensureTheoryGroupTables } from "./theory-groups";
 
@@ -64,6 +69,8 @@ const REMINDER_HOUR = 9;
 export type SchoolJobOptions = {
   /** null = never send (demo); mails are marked 'nicht_konfiguriert'. */
   smtp: SmtpConfig | null;
+  /** null = SMS stay 'nicht_konfiguriert'. */
+  sms?: SmsConfig | null;
   backups: BackupConfig | null;
 };
 
@@ -73,9 +80,12 @@ export function startSchoolJobs(db: Database, options: SchoolJobOptions): () => 
   stops.push(
     startMailScheduler(db, {
       transport: options.smtp ? createSmtpTransport(options.smtp) : null,
+      smsTransport: options.sms ? createSmsTransport(options.sms) : null,
       intervalMs: 60_000,
       beforeDelivery: (now) => {
-        if (now.getHours() >= REMINDER_HOUR) queueLessonReminders(db, localIsoDate(now));
+        if (now.getHours() < REMINDER_HOUR) return;
+        queueLessonReminders(db, localIsoDate(now));
+        queueLessonReminderSms(db, localIsoDate(now));
       },
     }),
   );

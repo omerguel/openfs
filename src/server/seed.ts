@@ -12,7 +12,7 @@
 import type { Database } from "./sqlite";
 
 import type { StudentRef } from "../lib/accounting-types";
-import { students, type Student } from "../lib/student-data";
+import { students, type StudentSeed as Student } from "../lib/student-data";
 import { createTransaction } from "./engine";
 import { demoDataEnabled } from "./db";
 

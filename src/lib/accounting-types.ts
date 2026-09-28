@@ -12,7 +12,9 @@ export type AccountKind =
   | "steuer"
   | "erloes"
   | "privat"
-  | "aufwand";
+  | "aufwand"
+  /** Saldenvortragskonto (SKR 04: 9000) — opening balances only. */
+  | "vortrag";
 
 export type Account = {
   number: string;
@@ -40,7 +42,8 @@ export type TransactionType =
   | "direktzahlung"
   | "guthaben_uebertragung"
   | "transfer"
-  | "ausgabe";
+  | "ausgabe"
+  | "saldovortrag";
 
 export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   zahlung_guthaben: "Zahlung auf Guthaben",
@@ -48,6 +51,16 @@ export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   guthaben_uebertragung: "Guthabenübertragung auf Kosten",
   transfer: "Transfer",
   ausgabe: "Ausgabe",
+  saldovortrag: "Saldovortrag",
+};
+
+/** Opening balance of a student taken over from the previous software:
+ *  guthaben = the student has credit, forderung = the student owes. */
+export type SaldovortragDirection = "guthaben" | "forderung";
+
+export const SALDOVORTRAG_DIRECTION_LABELS: Record<SaldovortragDirection, string> = {
+  guthaben: "Guthaben des Fahrschülers",
+  forderung: "Offener Betrag (Forderung)",
 };
 
 /** Snapshot of the student at booking time (GoBD: receipts stay stable). */
@@ -115,6 +128,16 @@ export type CreateTransactionInput =
       aufwandKonto: string;
       paymentMethod?: PaymentMethod;
       description: string;
+    }
+  | {
+      /** Saldenvortrag: guthaben → 9000 an 3272, forderung → 3272 an 9000.
+          Beleg number, no VAT split, at most one active per student. */
+      type: "saldovortrag";
+      date: string;
+      amountCents: number;
+      direction: SaldovortragDirection;
+      student: StudentRef;
+      description?: string;
     };
 
 export type LedgerRow = {

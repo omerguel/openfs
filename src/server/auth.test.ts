@@ -197,6 +197,14 @@ describe("roles", () => {
     expect(isAllowed("fahrlehrer", "POST", "/api/calendar-events/3/bill")).toBe(false);
     expect(isAllowed("fahrlehrer", "POST", "/api/calendar-events/3/cancel")).toBe(true);
     expect(isAllowed("buero", "GET", "/api/admin/backups")).toBe(false);
+    // Integrations: office work, not for Fahrlehrer.
+    expect(isPublic("PUT", "/api/appointment-requests/4/student")).toBe(false);
+    expect(isAllowed("fahrlehrer", "POST", "/api/outbox/sms")).toBe(false);
+    expect(isAllowed("fahrlehrer", "POST", "/api/reviews/import/google")).toBe(false);
+    expect(isAllowed("fahrlehrer", "PUT", "/api/appointment-requests/4/student")).toBe(
+      false,
+    );
+    expect(isAllowed("buero", "POST", "/api/outbox/sms")).toBe(true);
   });
 
   test("the last Inhaber cannot be demoted or deactivated", async () => {

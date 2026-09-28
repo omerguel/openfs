@@ -5,7 +5,9 @@ import { backfillLessonKinds, migrateDerivedStudentFields, openDb } from "./db";
 import { createTransaction } from "./engine";
 import { openSqlite, type Database } from "./sqlite";
 import { deriveStudentFacts } from "./student-facts";
-import { createStudent, getStudent, type StudentRecord } from "./students";
+import { createStudent, getStudent, updateStudent, type StudentRecord } from "./students";
+import { ensureTheoryGroupTables } from "./theory-groups";
+import { requiredTheoryUnits } from "../lib/theory";
 
 let db: Database;
 let student: StudentRecord;
@@ -84,8 +86,110 @@ describe("deriveStudentFacts", () => {
       { label: "Überlandfahrt", done: "0/225min" },
       { label: "Autobahnfahrt", done: "90/180min" },
       { label: "Nachtfahrt", done: "45/135min" },
-      { label: "Theorieunterricht", done: "0 Einheiten" },
+      { label: "Theorieunterricht", done: "0/14 Einheiten" },
     ]);
+  });
+});
+
+describe("theory from attendance", () => {
+  const NOW = new Date(2026, 5, 20, 12, 0); // 20.06.2026
+
+  function attend(dates: string[], attended = 1) {
+    ensureTheoryGroupTables(db);
+    const group = db
+      .query<{ id: number }, []>("SELECT id FROM theory_groups ORDER BY id LIMIT 1")
+      .get()!;
+    const insert = db.prepare(
+      `INSERT INTO theory_attendance (group_id, student_id, session_date, attended)
+       VALUES (?, ?, ?, ?)`,
+    );
+    for (const date of dates) insert.run(group.id, student.id, date, attended);
+  }
+
+  const theoryOf = (classes = "B") =>
+    deriveStudentFacts(
+      db,
+      [{ id: student.id, customerNumber: student.customerNumber, classes }],
+      NOW,
+    ).get(student.id)!.theory;
+
+  test("required units per class (FahrSchAusbO Anlage 2.2)", () => {
+    expect(requiredTheoryUnits("B")).toBe(14);
+    expect(requiredTheoryUnits("B197")).toBe(14);
+    expect(requiredTheoryUnits("A")).toBe(16);
+    expect(requiredTheoryUnits("B, A1")).toBe(16);
+    expect(requiredTheoryUnits("CE")).toBe(14); // unlisted → fallback
+    expect(requiredTheoryUnits("")).toBe(14);
+  });
+
+  test("no attendance: 0 %, Pausiert, no last session", () => {
+    expect(theoryOf()).toMatchObject({
+      attendedUnits: 0,
+      requiredUnits: 14,
+      progress: 0,
+      status: "Pausiert",
+      lastSession: "Noch keine",
+      lastSessionDate: null,
+      exam: null,
+    });
+  });
+
+  test("recent attendance counts and makes the learner Aktiv", () => {
+    attend(["2026-06-01", "2026-06-08", "2026-06-15"]);
+    attend(["2026-06-10"], 0); // absent — does not count
+    expect(theoryOf()).toMatchObject({
+      attendedUnits: 3,
+      progress: 21,
+      status: "Aktiv",
+      lastSession: "15.06.2026",
+      lastSessionDate: "2026-06-15",
+    });
+  });
+
+  test("older than 30 days → Pausiert; all units → Bereit", () => {
+    attend(["2026-04-01", "2026-04-08"]);
+    expect(theoryOf().status).toBe("Pausiert");
+    attend(
+      Array.from({ length: 12 }, (_, i) => `2026-03-${String(i + 1).padStart(2, "0")}`),
+    );
+    expect(theoryOf()).toMatchObject({
+      attendedUnits: 14,
+      progress: 100,
+      status: "Bereit",
+    });
+  });
+
+  test("a future Theorieprüfung means In Prüfung and fills the exam date", () => {
+    lesson("2031-06-25", "10:00", "10:45", { type: "Theorieprüfung" });
+    expect(theoryOf()).toMatchObject({ status: "In Prüfung", exam: "25.06.2031" });
+    const fresh = getStudent(db, student.id);
+    expect(fresh.theory.exam).toBe("25.06.2031");
+  });
+
+  test("derived theory fields cannot be written, manual ones can", () => {
+    const updated = updateStudent(db, student.id, {
+      theory: {
+        preExams: "2 bestanden",
+        exam: "Nicht geplant",
+        status: "Bereit",
+        progress: 99,
+      } as never,
+    });
+    expect(updated.theory).toMatchObject({
+      preExams: "2 bestanden",
+      status: "Pausiert",
+      progress: 0,
+    });
+    const stored = db
+      .query<{ theory: string }, [number]>("SELECT theory FROM students WHERE id = ?")
+      .get(student.id)!;
+    expect(JSON.parse(stored.theory)).toEqual({
+      preExams: "2 bestanden",
+      exam: "Nicht geplant",
+    });
+    expect(() =>
+      updateStudent(db, student.id, { theory: { preExams: 3 } as never }),
+    ).toThrow("theory.preExams");
   });
 });
 

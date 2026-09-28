@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------------ */
 /* Public appointment-request form — /anfrage                          */
 /* Unauthenticated; no admin chrome. Posts to POST /api/appointment-   */
-/* requests (omits status — server defaults to "offen").               */
+/* requests (omits status — server defaults to "offen"). A campaign    */
+/* tracking code from ?kampagne=… (or utm_campaign) is sent along so   */
+/* the request counts as a lead of that campaign (Marketing).          */
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
@@ -53,6 +55,15 @@ type FormState = {
   message: string;
 };
 
+/** Tracking code of the link the visitor came from (read once). */
+function campaignFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("kampagne") ?? params.get("utm_campaign") ?? "")
+    .trim()
+    .slice(0, 100);
+}
+
 const EMPTY_FORM: FormState = {
   name: "",
   phone: "",
@@ -68,6 +79,7 @@ export function Anfrage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [campaign] = useState(campaignFromUrl);
 
   const set = (field: keyof FormState, value: string) =>
     setForm((f) => ({ ...f, [field]: value }));
@@ -102,6 +114,7 @@ export function Anfrage() {
           requestedDate: form.requestedDate,
           requestedTime: form.requestedTime,
           message: form.message,
+          ...(campaign ? { campaign } : {}),
         }),
       });
 

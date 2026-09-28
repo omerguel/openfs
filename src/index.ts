@@ -8,6 +8,7 @@ import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap
 import { openDb } from "./server/db";
 import { createFileStoreFromEnv } from "./server/file-store";
 import { applySetup } from "./server/setup";
+import { smsConfigFromEnv } from "./server/sms";
 import { smtpConfigFromEnv } from "./server/smtp";
 import {
   buildTenantApiRoutes,
@@ -40,6 +41,7 @@ if (!demoMode) {
 const { store: baseFileStore } = createFileStoreFromEnv({ demoMode });
 const backupConfig = demoMode ? null : backupConfigFromEnv();
 const smtpConfig = demoMode ? null : smtpConfigFromEnv();
+const smsConfig = demoMode ? null : smsConfigFromEnv();
 
 // `bun --hot` re-runs this module — stop the previous jobs first.
 const hot = globalThis as { __openfsStopJobs?: () => void };
@@ -55,6 +57,7 @@ if (tenancy) {
     tenancy,
     (slug) => ({
       smtp: smtpConfig,
+      sms: smsConfig,
       backups: backupConfig ? tenantBackupConfig(backupConfig, slug) : null,
     }),
     fileStore,
@@ -64,6 +67,7 @@ if (tenancy) {
 
   apiRoutes = buildTenantApiRoutes(manager, {
     smtp: smtpConfig,
+    sms: smsConfig,
     backups: backupConfig,
     fileStore,
     signup: tenancy.signup,
@@ -76,10 +80,14 @@ if (tenancy) {
     demoData: demoMode || seedDemo,
   });
   await prepareSchoolDb(db, { demoLogin: demoMode, fileStore: baseFileStore });
-  hot.__openfsStopJobs = startSchoolJobs(db, { smtp: smtpConfig, backups: backupConfig });
+  hot.__openfsStopJobs = startSchoolJobs(db, {
+    smtp: smtpConfig,
+    sms: smsConfig,
+    backups: backupConfig,
+  });
   apiRoutes = {
     ...buildApiRoutes(db, {
-      mail: { config: smtpConfig },
+      mail: { config: smtpConfig, sms: smsConfig },
       auth: {
         demo: demoMode ? DEMO_LOGIN : null,
         onSetup: (setupDb, body) => applySetup(setupDb, body),

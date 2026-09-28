@@ -495,7 +495,14 @@ export function UebersichtTab({
             </CardHeader>
             <CardContent>
               <FieldGroup className="gap-3">
-                <DetailItem label="Letzter Login" value={student.theory.lastLogin} />
+                <DetailItem
+                  label="Theoriestunden"
+                  value={`${student.theory.attendedUnits} von ${student.theory.requiredUnits} Doppelstunden (${student.theory.progress} %)`}
+                />
+                <DetailItem
+                  label="Letzte Theoriestunde"
+                  value={student.theory.lastSession}
+                />
                 <DetailItem label="Vorprüfungen" value={student.theory.preExams} />
                 <DetailItem label="Prüfungstermin" value={student.theory.exam} />
               </FieldGroup>

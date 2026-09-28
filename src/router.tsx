@@ -128,6 +128,11 @@ const instructorsRoute = createRoute({
 const newStudentRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/neue-schueler",
+  // ?anfrage=<id>: prefill from a Terminanfrage and link it back on save.
+  validateSearch: (search): { anfrage?: number } => {
+    const id = Number(search.anfrage);
+    return { anfrage: Number.isInteger(id) && id > 0 ? id : undefined };
+  },
   component: NeueSchueler,
 });
 

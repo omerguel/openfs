@@ -155,13 +155,16 @@ function activeCharges(db: Database, customerNo: string): ChargeRow[] {
     .all(customerNo);
 }
 
+/* Payments plus an opening Guthaben taken over as Saldovortrag
+   (9000 an 3272) — both settle charges oldest-first. */
 function paymentPool(db: Database, customerNo: string): number {
   return (
     db
       .query<{ total: number | null }, [string]>(
         `SELECT SUM(b.amount_cents) AS total
          FROM transactions t JOIN bookings b ON b.transaction_id = t.id
-         WHERE t.type = 'zahlung_guthaben'
+         WHERE (t.type = 'zahlung_guthaben'
+                OR (t.type = 'saldovortrag' AND b.haben_account = '3272'))
            AND t.storno_of IS NULL AND t.storniert_by IS NULL
            AND t.student_customer_no = ?`,
       )

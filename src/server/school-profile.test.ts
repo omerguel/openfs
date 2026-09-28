@@ -35,6 +35,7 @@ function sampleProfile(): SchoolProfile {
     instagram: "https://instagram.com/fahrschule",
     facebook: "https://facebook.com/fahrschule",
     google_maps_url: "https://maps.google.com/?q=Fahrschule",
+    google_place_id: "ChIJN1t_tDeuEmsRUsoyG83frY4",
     opening_hours: WEEK_DAYS.map((day) => ({
       day,
       hours: day === "Sonntag" ? "Geschlossen" : "08:00 – 19:00",
