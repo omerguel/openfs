@@ -34,6 +34,9 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { useVehicleOptions } from "@/hooks/use-vehicle-options";
+import { UNASSIGNED_VEHICLE } from "@/lib/vehicle-options";
 import {
   Select,
   SelectContent,
@@ -122,6 +125,8 @@ function InstructorDialog({
   onSave: () => void;
   onDelete?: () => void;
 }) {
+  const { vehicleOptions } = useVehicleOptions();
+
   function update<Key extends keyof InstructorInput>(
     key: Key,
     value: InstructorInput[Key],
@@ -201,12 +206,21 @@ function InstructorDialog({
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-vehicle">Stammfahrzeug</FieldLabel>
-            <Input
+            <NativeSelect
               id="instructor-vehicle"
-              placeholder="z. B. VW Golf"
-              value={draft.vehicle}
+              value={draft.vehicle || UNASSIGNED_VEHICLE}
               onChange={(event) => update("vehicle", event.target.value)}
-            />
+              className="w-full"
+            >
+              {(vehicleOptions.includes(draft.vehicle) || !draft.vehicle
+                ? vehicleOptions
+                : [draft.vehicle, ...vehicleOptions]
+              ).map((option) => (
+                <NativeSelectOption key={option} value={option}>
+                  {option}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
           </Field>
           <Field>
             <FieldLabel htmlFor="instructor-since">Dabei seit</FieldLabel>
