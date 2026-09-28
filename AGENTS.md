@@ -18,7 +18,8 @@ OpenFS is a Fahrschule (driving school) management web app: student records, cal
 
 | Purpose    | Command             | Expected       |
 |------------|---------------------|----------------|
-| Test       | `bun test`          | 586+ pass, 0 fail |
+| Test       | `bun test`          | 850+ pass, 0 fail |
+| Browser smoke | `bun run test:e2e` | every route ✓ (needs Chromium: `bunx playwright install chromium`) |
 | Typecheck  | `bun run typecheck` | exit 0         |
 | Build      | `bun run build`     | exit 0         |
 
@@ -48,7 +49,7 @@ Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.
 - Test files are co-located as `*.test.ts` alongside the module they test.
 - Never read from or write to `data/fahrschule.db` in tests.
-- No DOM test framework (by decision) — backend tests only.
+- No DOM unit-test framework (by decision). UI coverage comes from `scripts/e2e-smoke.ts`: it boots the app in `DEMO_MODE` (in-memory DB), opens every route parsed from `src/router.tsx` in Chromium and fails on page/console errors or 5xx API responses. New pages are covered automatically; add tab labels to `CLICK_THROUGH` for tab-heavy pages. Keep pure UI logic in `src/lib/` with unit tests.
 
 ### UI
 - All user-visible strings are German.
