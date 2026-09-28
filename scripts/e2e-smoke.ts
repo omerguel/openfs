@@ -18,7 +18,13 @@ const PORT = 4100 + Math.floor(Math.random() * 800);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 /* Pages meant to be reachable without signing in. */
-const PUBLIC_PAGES = ["/anfrage", "/portal/", "/impressum", "/datenschutz"];
+const PUBLIC_PAGES = [
+  "/anfrage",
+  "/portal/",
+  "/impressum",
+  "/datenschutz",
+  "/einladung/",
+];
 
 /* Tabs worth clicking per page (visible button/tab labels). */
 const CLICK_THROUGH: Record<string, string[]> = {
@@ -62,6 +68,18 @@ async function waitForServer(): Promise<void> {
 }
 
 async function resolveParams(path: string): Promise<string> {
+  if (path.includes("$inviteToken")) {
+    const email = `e2e-${Date.now()}-${Math.random().toString(36).slice(2)}@example.de`;
+    const created = await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ email, name: "E2E Einladung", role: "buero", invite: true }),
+    });
+    const { id } = (await created.json()) as { id: number };
+    const res = await api(`/api/users/${id}/invite`, { method: "POST", body: "{}" });
+    const { url } = (await res.json()) as { url?: string };
+    if (!url) throw new Error(`Could not create an invite link: ${res.status}`);
+    return path.replace("$inviteToken", url.split("/einladung/")[1]!);
+  }
   if (path.includes("$studentId")) {
     const { students } = (await (await api("/api/students")).json()) as {
       students: { id: number }[];

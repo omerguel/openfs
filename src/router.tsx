@@ -17,6 +17,7 @@ import { Dashboard } from "./Dashboard";
 import { Datenschutz } from "./Datenschutz";
 import { Datenimport } from "./Datenimport";
 import { Datensicherung } from "./Datensicherung";
+import { Einladung } from "./Einladung";
 import { Fahrlehrer } from "./Fahrlehrer";
 import { Fahrschule } from "./Fahrschule";
 import { Fahrschueler } from "./Fahrschueler";
@@ -284,6 +285,13 @@ const datenschutzRoute = createRoute({
   component: Datenschutz,
 });
 
+/* Einladungslink — public: sets the password of an invited staff member. */
+const inviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/einladung/$inviteToken",
+  component: Einladung,
+});
+
 const portalRouteTree = portalRoute.addChildren([
   dashboardRoute,
   profileRoute,
@@ -321,6 +329,7 @@ const routeTree = rootRoute.addChildren([
   studentPortalRoute,
   impressumRoute,
   datenschutzRoute,
+  inviteRoute,
 ]);
 
 export const router = createRouter({
