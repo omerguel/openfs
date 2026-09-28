@@ -109,6 +109,15 @@ export function CalendarEventInspector({
   studentPhone,
   conflicts = [],
 }: CalendarEventInspectorProps) {
+  // A lesson gets one Nachweis; offering a second one only ends in an error.
+  const attestStudentId =
+    onAttest && event?.type === "Praktisch" ? (event.studentId ?? null) : null;
+  const attestations = useQuery({
+    queryKey: ["attestations", "student", attestStudentId],
+    queryFn: () => fetchAttestationsForStudent(attestStudentId!),
+    enabled: attestStudentId != null,
+  });
+
   if (!event) {
     return (
       <aside
@@ -156,12 +165,6 @@ export function CalendarEventInspector({
     event.type === "Praktisch" &&
     !cancelled &&
     event.studentId != null;
-  // A lesson gets one Nachweis; offering a second one only ends in an error.
-  const attestations = useQuery({
-    queryKey: ["attestations", "student", event.studentId],
-    queryFn: () => fetchAttestationsForStudent(event.studentId!),
-    enabled: attestable,
-  });
   const attested =
     attestations.data?.some((a) => String(a.eventId) === String(event.id)) ?? false;
   const canAttest = attestable && attestations.isSuccess && !attested;
