@@ -315,7 +315,9 @@ function PayRateDialog({
         <DialogHeader>
           <DialogTitle>Rate {rate?.seq} verbuchen</DialogTitle>
           <DialogDescription>
-            {rate ? `${formatCents(rate.amountCents)} € als Zahlung auf Guthaben.` : null}
+            {rate
+              ? `${formatCents(rate.openCents ?? rate.amountCents)} € als Einzahlung auf das Ausbildungskonto.`
+              : null}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -482,6 +484,11 @@ export function PaymentPlansSection({ student }: { student: StudentRecord }) {
                         <span className="font-medium">
                           {formatCents(rate.amountCents)} €
                         </span>
+                        {!rate.paid && (rate.paidCents ?? 0) > 0 && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {formatCents(rate.openCents)} € offen
+                          </span>
+                        )}
                       </button>
                     );
                   })}

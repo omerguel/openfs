@@ -11,7 +11,13 @@ export type Instalment = {
   seq: number;
   dueDate: string;
   amountCents: number;
+  /** Fully covered — by its linked payment and/or payments allocated FIFO. */
   paid: boolean;
+  /** Covered part of the rate (linked payment + FIFO-allocated payments). */
+  paidCents: number;
+  /** amountCents − paidCents. */
+  openCents: number;
+  /** Payment booked for exactly this rate ("Als bezahlt buchen", SEPA). */
   paymentTransactionId: number | null;
   /** Currently part of an exported, not yet booked Lastschrift. */
   inCollection: boolean;

@@ -26,12 +26,16 @@ import {
   type InvoiceLine,
   type InvoiceReminder,
   type InvoicingSettings,
+  type OpeningBalanceItem,
+  type OpeningBalanceReminder,
   type OpenItems,
   type OpenItemsStudent,
   type UninvoicedCharge,
   type VatSummaryRow,
   REMINDER_LABELS,
 } from "../lib/invoice-types";
+import { cleanPositionText } from "../lib/invoice-text";
+import { splitVat } from "../lib/money";
 import { getCompany, nextSequence } from "./db";
 import {
   createTransaction,
@@ -41,6 +45,14 @@ import {
   ValidationError,
 } from "./engine";
 import { handle, json } from "./http";
+import {
+  invoicePdf,
+  invoiceReminderPdf,
+  openingReminderPdf,
+  pdfResponse,
+  sendInvoiceMail,
+  sendOpeningReminderMail,
+} from "./invoice-documents";
 import { getStudent } from "./students";
 
 /* ------------------------------------------------------------------ */
@@ -80,6 +92,36 @@ export function todayIso(): string {
 function nextInvoiceNr(db: Database, date: string): string {
   const year = Number(date.slice(0, 4));
   return `R-${year}-${String(nextSequence(db, `rechnung:${year}`)).padStart(5, "0")}`;
+}
+
+/* Additive schema for this module, created lazily (like the outbox) so
+   db.ts stays untouched: the frozen prepayment VAT split of an invoice
+   and Mahnungen over opening debts (Saldovortrag). */
+const ensuredSchema = new WeakSet<Database>();
+
+export function ensureInvoiceSchema(db: Database): void {
+  if (ensuredSchema.has(db)) return;
+  const columns = db
+    .query<{ name: string }, []>("PRAGMA table_info(invoices)")
+    .all()
+    .map((column) => column.name);
+  if (columns.length > 0 && !columns.includes("prepaid_vat")) {
+    db.exec("ALTER TABLE invoices ADD COLUMN prepaid_vat TEXT");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS saldovortrag_reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+      level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3),
+      date TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      open_cents INTEGER NOT NULL,
+      fee_cents INTEGER NOT NULL DEFAULT 0,
+      fee_transaction_id INTEGER REFERENCES transactions(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (transaction_id, level)
+    )`);
+  ensuredSchema.add(db);
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,19 +176,23 @@ export function setInvoicingSettings(db: Database, input: unknown): InvoicingSet
 
 type ChargeRow = {
   id: number;
+  type: "guthaben_uebertragung" | "saldovortrag";
   date: string;
   description: string;
   gross_cents: number;
 };
 
 /* Active charges of a student: guthaben_uebertragung that is neither a
-   Storno nor storniert. Oldest first — the FIFO order. */
+   Storno nor storniert, plus an opening debt taken over as Saldovortrag
+   (3272 an 9000) — it is owed like a charge and settled by payments,
+   but never invoiced. Oldest first — the FIFO order. */
 function activeCharges(db: Database, customerNo: string): ChargeRow[] {
   return db
     .query<ChargeRow, [string]>(
-      `SELECT t.id, t.date, t.description, SUM(b.amount_cents) AS gross_cents
+      `SELECT t.id, t.type, t.date, t.description, SUM(b.amount_cents) AS gross_cents
        FROM transactions t JOIN bookings b ON b.transaction_id = t.id
-       WHERE t.type = 'guthaben_uebertragung'
+       WHERE (t.type = 'guthaben_uebertragung'
+              OR (t.type = 'saldovortrag' AND b.soll_account = '3272'))
          AND t.storno_of IS NULL AND t.storniert_by IS NULL
          AND t.student_customer_no = ?
        GROUP BY t.id
@@ -200,10 +246,12 @@ function invoicedTransactionIds(db: Database, customerNo: string): Set<number> {
 }
 
 function reminderFeeTransactionIds(db: Database): Set<number> {
+  ensureInvoiceSchema(db);
   return new Set(
     db
       .query<{ id: number }, []>(
-        "SELECT fee_transaction_id AS id FROM invoice_reminders WHERE fee_transaction_id IS NOT NULL",
+        `SELECT fee_transaction_id AS id FROM invoice_reminders WHERE fee_transaction_id IS NOT NULL
+         UNION SELECT fee_transaction_id FROM saldovortrag_reminders WHERE fee_transaction_id IS NOT NULL`,
       )
       .all()
       .map((row) => row.id),
@@ -219,7 +267,12 @@ export function listUninvoicedCharges(
   const fees = reminderFeeTransactionIds(db);
   const remainders = chargeRemainders(db, student.customerNumber);
   return activeCharges(db, student.customerNumber)
-    .filter((charge) => !invoiced.has(charge.id) && !fees.has(charge.id))
+    .filter(
+      (charge) =>
+        charge.type === "guthaben_uebertragung" &&
+        !invoiced.has(charge.id) &&
+        !fees.has(charge.id),
+    )
     .map((charge) => ({
       transactionId: charge.id,
       date: charge.date,
@@ -247,6 +300,7 @@ function linesForTransaction(
   db: Database,
   transactionId: number,
   accounts: Map<string, Account>,
+  student?: { name: string; classes: string },
 ): InvoiceLine[] {
   const tx = db
     .query<{ date: string; description: string }, [number]>(
@@ -266,7 +320,9 @@ function linesForTransaction(
       return {
         transactionId,
         date: tx.date,
-        description: booking.line_description || tx.description,
+        description: student
+          ? cleanPositionText(booking.line_description || tx.description, student)
+          : booking.line_description || tx.description,
         netCents: booking.net_cents ?? booking.amount_cents,
         vatRate: booking.vat_rate,
         vatCents: booking.vat_cents ?? 0,
@@ -293,6 +349,105 @@ export function vatSummary(lines: InvoiceLine[]): VatSummaryRow[] {
     byRate.set(key, row);
   }
   return [...byRate.values()].sort((a, b) => (b.vatRate ?? -1) - (a.vatRate ?? -1));
+}
+
+/* ------------------------------------------------------------------ */
+/* Anzahlungen on the Endrechnung (§ 14 Abs. 5 UStG)                   */
+/*                                                                     */
+/* The engine books every payment to 3272 "Erhaltene Anzahlungen 19 %" */
+/* — at receipt it cannot know what the money will pay for. When a     */
+/* charge is booked (3272 an Erlöskonto) the Anzahlung is released and */
+/* the tax follows the charge's own account (19 %, 7 %, steuerfrei,    */
+/* durchlaufend). So the prepayment deducted on an invoice carries the */
+/* tax of the positions it settled, never a flat 19 %: a TÜV fee paid  */
+/* in advance is a durchlaufender Posten, not a 19 % Anzahlung.        */
+/*                                                                     */
+/* Allocation mirrors the engine's payment status: payments settle     */
+/* charges oldest-first (FIFO, chargeRemainders), so the covered part  */
+/* of each charge is known exactly. Within one multi-position charge   */
+/* the covered amount is split proportionally to the positions' gross. */
+/* The VAT per rate is capped at the VAT of the invoiced positions of  */
+/* that rate, so rounding can never deduct more tax than was charged.  */
+/* Invoices issued before this split was stored fall back to a         */
+/* proportional split over all positions.                              */
+/* ------------------------------------------------------------------ */
+
+function distribute(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0 || sum <= 0) return weights.map(() => 0);
+  const capped = Math.min(total, sum);
+  const shares = weights.map((w) => Math.floor((capped * w) / sum));
+  let rest = capped - shares.reduce((a, b) => a + b, 0);
+  // Largest weights take the leftover cents first (stable by position).
+  // capped < sum leaves every positive weight room for one more cent and
+  // rest < number of positive weights, so one pass always suffices.
+  const order = weights.map((w, i) => [w, i] as const).sort((a, b) => b[0] - a[0]);
+  for (const [weight, i] of order) {
+    if (rest <= 0) break;
+    if (shares[i]! < weight) {
+      shares[i] = shares[i]! + 1;
+      rest -= 1;
+    }
+  }
+  return shares;
+}
+
+export function allocatePrepaid(
+  lines: InvoiceLine[],
+  prepaidCents: number,
+  coveredByTransaction?: Map<number, number>,
+): VatSummaryRow[] {
+  const allocated = new Array<number>(lines.length).fill(0);
+  if (coveredByTransaction) {
+    const byTx = new Map<number, number[]>();
+    lines.forEach((line, index) => {
+      const key = line.transactionId ?? -1;
+      byTx.set(key, [...(byTx.get(key) ?? []), index]);
+    });
+    for (const [txId, indexes] of byTx) {
+      const shares = distribute(
+        coveredByTransaction.get(txId) ?? 0,
+        indexes.map((i) => Math.max(lines[i]!.grossCents, 0)),
+      );
+      indexes.forEach((lineIndex, k) => {
+        allocated[lineIndex] = shares[k]!;
+      });
+    }
+  } else {
+    distribute(
+      prepaidCents,
+      lines.map((line) => Math.max(line.grossCents, 0)),
+    ).forEach((share, i) => {
+      allocated[i] = share;
+    });
+  }
+
+  const byRate = new Map<string, VatSummaryRow & { maxVat: number }>();
+  lines.forEach((line, i) => {
+    const share = allocated[i]!;
+    if (share <= 0) return;
+    const rate = line.durchlaufend ? null : line.vatRate;
+    const key = String(rate);
+    const row = byRate.get(key) ?? {
+      vatRate: rate,
+      netCents: 0,
+      vatCents: 0,
+      grossCents: 0,
+      maxVat: 0,
+    };
+    row.grossCents += share;
+    row.maxVat += Math.max(line.vatCents, 0);
+    byRate.set(key, row);
+  });
+  return [...byRate.values()]
+    .map(({ maxVat, ...row }) => {
+      const vat =
+        row.vatRate && [7, 19].includes(row.vatRate)
+          ? Math.min(splitVat(row.grossCents, row.vatRate).vatCents, maxVat)
+          : 0;
+      return { ...row, vatCents: vat, netCents: row.grossCents - vat };
+    })
+    .sort((a, b) => (b.vatRate ?? -1) - (a.vatRate ?? -1));
 }
 
 function issuerSnapshot(db: Database): InvoiceIssuer {
@@ -331,6 +486,7 @@ type InvoiceRow = {
   lines: string;
   total_cents: number;
   prepaid_cents: number;
+  prepaid_vat: string | null;
   note: string;
   storno_of: number | null;
   storno_reason: string | null;
@@ -410,6 +566,10 @@ function toInvoice(
   const latestDue = reminders.at(-1)?.dueDate ?? row.due_date;
   const overdueDays =
     openCents > 0 && latestDue < today ? daysBetween(row.due_date, today) : 0;
+  const nextReminderOn =
+    status === "offen" || status === "teilbezahlt"
+      ? nextReminderDate(reminders, row.due_date)
+      : null;
 
   return {
     id: row.id,
@@ -427,6 +587,12 @@ function toInvoice(
     vatSummary: vatSummary(lines),
     totalCents: row.total_cents,
     prepaidCents: row.prepaid_cents,
+    prepaidVat:
+      row.prepaid_cents <= 0
+        ? []
+        : row.prepaid_vat
+          ? (JSON.parse(row.prepaid_vat) as VatSummaryRow[])
+          : allocatePrepaid(lines, row.prepaid_cents),
     note: row.note,
     stornoOf: numberOf(row.storno_of),
     stornoReason: row.storno_reason,
@@ -435,10 +601,21 @@ function toInvoice(
     status,
     overdueDays,
     reminders,
+    nextReminderOn,
   };
 }
 
+/** A Mahnstufe is possible the day after the last deadline ran out. */
+function nextReminderDate(
+  reminders: { level: number; dueDate: string }[],
+  dueDate: string,
+): string | null {
+  if ((reminders.at(-1)?.level ?? 0) >= 3) return null;
+  return addDays(reminders.at(-1)?.dueDate ?? dueDate, 1);
+}
+
 export function getInvoice(db: Database, id: number, today = todayIso()): Invoice {
+  ensureInvoiceSchema(db);
   const row = db
     .query<InvoiceRow, [number]>("SELECT * FROM invoices WHERE id = ?")
     .get(id);
@@ -478,6 +655,7 @@ export function listInvoices(
   }
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
   const cache: RemainderCache = new Map();
+  ensureInvoiceSchema(db);
   return db
     .query<InvoiceRow, (string | number)[]>(
       `SELECT * FROM invoices${where} ORDER BY date DESC, id DESC`,
@@ -514,6 +692,7 @@ export function createInvoice(db: Database, input: CreateInvoiceInput): Invoice 
   }
   const note = typeof input.note === "string" ? input.note.trim() : "";
   const settings = getInvoicingSettings(db);
+  ensureInvoiceSchema(db);
 
   const write = db.transaction((): number => {
     const ids = [...new Set(transactionIds.map(Number))];
@@ -542,6 +721,11 @@ export function createInvoice(db: Database, input: CreateInvoiceInput): Invoice 
     const invoiced = invoicedTransactionIds(db, customerNo);
     const fees = reminderFeeTransactionIds(db);
     for (const id of ids) {
+      if (active.get(id)?.type === "saldovortrag") {
+        throw new ValidationError(
+          `Buchung ${id} ist ein Saldovortrag aus dem Vorsystem und kann nicht in Rechnung gestellt werden.`,
+        );
+      }
       if (!active.has(id)) {
         throw new ValidationError(
           `Buchung ${id} ist keine offene Leistung von ${name} (storniert, fremd oder keine Guthabenübertragung).`,
@@ -563,10 +747,16 @@ export function createInvoice(db: Database, input: CreateInvoiceInput): Invoice 
       const right = active.get(b)!;
       return left.date.localeCompare(right.date) || a - b;
     });
-    const lines = ordered.flatMap((id) => linesForTransaction(db, id, accounts));
+    const lines = ordered.flatMap((id) =>
+      linesForTransaction(db, id, accounts, { name, classes: student.classes }),
+    );
     const total = lines.reduce((sum, line) => sum + line.grossCents, 0);
     const remainders = chargeRemainders(db, customerNo);
     const open = ordered.reduce((sum, id) => sum + (remainders.get(id) ?? 0), 0);
+    const covered = new Map(
+      ordered.map((id) => [id, active.get(id)!.gross_cents - (remainders.get(id) ?? 0)]),
+    );
+    const prepaidVat = allocatePrepaid(lines, total - open, covered);
 
     const invoiceNr = nextInvoiceNr(db, date);
     const invoiceId = Number(
@@ -575,8 +765,8 @@ export function createInvoice(db: Database, input: CreateInvoiceInput): Invoice 
           `INSERT INTO invoices
              (invoice_nr, kind, date, due_date, student_id, student_customer_no,
               recipient_name, recipient_address, student_contract_no, student_classes,
-              issuer, lines, total_cents, prepaid_cents, note)
-           VALUES (?, 'rechnung', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              issuer, lines, total_cents, prepaid_cents, prepaid_vat, note)
+           VALUES (?, 'rechnung', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           invoiceNr,
@@ -592,6 +782,7 @@ export function createInvoice(db: Database, input: CreateInvoiceInput): Invoice 
           JSON.stringify(lines),
           total,
           total - open,
+          JSON.stringify(prepaidVat),
           note,
         ).lastInsertRowid,
     );
@@ -772,10 +963,234 @@ export function createReminder(
 /* Offene Posten                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Opening debts (Saldovortrag „offener Betrag“, 3272 an 9000) are open
+   items like invoices: settled FIFO by payments, dunnable, but never on
+   an invoice. Their due date is the Saldovortrag date — the debt is
+   already due when it is taken over. */
+type OpeningRow = {
+  id: number;
+  beleg_nr: string | null;
+  date: string;
+  student_customer_no: string;
+  student_name: string | null;
+  student_address: string | null;
+  student_contract_no: string | null;
+  student_classes: string | null;
+  amount_cents: number;
+};
+
+type OpeningReminderRow = Omit<ReminderRow, "invoice_id"> & { transaction_id: number };
+
+const toOpeningReminder = (row: OpeningReminderRow): OpeningBalanceReminder => ({
+  id: row.id,
+  transactionId: row.transaction_id,
+  level: row.level,
+  date: row.date,
+  dueDate: row.due_date,
+  openCents: row.open_cents,
+  feeCents: row.fee_cents,
+});
+
+function studentIdByCustomerNo(db: Database, customerNo: string): number | null {
+  return (
+    db
+      .query<{ id: number }, [string]>(
+        "SELECT id FROM students WHERE customer_number = ?",
+      )
+      .get(customerNo)?.id ?? null
+  );
+}
+
+export function listOpeningBalances(
+  db: Database,
+  today = todayIso(),
+  filter: { transactionId?: number; includeSettled?: boolean } = {},
+): OpeningBalanceItem[] {
+  ensureInvoiceSchema(db);
+  const rows = db
+    .query<OpeningRow, []>(
+      `SELECT t.id, t.beleg_nr, t.date, t.student_customer_no, t.student_name,
+              t.student_address, t.student_contract_no, t.student_classes,
+              SUM(b.amount_cents) AS amount_cents
+       FROM transactions t JOIN bookings b ON b.transaction_id = t.id
+       WHERE t.type = 'saldovortrag' AND b.soll_account = '3272'
+         AND t.storno_of IS NULL AND t.storniert_by IS NULL
+         AND t.student_customer_no IS NOT NULL
+       GROUP BY t.id ORDER BY t.date, t.id`,
+    )
+    .all()
+    .filter((row) => filter.transactionId == null || row.id === filter.transactionId);
+  const issuer = issuerSnapshot(db);
+  const cache: RemainderCache = new Map();
+  const items: OpeningBalanceItem[] = [];
+  for (const row of rows) {
+    let remainders = cache.get(row.student_customer_no);
+    if (!remainders) {
+      remainders = chargeRemainders(db, row.student_customer_no);
+      cache.set(row.student_customer_no, remainders);
+    }
+    const openCents = remainders.get(row.id) ?? 0;
+    if (openCents <= 0 && !filter.includeSettled) continue;
+    const reminders = db
+      .query<OpeningReminderRow, [number]>(
+        "SELECT * FROM saldovortrag_reminders WHERE transaction_id = ? ORDER BY level",
+      )
+      .all(row.id)
+      .map(toOpeningReminder);
+    const latestDue = reminders.at(-1)?.dueDate ?? row.date;
+    items.push({
+      transactionId: row.id,
+      belegNr: row.beleg_nr,
+      date: row.date,
+      studentId: studentIdByCustomerNo(db, row.student_customer_no),
+      customerNo: row.student_customer_no,
+      recipient: { name: row.student_name ?? "", address: row.student_address ?? "" },
+      contractNo: row.student_contract_no ?? "",
+      classes: row.student_classes ?? "",
+      issuer,
+      amountCents: row.amount_cents,
+      openCents,
+      overdueDays: openCents > 0 && latestDue < today ? daysBetween(row.date, today) : 0,
+      reminders,
+      nextReminderOn:
+        openCents > 0 ? nextReminderDate(reminders, addDays(row.date, -1)) : null,
+    });
+  }
+  return items;
+}
+
+export function getOpeningBalance(
+  db: Database,
+  transactionId: number,
+  today = todayIso(),
+): OpeningBalanceItem {
+  const item = listOpeningBalances(db, today, { transactionId, includeSettled: true })[0];
+  if (!item) throw new ValidationError("Saldovortrag (offener Betrag) nicht gefunden.");
+  return item;
+}
+
+type ReminderSubject = {
+  openCents: number;
+  lastLevel: number;
+  /** Deadline that must have passed before the next level. */
+  dueDate: string;
+  /** "Rechnung R-2026-00001" — used in the fee's Buchungstext. */
+  label: string;
+  student: {
+    customerNo: string;
+    name: string;
+    address: string;
+    contractNo: string;
+    classes: string;
+  };
+};
+
+/* Shared by invoice and opening-balance reminders: next level, fee and
+   deadline. The fee is a normal charge booked through the engine to
+   4830 (nicht steuerbar). */
+function prepareReminder(
+  db: Database,
+  input: { date?: unknown; feeCents?: unknown },
+  subject: ReminderSubject,
+) {
+  const date = requireDate(input.date, "date");
+  if (subject.openCents <= 0) {
+    throw new ValidationError("Der Betrag ist bereits bezahlt.");
+  }
+  if (subject.dueDate >= date) {
+    throw new ValidationError(
+      `Die Zahlungsfrist läuft noch bis ${subject.dueDate.split("-").reverse().join(".")}.`,
+    );
+  }
+  const level = (subject.lastLevel + 1) as InvoiceReminder["level"];
+  if (level > 3) {
+    throw new ValidationError(
+      "Die letzte Mahnstufe ist erreicht — bitte weitere Schritte außerhalb der Software einleiten.",
+    );
+  }
+  const settings = getInvoicingSettings(db);
+  const feeCents =
+    input.feeCents === undefined
+      ? (settings.reminderFeeCents[level - 1] ?? 0)
+      : Number(input.feeCents);
+  if (!Number.isInteger(feeCents) || feeCents < 0) {
+    throw new ValidationError("Mahngebühr muss ein Betrag in Cent (>= 0) sein.");
+  }
+  const bookFee = (): number | null =>
+    feeCents > 0
+      ? createTransaction(db, {
+          type: "guthaben_uebertragung",
+          date,
+          amountCents: feeCents,
+          habenKonto: "4830",
+          student: subject.student,
+          description: `Mahngebühr ${REMINDER_LABELS[level]} zu ${subject.label}`,
+        }).id
+      : null;
+  return {
+    date,
+    level,
+    feeCents,
+    dueDate: addDays(date, settings.reminderTermDays),
+    bookFee,
+  };
+}
+
+export function createOpeningBalanceReminder(
+  db: Database,
+  transactionId: number,
+  input: { date?: unknown; feeCents?: unknown },
+): OpeningBalanceReminder {
+  const date = requireDate(input.date, "date");
+  const item = getOpeningBalance(db, transactionId, date);
+  const prepared = prepareReminder(db, input, {
+    openCents: item.openCents,
+    lastLevel: item.reminders.at(-1)?.level ?? 0,
+    // The debt is due on the Saldovortrag date itself.
+    dueDate: item.reminders.at(-1)?.dueDate ?? addDays(item.date, -1),
+    label: `Saldovortrag${item.belegNr ? ` (Beleg ${item.belegNr})` : ""}`,
+    student: {
+      customerNo: item.customerNo,
+      name: item.recipient.name,
+      address: item.recipient.address,
+      contractNo: item.contractNo,
+      classes: item.classes,
+    },
+  });
+  const write = db.transaction(() =>
+    Number(
+      db
+        .prepare(
+          `INSERT INTO saldovortrag_reminders
+             (transaction_id, level, date, due_date, open_cents, fee_cents, fee_transaction_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          transactionId,
+          prepared.level,
+          prepared.date,
+          prepared.dueDate,
+          item.openCents,
+          prepared.feeCents,
+          prepared.bookFee(),
+        ).lastInsertRowid,
+    ),
+  );
+  const id = write();
+  return toOpeningReminder(
+    db
+      .query<OpeningReminderRow, [number]>(
+        "SELECT * FROM saldovortrag_reminders WHERE id = ?",
+      )
+      .get(id)!,
+  );
+}
+
 export function listOpenItems(db: Database, today = todayIso()): OpenItems {
   const invoices = listInvoices(db, {}, today).filter(
     (invoice) => invoice.kind === "rechnung" && invoice.openCents > 0,
   );
+  const openingBalances = listOpeningBalances(db, today);
   const fees = reminderFeeTransactionIds(db);
   const balances = new Map(listStudentBalances(db).map((b) => [b.customerNo, b]));
   const studentIds = new Map(
@@ -786,9 +1201,11 @@ export function listOpenItems(db: Database, today = todayIso()): OpenItems {
       .all()
       .map((row) => [row.customer_number, row.id]),
   );
+  const openingIds = new Set(openingBalances.map((item) => item.transactionId));
 
   const customers = new Set<string>([
     ...invoices.map((invoice) => invoice.customerNo),
+    ...openingBalances.map((item) => item.customerNo),
     ...[...balances.values()].filter((b) => b.balanceCents < 0).map((b) => b.customerNo),
   ]);
 
@@ -798,11 +1215,16 @@ export function listOpenItems(db: Database, today = todayIso()): OpenItems {
     const invoiced = invoicedTransactionIds(db, customerNo);
     let uninvoiced = 0;
     for (const [txId, open] of remainders) {
-      if (!invoiced.has(txId) && !fees.has(txId)) uninvoiced += open;
+      if (!invoiced.has(txId) && !fees.has(txId) && !openingIds.has(txId)) {
+        uninvoiced += open;
+      }
     }
     const invoicedOpen = invoices
       .filter((invoice) => invoice.customerNo === customerNo)
       .reduce((sum, invoice) => sum + invoice.openCents, 0);
+    const openingOpen = openingBalances
+      .filter((item) => item.customerNo === customerNo)
+      .reduce((sum, item) => sum + item.openCents, 0);
     const balance = balances.get(customerNo);
     students.push({
       studentId: studentIds.get(customerNo) ?? null,
@@ -813,24 +1235,24 @@ export function listOpenItems(db: Database, today = todayIso()): OpenItems {
         customerNo,
       invoicedOpenCents: invoicedOpen,
       uninvoicedOpenCents: uninvoiced,
+      openingOpenCents: openingOpen,
       balanceCents: balance?.balanceCents ?? 0,
     });
   }
-  students.sort(
-    (a, b) =>
-      b.invoicedOpenCents +
-      b.uninvoicedOpenCents -
-      (a.invoicedOpenCents + a.uninvoicedOpenCents),
-  );
+  const totalOf = (s: OpenItemsStudent) =>
+    s.invoicedOpenCents + s.uninvoicedOpenCents + s.openingOpenCents;
+  students.sort((a, b) => totalOf(b) - totalOf(a));
 
   const overdue = invoices.filter((invoice) => invoice.overdueDays > 0);
   return {
     invoices,
     students,
+    openingBalances,
     totals: {
       openCents: invoices.reduce((sum, invoice) => sum + invoice.openCents, 0),
       overdueCents: overdue.reduce((sum, invoice) => sum + invoice.openCents, 0),
       overdueCount: overdue.length,
+      openingCents: openingBalances.reduce((sum, item) => sum + item.openCents, 0),
     },
   };
 }
@@ -896,8 +1318,86 @@ export function invoiceRoutes(db: Database) {
         )(),
     },
 
+    "/api/invoices/:id/pdf": {
+      GET: (req: BunRequest<"/api/invoices/:id/pdf">) =>
+        handle(() =>
+          pdfResponse(
+            invoicePdf(db, parseId(req.params.id)),
+            new URL(req.url).searchParams.has("inline"),
+          ),
+        )(),
+    },
+
+    "/api/invoices/:id/reminders/:reminderId/pdf": {
+      GET: (req: BunRequest<"/api/invoices/:id/reminders/:reminderId/pdf">) =>
+        handle(() =>
+          pdfResponse(
+            invoiceReminderPdf(
+              db,
+              parseId(req.params.id),
+              parseId(req.params.reminderId, "Mahnungs-ID"),
+            ),
+            new URL(req.url).searchParams.has("inline"),
+          ),
+        )(),
+    },
+
+    "/api/invoices/:id/send": {
+      POST: (req: BunRequest<"/api/invoices/:id/send">) =>
+        handle(async () =>
+          json(sendInvoiceMail(db, parseId(req.params.id), await req.json()), 201),
+        )(),
+    },
+
     "/api/open-items": {
       GET: () => handle(() => json(listOpenItems(db)))(),
+    },
+
+    "/api/open-items/saldovortrag/:id/reminders": {
+      POST: (req: BunRequest<"/api/open-items/saldovortrag/:id/reminders">) =>
+        handle(async () =>
+          json(
+            createOpeningBalanceReminder(
+              db,
+              parseId(req.params.id, "Buchungs-ID"),
+              await req.json(),
+            ),
+            201,
+          ),
+        )(),
+    },
+
+    "/api/open-items/saldovortrag/:id/reminders/:reminderId/pdf": {
+      GET: (
+        req: BunRequest<"/api/open-items/saldovortrag/:id/reminders/:reminderId/pdf">,
+      ) =>
+        handle(() =>
+          pdfResponse(
+            openingReminderPdf(
+              db,
+              parseId(req.params.id, "Buchungs-ID"),
+              parseId(req.params.reminderId, "Mahnungs-ID"),
+            ),
+            new URL(req.url).searchParams.has("inline"),
+          ),
+        )(),
+    },
+
+    "/api/open-items/saldovortrag/:id/reminders/:reminderId/send": {
+      POST: (
+        req: BunRequest<"/api/open-items/saldovortrag/:id/reminders/:reminderId/send">,
+      ) =>
+        handle(async () =>
+          json(
+            sendOpeningReminderMail(
+              db,
+              parseId(req.params.id, "Buchungs-ID"),
+              parseId(req.params.reminderId, "Mahnungs-ID"),
+              await req.json(),
+            ),
+            201,
+          ),
+        )(),
     },
 
     "/api/settings/invoicing": {

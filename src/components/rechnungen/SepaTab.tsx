@@ -5,7 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, Undo2, WalletCards } from "lucide-react";
+import { Download, TriangleAlert, Undo2, WalletCards } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -39,16 +39,31 @@ import {
   useSepaCandidates,
   useSepaCollections,
 } from "@/hooks/use-payment-plans";
-import type { SepaCollectionItem } from "@/lib/payment-plan-types";
+import { plural } from "@/lib/account-labels";
+import type { SepaCandidate, SepaCollectionItem } from "@/lib/payment-plan-types";
 import { formatCents } from "@/lib/money";
+import type { SepaSequenceType } from "@/lib/sepa";
 
-function nextBusinessDay(): string {
-  const date = new Date();
-  do {
+/* Default collection date: 5 business days ahead, so the
+   Vorabankündigung (Pre-Notification) can reach the debtors in time —
+   most mandates shorten the 14-day default to 5 days. The bank itself
+   only needs the file one business day before (SEPA Core, D-1). */
+const PRE_NOTIFICATION_DAYS = 5;
+
+function addBusinessDays(days: number, from = new Date()): string {
+  const date = new Date(from);
+  let added = 0;
+  while (added < days) {
     date.setDate(date.getDate() + 1);
-  } while (date.getDay() === 0 || date.getDay() === 6);
+    if (date.getDay() !== 0 && date.getDay() !== 6) added += 1;
+  }
   return toIsoDate(date);
 }
+
+const SEQUENCE_LABELS: Record<SepaSequenceType, string> = {
+  FRST: "Erstlastschrift",
+  RCUR: "Folgelastschrift",
+};
 
 const ITEM_STATUS: Record<SepaCollectionItem["status"], string> = {
   exportiert: "Exportiert",
@@ -122,8 +137,80 @@ function ReturnDialog({
   );
 }
 
+function ConfirmCollectionDialog({
+  open,
+  collectionDate,
+  items,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  collectionDate: string;
+  items: SepaCandidate[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const total = items.reduce((sum, c) => sum + c.amountCents, 0);
+  const first = items.filter((c) => c.sequenceType === "FRST").length;
+  const tooEarly = collectionDate < addBusinessDays(PRE_NOTIFICATION_DAYS);
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Lastschriftdatei erstellen?</DialogTitle>
+          <DialogDescription className="text-pretty">
+            {plural(items.length, "Position", "Positionen")} über{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              {formatCents(total)} €
+            </span>
+            , Einzug am{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              {formatIsoDate(collectionDate)}
+            </span>
+            . Die Datei (pain.008) laden Sie anschließend im Online-Banking hoch.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2 text-xs text-pretty text-muted-foreground">
+          <p>
+            <span className="font-medium text-foreground">Vorabankündigung:</span> Die
+            Zahlungspflichtigen müssen Betrag und Einzugsdatum vorher erfahren —
+            gesetzlich 14 Tage, meist im Mandat auf 5 Tage verkürzt (z. B. per Rechnung,
+            Ratenplan oder E-Mail).
+          </p>
+          {first > 0 && (
+            <p>
+              {plural(first, "Erstlastschrift", "Erstlastschriften")} dabei: Das Mandat
+              wird zum ersten Mal genutzt — bitte besonders auf die Vorabankündigung
+              achten.
+            </p>
+          )}
+          {tooEarly && (
+            <p className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800 dark:text-amber-300">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              Das Einzugsdatum liegt weniger als {PRE_NOTIFICATION_DAYS} Bankarbeitstage
+              in der Zukunft. Reicht die Zeit für die Vorabankündigung?
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
+            Abbrechen
+          </Button>
+          <Button onClick={onConfirm}>
+            <WalletCards data-icon="inline-start" />
+            Datei erstellen
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function SepaTab() {
-  const [collectionDate, setCollectionDate] = useState(nextBusinessDay);
+  const [collectionDate, setCollectionDate] = useState(() =>
+    addBusinessDays(PRE_NOTIFICATION_DAYS),
+  );
+  const [confirming, setConfirming] = useState(false);
   const candidates = useSepaCandidates(collectionDate);
   const collections = useSepaCollections();
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -144,14 +231,15 @@ export function SepaTab() {
     [list, selected],
   );
 
+  const chosen = list.filter((c) => selected.has(`${c.sourceType}:${c.sourceId}`));
+
   const create = async () => {
+    setConfirming(false);
     setCreating(true);
     try {
       const collection = await createCollection({
         collectionDate,
-        items: list
-          .filter((c) => selected.has(`${c.sourceType}:${c.sourceId}`))
-          .map((c) => ({ sourceType: c.sourceType, sourceId: c.sourceId })),
+        items: chosen.map((c) => ({ sourceType: c.sourceType, sourceId: c.sourceId })),
       });
       toast.success(
         `Sammler ${collection.msgId} erstellt — Datei im Online-Banking hochladen.`,
@@ -186,14 +274,16 @@ export function SepaTab() {
               onChange={(e) => setCollectionDate(e.target.value)}
             />
           </div>
-          <p className="max-w-md pb-2 text-xs text-muted-foreground">
+          <p className="max-w-md pb-2 text-xs text-pretty text-muted-foreground">
             Offene Rechnungen und bis dahin fällige Raten von Fahrschüler/innen mit
             gültigem Mandat. Gläubiger-ID und IBAN der Fahrschule kommen aus dem Profil.
+            Vor dem Einzug erhalten die Zahlungspflichtigen eine Vorabankündigung
+            (Pre-Notification) mit Betrag und Datum.
           </p>
           <Button
-            className="ml-auto"
+            className="w-full sm:ml-auto sm:w-auto"
             disabled={selected.size === 0 || creating}
-            onClick={() => void create()}
+            onClick={() => setConfirming(true)}
           >
             <WalletCards data-icon="inline-start" />
             Sammler erstellen ({formatCents(total)} €)
@@ -242,8 +332,11 @@ export function SepaTab() {
                       <TableCell className="tabular-nums">
                         {formatIsoDate(c.dueDate)}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {c.mandateRef} · {c.sequenceType}
+                      <TableCell className="text-xs">
+                        <span className="font-mono">{c.mandateRef}</span>
+                        <span className="block text-muted-foreground">
+                          {SEQUENCE_LABELS[c.sequenceType]}
+                        </span>
                       </TableCell>
                       <TableCell className="pr-4 text-right tabular-nums">
                         {formatCents(c.amountCents)} €
@@ -275,7 +368,7 @@ export function SepaTab() {
                   <span className="font-mono font-medium">{collection.msgId}</span>
                   <span className="text-muted-foreground">
                     Einzug {formatIsoDate(collection.collectionDate)} ·{" "}
-                    {collection.items.length} Positionen ·{" "}
+                    {plural(collection.items.length, "Position", "Positionen")} ·{" "}
                     {formatCents(collection.totalCents)} €
                   </span>
                   <div className="ml-auto flex gap-2">
@@ -296,9 +389,12 @@ export function SepaTab() {
                 </div>
                 <div className="flex flex-col divide-y rounded-md border text-xs">
                   {collection.items.map((item) => (
-                    <div key={item.id} className="flex items-center gap-3 px-3 py-1.5">
+                    <div
+                      key={item.id}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5"
+                    >
                       <span className="w-40 truncate">{item.studentName}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                      <span className="min-w-0 flex-1 basis-40 truncate text-muted-foreground">
                         {item.remittance}
                       </span>
                       <span className="tabular-nums">
@@ -310,11 +406,12 @@ export function SepaTab() {
                       {item.status !== "zurueckgegeben" && (
                         <Button
                           variant="ghost"
-                          size="icon-sm"
-                          aria-label="Rücklastschrift erfassen"
+                          size="xs"
+                          aria-label={`Rücklastschrift für ${item.studentName} erfassen`}
                           onClick={() => setReturnTarget(item)}
                         >
-                          <Undo2 />
+                          <Undo2 data-icon="inline-start" />
+                          Rücklastschrift
                         </Button>
                       )}
                     </div>
@@ -327,6 +424,13 @@ export function SepaTab() {
       </section>
 
       <ReturnDialog item={returnTarget} onClose={() => setReturnTarget(null)} />
+      <ConfirmCollectionDialog
+        open={confirming}
+        collectionDate={collectionDate}
+        items={chosen}
+        onCancel={() => setConfirming(false)}
+        onConfirm={() => void create()}
+      />
     </div>
   );
 }

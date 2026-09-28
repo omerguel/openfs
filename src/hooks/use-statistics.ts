@@ -4,7 +4,7 @@
 /* handling as the other hooks in src/hooks/.                          */
 /* ------------------------------------------------------------------ */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { parseOrThrow } from "@/lib/api";
 
@@ -92,26 +92,33 @@ export type Statistics = {
   exams: ExamStatistics;
 };
 
-export async function fetchStatistics(): Promise<Statistics> {
-  return parseOrThrow<Statistics>(await fetch("/api/statistics"));
+export async function fetchStatistics(signal?: AbortSignal): Promise<Statistics> {
+  return parseOrThrow<Statistics>(await fetch("/api/statistics", { signal }));
 }
 
 export function useStatistics() {
   const [statistics, setStatistics] = useState<Statistics | null>(null);
   const [loading, setLoading] = useState(true);
+  const controller = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    controller.current?.abort();
+    const current = new AbortController();
+    controller.current = current;
     try {
-      setStatistics(await fetchStatistics());
+      setStatistics(await fetchStatistics(current.signal));
     } catch (error) {
-      console.error("Statistik konnte nicht geladen werden:", error);
+      // Leaving the page (or a newer refresh) aborts the request — no error.
+      if (current.signal.aborted) return;
+      console.warn("Statistik konnte nicht geladen werden:", error);
     } finally {
-      setLoading(false);
+      if (!current.signal.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void refresh();
+    return () => controller.current?.abort();
   }, [refresh]);
 
   return { statistics, loading, refresh };

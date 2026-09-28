@@ -24,6 +24,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { amountInWords } from "@/lib/amount-in-words";
 import { PAYMENT_METHOD_LABELS, type QuittungData } from "@/lib/accounting-types";
+import { printDocument } from "@/lib/print";
 import { formatCents } from "@/lib/money";
 import { accountingApi, formatIsoDate } from "./api";
 
@@ -255,13 +256,13 @@ export function QuittungDialog({
   );
   const title =
     data.length === 1
-      ? ` ${data[0]!.quittungNr}`
+      ? `Quittung ${data[0]!.quittungNr}`
       : data.length > 1
-        ? ` (${data.length})`
-        : "";
+        ? `${data.length} Quittungen drucken`
+        : "Quittung";
   const showDescription =
     data.length > 1
-      ? `${data.length} Quittungen aus den gefilterten Ergebnissen`
+      ? `Quittungen (Zahlungsbelege) für alle ${data.length} Zahlungen im aktuellen Filter.`
       : "Gültiger Zahlungsbeleg nach § 368 BGB und § 14 UStG.";
 
   return (
@@ -273,7 +274,7 @@ export function QuittungDialog({
     >
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Quittung{title}</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{showDescription}</DialogDescription>
         </DialogHeader>
 
@@ -325,7 +326,15 @@ export function QuittungDialog({
           <Button type="button" variant="outline" onClick={onClose}>
             Schließen
           </Button>
-          <Button type="button" disabled={!data} onClick={() => window.print()}>
+          <Button
+            type="button"
+            disabled={!data.length}
+            onClick={() =>
+              printDocument(
+                data.length === 1 ? `Quittung-${data[0]!.quittungNr}` : "Quittungen",
+              )
+            }
+          >
             <Printer data-icon="inline-start" />
             Drucken
           </Button>

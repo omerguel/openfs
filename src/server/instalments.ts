@@ -3,6 +3,12 @@
 /* in 6 Monatsraten). A plan books nothing by itself; paying a rate    */
 /* books a normal zahlung_guthaben through the engine and links it.    */
 /* Plans are cancelled, never deleted.                                 */
+/*                                                                     */
+/* Payment status is derived, never stored (like invoices): a rate is  */
+/* covered by its linked payment plus the student's other payments     */
+/* on the Ausbildungskonto made after the plan started, allocated      */
+/* oldest rate first (FIFO) — so a cash payment at the counter counts  */
+/* even when nobody pressed "Als bezahlt buchen".                      */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -43,6 +49,7 @@ type PlanRow = {
   title: string;
   total_cents: number;
   cancelled_on: string | null;
+  created_at: string;
 };
 
 type InstalmentRow = {
@@ -66,27 +73,123 @@ const INSTALMENT_SELECT = `
               AND i.status = 'exportiert') AS in_collection
   FROM instalments r`;
 
-const toInstalment = (row: InstalmentRow): Instalment => {
-  const paid = row.payment_transaction_id != null && row.tx_storniert_by == null;
+const toInstalment = (row: InstalmentRow, covered: Map<number, number>): Instalment => {
+  const linked = row.payment_transaction_id != null && row.tx_storniert_by == null;
+  const paidCents = Math.min(covered.get(row.id) ?? 0, row.amount_cents);
   return {
     id: row.id,
     planId: row.plan_id,
     seq: row.seq,
     dueDate: row.due_date,
     amountCents: row.amount_cents,
-    paid,
-    paymentTransactionId: paid ? row.payment_transaction_id : null,
+    paid: paidCents >= row.amount_cents,
+    paidCents,
+    openCents: row.amount_cents - paidCents,
+    paymentTransactionId: linked ? row.payment_transaction_id : null,
     inCollection: row.in_collection === 1,
   };
 };
 
-function toPlan(db: Database, row: PlanRow): InstalmentPlan {
+/** First day a payment counts for the plan: the day it was agreed, or the
+ *  first due date if that is earlier (a plan entered after the fact). */
+function planStart(plan: { created_at: string }, firstDue: string | undefined): string {
+  const created = plan.created_at.slice(0, 10);
+  return firstDue && firstDue < created ? firstDue : created;
+}
+
+/**
+ * Covered cents per rate (instalment id) for all plans of one student.
+ *
+ * 1. A rate's linked payment (not storniert) counts for that rate.
+ * 2. Every other active zahlung_guthaben of the student — in date order —
+ *    fills the oldest still-open rate of a plan that had started and was
+ *    not yet cancelled on the payment date (FIFO by due date). Payments
+ *    earmarked for something else (a Lastschrift collected for an
+ *    invoice) do not count.
+ */
+export function instalmentCoverage(
+  db: Database,
+  customerNo: string,
+): Map<number, number> {
+  const plans = db
+    .query<PlanRow, [string]>("SELECT * FROM instalment_plans WHERE customer_no = ?")
+    .all(customerNo);
+  const covered = new Map<number, number>();
+  if (plans.length === 0) return covered;
+  type Rate = {
+    id: number;
+    plan_id: number;
+    due_date: string;
+    amount_cents: number;
+    linked_cents: number | null;
+  };
+  const rates = db
+    .query<Rate, [string]>(
+      `SELECT r.id, r.plan_id, r.due_date, r.amount_cents,
+         (SELECT SUM(b.amount_cents) FROM transactions t
+            JOIN bookings b ON b.transaction_id = t.id
+          WHERE t.id = r.payment_transaction_id AND t.storniert_by IS NULL) AS linked_cents
+       FROM instalments r JOIN instalment_plans p ON p.id = r.plan_id
+       WHERE p.customer_no = ?
+       ORDER BY r.due_date, r.plan_id, r.seq`,
+    )
+    .all(customerNo);
+  const window = new Map(
+    plans.map((plan) => [
+      plan.id,
+      {
+        start: planStart(plan, rates.find((rate) => rate.plan_id === plan.id)?.due_date),
+        end: plan.cancelled_on,
+      },
+    ]),
+  );
+  for (const rate of rates) covered.set(rate.id, rate.linked_cents ?? 0);
+
+  const payments = db
+    .query<{ date: string; amount_cents: number }, [string]>(
+      `SELECT t.date, SUM(b.amount_cents) AS amount_cents
+       FROM transactions t JOIN bookings b ON b.transaction_id = t.id
+       WHERE t.type = 'zahlung_guthaben' AND t.student_customer_no = ?
+         AND t.storno_of IS NULL AND t.storniert_by IS NULL
+         AND t.id NOT IN (SELECT payment_transaction_id FROM instalments
+                          WHERE payment_transaction_id IS NOT NULL)
+         AND t.id NOT IN (SELECT payment_transaction_id FROM sepa_collection_items
+                          WHERE source_type = 'invoice'
+                            AND payment_transaction_id IS NOT NULL)
+       GROUP BY t.id
+       ORDER BY t.date, t.id`,
+    )
+    .all(customerNo);
+  for (const payment of payments) {
+    let rest = payment.amount_cents;
+    for (const rate of rates) {
+      if (rest <= 0) break;
+      const span = window.get(rate.plan_id)!;
+      if (payment.date < span.start || (span.end != null && payment.date > span.end)) {
+        continue;
+      }
+      const open = rate.amount_cents - covered.get(rate.id)!;
+      if (open <= 0) continue;
+      const take = Math.min(open, rest);
+      covered.set(rate.id, covered.get(rate.id)! + take);
+      rest -= take;
+    }
+  }
+  return covered;
+}
+
+function toPlan(
+  db: Database,
+  row: PlanRow,
+  coverage?: Map<number, number>,
+): InstalmentPlan {
+  const covered = coverage ?? instalmentCoverage(db, row.customer_no);
   const instalments = db
     .query<InstalmentRow, [number]>(
       `${INSTALMENT_SELECT} WHERE r.plan_id = ? ORDER BY r.seq`,
     )
     .all(row.id)
-    .map(toInstalment);
+    .map((rate) => toInstalment(rate, covered));
   const student = db
     .query<{ name: string }, [number]>(
       "SELECT trim(first_name || ' ' || last_name) AS name FROM students WHERE id = ?",
@@ -99,7 +202,7 @@ function toPlan(db: Database, row: PlanRow): InstalmentPlan {
     studentName: student?.name ?? row.customer_no,
     title: row.title,
     totalCents: row.total_cents,
-    paidCents: instalments.filter((r) => r.paid).reduce((s, r) => s + r.amountCents, 0),
+    paidCents: instalments.reduce((s, r) => s + r.paidCents, 0),
     cancelledOn: row.cancelled_on,
     instalments,
   };
@@ -124,7 +227,13 @@ export function listInstalmentPlans(
         )
         .all(filter.studentId)
     : db.query<PlanRow, []>("SELECT * FROM instalment_plans ORDER BY id DESC").all();
-  return rows.map((row) => toPlan(db, row));
+  const coverage = new Map<string, Map<number, number>>();
+  return rows.map((row) => {
+    if (!coverage.has(row.customer_no)) {
+      coverage.set(row.customer_no, instalmentCoverage(db, row.customer_no));
+    }
+    return toPlan(db, row, coverage.get(row.customer_no));
+  });
 }
 
 export function getInstalment(db: Database, id: number): Instalment {
@@ -132,7 +241,17 @@ export function getInstalment(db: Database, id: number): Instalment {
     .query<InstalmentRow, [number]>(`${INSTALMENT_SELECT} WHERE r.id = ?`)
     .get(id);
   if (!row) throw new ValidationError("Rate nicht gefunden.");
-  return toInstalment(row);
+  return toInstalment(row, instalmentCoverage(db, customerNoOfPlan(db, row.plan_id)));
+}
+
+function customerNoOfPlan(db: Database, planId: number): string {
+  return (
+    db
+      .query<{ customer_no: string }, [number]>(
+        "SELECT customer_no FROM instalment_plans WHERE id = ?",
+      )
+      .get(planId)?.customer_no ?? ""
+  );
 }
 
 export function createInstalmentPlan(
@@ -199,10 +318,21 @@ export function cancelInstalmentPlan(db: Database, id: number, date: string) {
 export function payInstalment(
   db: Database,
   id: number,
-  input: { date?: unknown; geldkonto?: unknown; paymentMethod?: unknown },
+  input: {
+    date?: unknown;
+    geldkonto?: unknown;
+    paymentMethod?: unknown;
+    /** Amount actually received (SEPA item); defaults to the open part. */
+    amountCents?: unknown;
+  },
 ): Instalment {
   const rate = getInstalment(db, id);
   if (rate.paid) throw new ValidationError("Die Rate ist bereits bezahlt.");
+  if (rate.paymentTransactionId != null) {
+    throw new ValidationError("Für diese Rate ist bereits eine Zahlung gebucht.");
+  }
+  const amountCents =
+    input.amountCents === undefined ? rate.openCents : Number(input.amountCents);
   const plan = getInstalmentPlan(db, rate.planId);
   const student = getStudent(db, plan.studentId);
   const date = requireDate(input.date, "date");
@@ -210,7 +340,7 @@ export function payInstalment(
     const tx = createTransaction(db, {
       type: "zahlung_guthaben",
       date,
-      amountCents: rate.amountCents,
+      amountCents,
       geldkonto: typeof input.geldkonto === "string" ? input.geldkonto : "1800",
       paymentMethod: (input.paymentMethod as PaymentMethod) ?? "ueberweisung",
       student: {
@@ -241,8 +371,10 @@ export function listDueInstalments(db: Database, date: string): Instalment[] {
        ORDER BY r.due_date, r.id`,
     )
     .all(date)
-    .map(toInstalment)
-    .filter((rate) => !rate.paid);
+    .map((row) =>
+      toInstalment(row, instalmentCoverage(db, customerNoOfPlan(db, row.plan_id))),
+    )
+    .filter((rate) => !rate.paid && rate.paymentTransactionId == null);
 }
 
 function parseId(raw: string, label: string): number {

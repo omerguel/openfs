@@ -314,6 +314,7 @@ describe("listOpenItems", () => {
       openCents: 5000,
       overdueCents: 5000,
       overdueCount: 1,
+      openingCents: 0,
     });
     const row = items.students.find((s) => s.customerNo === student.customerNumber)!;
     expect(row).toMatchObject({

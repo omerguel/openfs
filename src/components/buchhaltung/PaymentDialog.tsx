@@ -1,8 +1,11 @@
 /* ------------------------------------------------------------------ */
-/* Zahlung erfassen — single dialog for all booking types (incl. the   */
+/* Buchung erfassen — single dialog for all booking types (incl. the   */
 /* one-off Saldovortrag for balances taken over from old software).   */
 /* The client only collects intent; Soll/Haben, VAT and numbering      */
 /* are derived server-side by the booking engine.                      */
+/*                                                                     */
+/* Guard rails (soft, confirmable): dates in a past month or in the    */
+/* future, and cash bookings that would push the Kasse below zero.     */
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo, useState } from "react";
@@ -28,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import type { GeldkontoBalance } from "@/lib/accounting-report-types";
 import {
   PAYMENT_METHOD_LABELS,
   SALDOVORTRAG_DIRECTION_LABELS,
@@ -39,9 +43,16 @@ import {
   type StudentRef,
   type TransactionType,
 } from "@/lib/accounting-types";
+import {
+  TRANSACTION_TYPE_HELP,
+  TRANSACTION_TYPE_TITLES,
+  accountLabel,
+} from "@/lib/account-labels";
 import { formatCents, parseEuroToCents, splitVat } from "@/lib/money";
 import { useStudents, type StudentRecord } from "@/hooks/use-students";
-import { accountingApi, toIsoDate } from "./api";
+import { accountingApi, dateWarnings, toIsoDate } from "./api";
+import { StudentCombobox } from "./StudentCombobox";
+import { FieldError, WarningConfirm } from "./WarningConfirm";
 
 const TYPES: TransactionType[] = [
   "zahlung_guthaben",
@@ -74,6 +85,9 @@ const NEEDS_DESCRIPTION: TransactionType[] = [
   "ausgabe",
 ];
 
+const CASH = "1600";
+const BANK = "1800";
+
 function studentRef(students: StudentRecord[], customerNo: string): StudentRef | null {
   const student = students.find((s) => s.customerNumber === customerNo);
   if (!student) return null;
@@ -99,14 +113,14 @@ function AccountSelect({
 }) {
   return (
     <Select value={value} onValueChange={onChange}>
-      <SelectTrigger id={id} className="w-full">
+      <SelectTrigger id={id} className="w-full min-w-0">
         <SelectValue placeholder="Konto wählen" />
       </SelectTrigger>
       <SelectContent>
         <SelectGroup>
           {options.map((account) => (
             <SelectItem key={account.number} value={account.number}>
-              {account.number} · {account.name}
+              {accountLabel(account)}
             </SelectItem>
           ))}
         </SelectGroup>
@@ -114,6 +128,8 @@ function AccountSelect({
     </Select>
   );
 }
+
+type Errors = Partial<Record<"amount" | "student" | "description" | "konto", string>>;
 
 export function PaymentDialog({
   open,
@@ -160,37 +176,81 @@ export function PaymentDialog({
       ? (defaultAmountCents / 100).toFixed(2).replace(".", ",")
       : "",
   );
-  const [customerNo, setCustomerNo] = useState("");
-
-  // Students load async — default to the first one once the list arrives.
-  useEffect(() => {
-    if (!customerNo && students.length > 0) {
-      setCustomerNo(defaultCustomerNo ?? students[0]!.customerNumber);
-    }
-  }, [customerNo, students, defaultCustomerNo]);
+  // No preselection unless the caller pins a student (detail page).
+  const [customerNo, setCustomerNo] = useState(defaultCustomerNo ?? "");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("bar");
+  // SKR 04 defaults: 1600 Kasse, 4400 Erlöse 19 %, 6530 Kfz-Kosten, 1800 Bank
+  const [geldkonto, setGeldkonto] = useState(CASH);
+  const [habenKonto, setHabenKonto] = useState(defaultHabenKonto ?? "4400");
+  const [aufwandKonto, setAufwandKonto] = useState("6530");
+  const [toKonto, setToKonto] = useState(BANK);
+  const [description, setDescription] = useState(defaultDescription ?? "");
+  const [direction, setDirection] = useState<SaldovortragDirection>("guthaben");
+  const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState<Errors>({});
+  const [confirmed, setConfirmed] = useState(false);
+  const [balances, setBalances] = useState<GeldkontoBalance[] | null>(null);
 
   // Re-pin the preselected student and other prefill props whenever the dialog opens.
   useEffect(() => {
     if (open) {
-      if (defaultCustomerNo) setCustomerNo(defaultCustomerNo);
+      setCustomerNo(defaultCustomerNo ?? "");
       if (defaultType) setType(defaultType);
       if (defaultDate) setDate(defaultDate);
       if (defaultAmountCents != null)
         setAmount((defaultAmountCents / 100).toFixed(2).replace(".", ","));
       if (defaultDescription != null) setDescription(defaultDescription);
       if (defaultHabenKonto) setHabenKonto(defaultHabenKonto);
+      setErrors({});
+      setConfirmed(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("bar");
-  // SKR 04 defaults: 1600 Kasse, 4400 Erlöse 19 %, 6530 Kfz-Kosten, 1800 Bank
-  const [geldkonto, setGeldkonto] = useState("1600");
-  const [habenKonto, setHabenKonto] = useState(defaultHabenKonto ?? "4400");
-  const [aufwandKonto, setAufwandKonto] = useState("6530");
-  const [toKonto, setToKonto] = useState("1800");
-  const [description, setDescription] = useState(defaultDescription ?? "");
-  const [direction, setDirection] = useState<SaldovortragDirection>("guthaben");
-  const [submitting, setSubmitting] = useState(false);
+
+  // Current Kasse/Bank balances for the negative-cash check.
+  useEffect(() => {
+    if (!open || onSubmitOverride) return;
+    let cancelled = false;
+    accountingApi
+      .balances()
+      .then((list) => {
+        if (!cancelled) setBalances(list);
+      })
+      .catch(() => {
+        if (!cancelled) setBalances(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, onSubmitOverride]);
+
+  // Only one Saldovortrag per student: check up front instead of letting
+  // the server answer 400 (which also shows up as a console error).
+  const [existingSaldovortrag, setExistingSaldovortrag] = useState<string | null>(null);
+  useEffect(() => {
+    setExistingSaldovortrag(null);
+    if (!open || type !== "saldovortrag" || !customerNo || onSubmitOverride) return;
+    let cancelled = false;
+    accountingApi
+      .ledger(`?customerNo=${encodeURIComponent(customerNo)}`)
+      .then((ledger) => {
+        if (cancelled) return;
+        const row = ledger.rows.find(
+          (r) => r.type === "saldovortrag" && !r.storniert && !r.isStorno,
+        );
+        setExistingSaldovortrag(
+          row
+            ? `Für diese/n Fahrschüler/in ist bereits ein Saldovortrag gebucht${
+                row.belegNr ? ` (Beleg ${row.belegNr})` : ""
+              } — bitte zuerst stornieren.`
+            : null,
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, type, customerNo, onSubmitOverride]);
 
   const active = (kinds: Account["kind"][]) =>
     accounts.filter((a) => a.active && kinds.includes(a.kind));
@@ -215,28 +275,77 @@ export function PaymentDialog({
       ? splitVat(amountCents, vatAccount.vatRate)
       : null;
 
+  /* Cash goes to the Kasse, everything else to the Bank (the engine
+     refuses the mismatch anyway). */
+  const changePaymentMethod = (method: PaymentMethod) => {
+    setPaymentMethod(method);
+    if (method === "bar") setGeldkonto(CASH);
+    else if (geldkonto === CASH) setGeldkonto(BANK);
+  };
+  const changeGeldkonto = (konto: string) => {
+    setGeldkonto(konto);
+    if (!NEEDS_PAYMENT_METHOD.includes(type)) return;
+    if (konto === CASH) setPaymentMethod("bar");
+    else if (paymentMethod === "bar") setPaymentMethod("ueberweisung");
+  };
+
+  // Money leaving the Kasse: an Ausgabe or a transfer out of 1600.
+  const cashOut =
+    geldkonto === CASH && (type === "ausgabe" || type === "transfer")
+      ? amountCents
+      : null;
+  const cashBalance = balances?.find((b) => b.number === CASH)?.balanceCents ?? null;
+  const warnings = [
+    ...dateWarnings(date),
+    ...(cashOut != null && cashBalance != null && cashBalance - cashOut < 0
+      ? [
+          `Die Kasse hat derzeit ${formatCents(cashBalance)} € — nach dieser Buchung stünde sie bei ${formatCents(
+            cashBalance - cashOut,
+          )} €. Eine Kasse kann nicht negativ sein; bitte Betrag und Konto prüfen (ggf. Bank wählen).`,
+        ]
+      : []),
+  ];
+
   const reset = () => {
     setAmount("");
     setDescription(defaultDescription ?? "");
     setDate(defaultDate ?? toIsoDate(new Date()));
+    setCustomerNo(defaultCustomerNo ?? "");
+    setErrors({});
+    setConfirmed(false);
+  };
+
+  const validate = (): Errors => {
+    const next: Errors = {};
+    if (amount.trim() === "") next.amount = "Bitte einen Betrag eingeben.";
+    else if (amountCents == null || amountCents <= 0) {
+      next.amount = "Ungültiger Betrag — bitte z. B. 409,83 eingeben.";
+    }
+    if (NEEDS_STUDENT.includes(type) && !studentRef(students, customerNo)) {
+      next.student = "Bitte eine/n Fahrschüler/in auswählen.";
+    } else if (type === "saldovortrag" && existingSaldovortrag) {
+      next.student = existingSaldovortrag;
+    }
+    if (NEEDS_DESCRIPTION.includes(type) && !description.trim()) {
+      next.description =
+        type === "ausgabe"
+          ? "Bitte beschreiben, wofür das Geld ausgegeben wurde."
+          : "Bitte die Leistung angeben.";
+    }
+    if (type === "transfer" && geldkonto === toKonto) {
+      next.konto = "Von- und Nach-Konto müssen verschieden sein.";
+    }
+    return next;
   };
 
   const submit = async () => {
-    if (amountCents == null || amountCents <= 0) {
-      toast.error("Bitte einen gültigen Betrag eingeben (z. B. 409,83).");
-      return;
-    }
+    const found = validate();
+    setErrors(found);
+    if (Object.keys(found).length > 0 || amountCents == null) return;
+    if (warnings.length > 0 && !confirmed) return;
     const student = NEEDS_STUDENT.includes(type)
       ? studentRef(students, customerNo)
       : null;
-    if (NEEDS_STUDENT.includes(type) && !student) {
-      toast.error("Bitte einen Fahrschüler auswählen.");
-      return;
-    }
-    if (NEEDS_DESCRIPTION.includes(type) && !description.trim()) {
-      toast.error("Bitte eine Beschreibung der Leistung angeben.");
-      return;
-    }
 
     let input: CreateTransactionInput;
     switch (type) {
@@ -325,6 +434,9 @@ export function PaymentDialog({
     }
   };
 
+  const clearError = (key: keyof Errors) =>
+    setErrors((current) => (current[key] ? { ...current, [key]: undefined } : current));
+
   return (
     <Dialog
       open={open}
@@ -332,19 +444,35 @@ export function PaymentDialog({
         if (!value) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100svh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Zahlung erfassen</DialogTitle>
-          <DialogDescription>
-            Die Buchung wird automatisch nach SKR 04 kontiert.
+          <DialogTitle>{TRANSACTION_TYPE_TITLES[type]}</DialogTitle>
+          <DialogDescription className="text-pretty">
+            {TRANSACTION_TYPE_HELP[type]}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5 sm:col-span-2">
-            <Label htmlFor="tx-type">Typ</Label>
-            <Select value={type} onValueChange={(v) => setType(v as TransactionType)}>
-              <SelectTrigger id="tx-type" className="w-full">
+        <form
+          noValidate
+          className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
+            <Label htmlFor="tx-type">Art der Buchung</Label>
+            <Select
+              value={type}
+              onValueChange={(v) => {
+                setType(v as TransactionType);
+                setErrors({});
+                if (v === "transfer" && geldkonto === toKonto) {
+                  setToKonto(geldkonto === CASH ? BANK : CASH);
+                }
+              }}
+            >
+              <SelectTrigger id="tx-type" className="w-full min-w-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -359,56 +487,69 @@ export function PaymentDialog({
             </Select>
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
             <Label htmlFor="tx-date">Datum</Label>
             <Input
               id="tx-date"
               type="date"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => {
+                setDate(e.target.value);
+                setConfirmed(false);
+              }}
             />
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
             <Label htmlFor="tx-amount">Betrag (brutto), EUR</Label>
             <Input
               id="tx-amount"
               inputMode="decimal"
               placeholder="z. B. 409,83"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              aria-invalid={errors.amount ? true : undefined}
+              aria-describedby={errors.amount ? "tx-amount-error" : undefined}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setConfirmed(false);
+                clearError("amount");
+              }}
             />
+            <FieldError id="tx-amount-error" message={errors.amount} />
           </div>
 
           {NEEDS_STUDENT.includes(type) && (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <Label htmlFor="tx-student">Fahrschüler</Label>
-              <Select value={customerNo} onValueChange={setCustomerNo}>
-                <SelectTrigger id="tx-student" className="w-full">
-                  <SelectValue placeholder="Fahrschüler wählen" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {students.map((s) => (
-                      <SelectItem key={s.customerNumber} value={s.customerNumber}>
-                        {s.firstName} {s.lastName} · {s.classes} · {s.contractNumber}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
+              <Label htmlFor="tx-student">Fahrschüler/in</Label>
+              <StudentCombobox
+                id="tx-student"
+                students={students}
+                value={customerNo}
+                invalid={!!errors.student}
+                onChange={(value) => {
+                  setCustomerNo(value);
+                  clearError("student");
+                }}
+              />
+              <FieldError
+                id="tx-student-error"
+                message={
+                  errors.student ??
+                  (type === "saldovortrag" ? existingSaldovortrag : null)
+                }
+              />
             </div>
           )}
 
           {type === "saldovortrag" && (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label>Saldo aus dem bisherigen Programm</Label>
               <ToggleGroup
                 type="single"
                 variant="outline"
                 value={direction}
                 onValueChange={(v) => v && setDirection(v as SaldovortragDirection)}
-                className="justify-start"
+                className="flex-wrap justify-start"
               >
                 {(
                   Object.keys(SALDOVORTRAG_DIRECTION_LABELS) as SaldovortragDirection[]
@@ -420,44 +561,57 @@ export function PaymentDialog({
               </ToggleGroup>
               <p className="text-xs text-pretty text-muted-foreground">
                 {direction === "guthaben"
-                  ? "Bucht 9000 Saldenvorträge an 3272 Erhaltene Anzahlungen."
-                  : "Bucht 3272 Erhaltene Anzahlungen an 9000 Saldenvorträge."}{" "}
-                Ohne Umsatzsteuer-Aufteilung, nur einmal je Fahrschüler (außer nach
-                Storno). Die Behandlung der Eröffnungssalden bitte mit der Steuerberatung
-                abstimmen.
+                  ? "Das Guthaben steht danach auf dem Ausbildungskonto zur Verfügung und wird mit künftigen Leistungen verrechnet."
+                  : "Der offene Betrag erscheint unter Offene Posten und kann angemahnt werden; Zahlungen gleichen ihn zuerst aus."}{" "}
+                Ohne Umsatzsteuer, nur einmal je Fahrschüler/in (außer nach Storno). Bitte
+                mit der Steuerberatung abstimmen.
+                <span className="block pt-1 text-[11px]">
+                  Buchung:{" "}
+                  {direction === "guthaben"
+                    ? "9000 Saldenvorträge an 3272 Anzahlungen"
+                    : "3272 Anzahlungen an 9000 Saldenvorträge"}
+                </span>
               </p>
             </div>
           )}
 
           {!NO_GELDKONTO.includes(type) && (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 flex-col gap-1.5">
               <Label htmlFor="tx-geldkonto">
                 {type === "transfer" ? "Von Konto" : "Geldkonto"}
               </Label>
               <AccountSelect
                 id="tx-geldkonto"
                 value={geldkonto}
-                onChange={setGeldkonto}
+                onChange={(value) => {
+                  changeGeldkonto(value);
+                  setConfirmed(false);
+                  clearError("konto");
+                }}
                 options={geldkonten}
               />
             </div>
           )}
 
           {type === "transfer" && (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 flex-col gap-1.5">
               <Label htmlFor="tx-tokonto">Nach Konto</Label>
               <AccountSelect
                 id="tx-tokonto"
                 value={toKonto}
-                onChange={setToKonto}
+                onChange={(value) => {
+                  setToKonto(value);
+                  clearError("konto");
+                }}
                 options={geldkonten}
               />
+              <FieldError id="tx-konto-error" message={errors.konto} />
             </div>
           )}
 
           {(type === "direktzahlung" || type === "guthaben_uebertragung") && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tx-haben">Leistungskonto</Label>
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
+              <Label htmlFor="tx-haben">Art der Leistung</Label>
               <AccountSelect
                 id="tx-haben"
                 value={habenKonto}
@@ -468,8 +622,8 @@ export function PaymentDialog({
           )}
 
           {type === "ausgabe" && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tx-aufwand">Aufwandskonto</Label>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <Label htmlFor="tx-aufwand">Kategorie</Label>
               <AccountSelect
                 id="tx-aufwand"
                 value={aufwandKonto}
@@ -480,14 +634,14 @@ export function PaymentDialog({
           )}
 
           {NEEDS_PAYMENT_METHOD.includes(type) && (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label>Zahlungsart</Label>
               <ToggleGroup
                 type="single"
                 variant="outline"
                 value={paymentMethod}
-                onValueChange={(v) => v && setPaymentMethod(v as PaymentMethod)}
-                className="justify-start"
+                onValueChange={(v) => v && changePaymentMethod(v as PaymentMethod)}
+                className="flex-wrap justify-start"
               >
                 {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((m) => (
                   <ToggleGroupItem key={m} value={m} className="px-3">
@@ -499,7 +653,7 @@ export function PaymentDialog({
           )}
 
           {NEEDS_DESCRIPTION.includes(type) && (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label htmlFor="tx-desc">
                 {type === "ausgabe" ? "Beschreibung" : "Leistung"}
               </Label>
@@ -508,16 +662,22 @@ export function PaymentDialog({
                 placeholder={
                   type === "ausgabe"
                     ? "z. B. Tankrechnung Fahrschulwagen"
-                    : "z. B. Fahrübungsstunde (90)"
+                    : "z. B. Fahrstunde 90 Min."
                 }
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                aria-invalid={errors.description ? true : undefined}
+                aria-describedby={errors.description ? "tx-desc-error" : undefined}
+                onChange={(e) => {
+                  setDescription(e.target.value);
+                  clearError("description");
+                }}
               />
+              <FieldError id="tx-desc-error" message={errors.description} />
             </div>
           )}
 
           {type === "transfer" && (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label htmlFor="tx-desc-transfer">Beschreibung (optional)</Label>
               <Input
                 id="tx-desc-transfer"
@@ -549,16 +709,28 @@ export function PaymentDialog({
               Durchlaufender Posten (§ 10 Abs. 1 UStG) — keine Umsatzsteuer.
             </p>
           )}
-        </div>
 
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            Abbrechen
-          </Button>
-          <Button type="button" disabled={submitting} onClick={submit}>
-            Buchen
-          </Button>
-        </DialogFooter>
+          <div className="sm:col-span-2">
+            <WarningConfirm
+              warnings={warnings}
+              confirmed={confirmed}
+              onConfirmedChange={setConfirmed}
+              label="Hinweise geprüft — trotzdem buchen"
+            />
+          </div>
+
+          <DialogFooter className="sm:col-span-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Abbrechen
+            </Button>
+            <Button
+              type="submit"
+              disabled={submitting || (warnings.length > 0 && !confirmed)}
+            >
+              Buchen
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

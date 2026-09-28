@@ -73,6 +73,8 @@ function filterFromUrl(url: string): ListFilter {
     q: params.get("q")?.trim() || undefined,
     customerNo: params.get("customerNo")?.trim() || undefined,
     status: status === "active" || status === "storniert" ? status : "all",
+    cashOnly: params.get("cash") === "1",
+    sort: params.get("sort") === "asc" ? "asc" : "desc",
   };
 }
 
