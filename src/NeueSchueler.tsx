@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -16,6 +16,7 @@ import {
 
 import { FormSection as Section, FormSectionIndex } from "./components/FormSection.tsx";
 import { PageHeader } from "./components/PageHeader.tsx";
+import { OPEN_CONTRACT_EVENT } from "./components/VertragDialog.tsx";
 import { useInstructors } from "@/hooks/use-instructors";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import { createStudent, useStudents } from "@/hooks/use-students";
@@ -51,16 +52,28 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { nextStudentNumbers } from "@/lib/student-numbers";
+import { defaultPlanForClasses } from "@/lib/price-plan";
+import {
+  ageInYears,
+  allowsAccompaniedDriving,
+  hasClassBSpecialDrives,
+  LICENSE_CLASS_GROUPS,
+} from "@/lib/license-classes";
+import { useArchivedContracts } from "@/hooks/use-archive";
+import { useCompanyProfile } from "@/hooks/use-company-profile";
+import { useFinanceAccess } from "@/hooks/use-finance-access";
+import { usePricePlans } from "@/hooks/use-price-plans";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { SPECIAL_DRIVE_REQUIREMENTS_B } from "@/lib/special-drives";
 import {
+  DEFAULT_CHECKLIST,
   formatStudentDocumentSize,
   STUDENT_FILE_ACCEPT,
   validateStudentFile,
 } from "@/lib/student-documents";
 import { cn } from "@/lib/utils";
 
-const classOptions = ["A", "B", "B197", "BE"];
-const documentOptions = ["Personalausweis", "Passbild", "Sehtest", "Vertrag"];
+const documentOptions = DEFAULT_CHECKLIST;
 
 const now = new Date();
 const TODAY = `${String(now.getDate()).padStart(2, "0")}.${String(
@@ -98,6 +111,10 @@ type FormState = {
   drivingSchool: string;
   status: Status;
   documents: string[];
+  /** "" = class default (first matching plan). */
+  pricePlanId: string;
+  companionName: string;
+  companionPhone: string;
 };
 
 const initialForm: FormState = {
@@ -113,9 +130,13 @@ const initialForm: FormState = {
   customerNumber: "",
   registrationDate: TODAY,
   contractNumber: "",
-  drivingSchool: "Fahrschule Demo",
+  // Filled from the school profile once it has loaded.
+  drivingSchool: "",
   status: "aktiv",
   documents: [],
+  pricePlanId: "",
+  companionName: "",
+  companionPhone: "",
 };
 
 const sections = [
@@ -124,7 +145,7 @@ const sections = [
   { id: "kontakt", label: "Kontakt" },
   { id: "dokumente", label: "Dokumente" },
   { id: "ausbildung", label: "Ausbildung" },
-  { id: "vertrag", label: "Vertrag" },
+  { id: "vertrag", label: "Vertrag & Preise" },
 ];
 
 /* A file picked before the student exists — uploaded right after the
@@ -186,6 +207,10 @@ function splitName(name: string): { firstName: string; lastName: string } {
 
 export function NeueSchueler() {
   const { students, refresh } = useStudents();
+  const { contracts: archivedContracts } = useArchivedContracts();
+  const { plans } = usePricePlans();
+  const { profile } = useCompanyProfile();
+  const { canSeeMoney } = useFinanceAccess();
   const { anfrage } = useSearch({ from: "/_portal/neue-schueler" });
   const navigate = useNavigate();
   const { requests } = useAppointmentRequests();
@@ -197,6 +222,12 @@ export function NeueSchueler() {
     ...initialForm,
     ...nextStudentNumbers([]),
   }));
+  // Archived students keep their numbers (a restore must not collide).
+  const nextNumbers = useMemo(
+    () => nextStudentNumbers([...students, ...archivedContracts]),
+    [students, archivedContracts],
+  );
+  const schoolName = profile?.name ?? "";
   const [dirty, setDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -207,8 +238,23 @@ export function NeueSchueler() {
   // IDs are assigned by the system, not entered by hand: they continue the
   // numbering range of the students in the DB, which loads async.
   useEffect(() => {
-    setForm((current) => ({ ...current, ...nextStudentNumbers(students) }));
-  }, [students]);
+    setForm((current) => ({ ...current, ...nextNumbers }));
+  }, [nextNumbers]);
+
+  // The school's own name, not a demo placeholder.
+  useEffect(() => {
+    if (!schoolName) return;
+    setForm((current) =>
+      current.drivingSchool ? current : { ...current, drivingSchool: schoolName },
+    );
+  }, [schoolName]);
+
+  const defaultPlan = defaultPlanForClasses(plans, form.classes);
+  const chosenPlan =
+    plans.find((plan) => String(plan.id) === form.pricePlanId) ?? defaultPlan;
+  const age = ageInYears(form.birthday);
+  const showCompanion = allowsAccompaniedDriving(form.classes) && age != null && age < 18;
+  const classBDrives = hasClassBSpecialDrives(form.classes);
 
   // Prefill once from the Terminanfrage this page was opened for.
   useEffect(() => {
@@ -252,7 +298,11 @@ export function NeueSchueler() {
   };
 
   const reset = () => {
-    setForm({ ...initialForm, ...nextStudentNumbers(students) });
+    setForm({
+      ...initialForm,
+      drivingSchool: schoolName,
+      ...nextNumbers,
+    });
     setPendingFiles([]);
     setDirty(false);
   };
@@ -264,9 +314,18 @@ export function NeueSchueler() {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
+      const { pricePlanId, companionName, companionPhone, ...fields } = form;
       const created = await createStudent({
-        ...form,
+        ...fields,
         progress: 0,
+        // Explicit plan (default = first plan for the class, also
+        // decided by the server when omitted).
+        pricePlanId: chosenPlan?.id ?? null,
+        companion:
+          showCompanion && (companionName.trim() || companionPhone.trim())
+            ? { name: companionName.trim(), phone: companionPhone.trim() }
+            : null,
+        openDocuments: [],
       });
       if (sourceRequest) {
         try {
@@ -279,8 +338,21 @@ export function NeueSchueler() {
           );
         }
       }
+      const openStudent = () =>
+        void navigate({
+          to: "/fahrschueler/$studentId",
+          params: { studentId: String(created.id) },
+        });
       toast.success("Schüler/in angelegt", {
-        description: `${form.firstName} ${form.lastName} wurde zur Fahrschule hinzugefügt.`,
+        description: `${form.firstName} ${form.lastName} · Vertrag ${created.contractNumber}`,
+        duration: 10_000,
+        action: {
+          label: "Vertrag öffnen",
+          onClick: () =>
+            window.dispatchEvent(
+              new CustomEvent(OPEN_CONTRACT_EVENT, { detail: created.id }),
+            ),
+        },
       });
       // Files can only be attached once the student has an id.
       const failed: string[] = [];
@@ -299,8 +371,10 @@ export function NeueSchueler() {
         });
       }
       await refresh();
-      reset();
-      if (sourceRequest) void navigate({ to: "/terminanfragen" });
+      setDirty(false);
+      // Continue with the new student (contract, first lessons) instead of
+      // an empty form.
+      openStudent();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Anlegen fehlgeschlagen.");
     } finally {
@@ -349,7 +423,8 @@ export function NeueSchueler() {
                     id="firstName"
                     value={form.firstName}
                     onChange={(event) => update("firstName", event.target.value)}
-                    placeholder="Lena"
+                    placeholder="Vorname"
+                    autoComplete="off"
                   />
                 </Field>
                 <Field>
@@ -358,7 +433,8 @@ export function NeueSchueler() {
                     id="lastName"
                     value={form.lastName}
                     onChange={(event) => update("lastName", event.target.value)}
-                    placeholder="Braun"
+                    placeholder="Nachname"
+                    autoComplete="off"
                   />
                 </Field>
                 <Field>
@@ -371,29 +447,73 @@ export function NeueSchueler() {
                     className="tabular-nums"
                   />
                 </Field>
-                <Field>
+                <Field className="sm:col-span-2">
                   <FieldLabel>Klasse</FieldLabel>
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    value={form.classes}
-                    onValueChange={(value) => {
-                      if (value) update("classes", value);
-                    }}
-                    className="justify-start gap-2"
-                    aria-label="Führerscheinklasse"
-                  >
-                    {classOptions.map((option) => (
-                      <ToggleGroupItem
-                        key={option}
-                        value={option}
-                        className="rounded-md data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                  <div className="flex flex-col gap-2">
+                    {LICENSE_CLASS_GROUPS.map((group) => (
+                      <div
+                        key={group.label}
+                        className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
                       >
-                        {option}
-                      </ToggleGroupItem>
+                        <span className="shrink-0 text-xs text-muted-foreground sm:w-24">
+                          {group.label}
+                        </span>
+                        {/* One class per student; each row is a slice of it. */}
+                        <ToggleGroup
+                          type="single"
+                          variant="outline"
+                          value={group.classes.includes(form.classes) ? form.classes : ""}
+                          onValueChange={(value) => {
+                            if (value) update("classes", value);
+                          }}
+                          className="flex-wrap justify-start gap-1.5"
+                          aria-label={`Führerscheinklasse ${group.label}`}
+                        >
+                          {group.classes.map((option) => (
+                            <ToggleGroupItem
+                              key={option}
+                              value={option}
+                              className="min-w-11 rounded-md data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                            >
+                              {option}
+                            </ToggleGroupItem>
+                          ))}
+                        </ToggleGroup>
+                      </div>
                     ))}
-                  </ToggleGroup>
+                  </div>
                 </Field>
+                {showCompanion && (
+                  <>
+                    <Field>
+                      <FieldLabel htmlFor="companionName">
+                        Begleitperson (BF17)
+                      </FieldLabel>
+                      <Input
+                        id="companionName"
+                        value={form.companionName}
+                        onChange={(event) => update("companionName", event.target.value)}
+                        placeholder="Vor- und Nachname"
+                        autoComplete="off"
+                      />
+                      <FieldDescription>
+                        Unter 18 — optional für Begleitetes Fahren ab 17.
+                      </FieldDescription>
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="companionPhone">
+                        Telefon der Begleitperson
+                      </FieldLabel>
+                      <Input
+                        id="companionPhone"
+                        value={form.companionPhone}
+                        onChange={(event) => update("companionPhone", event.target.value)}
+                        placeholder="Telefonnummer"
+                        className="tabular-nums"
+                      />
+                    </Field>
+                  </>
+                )}
               </FieldGroup>
             </Section>
 
@@ -461,7 +581,7 @@ export function NeueSchueler() {
                       className="pl-9 tabular-nums"
                       value={form.phone}
                       onChange={(event) => update("phone", event.target.value)}
-                      placeholder="+49 151 23456780"
+                      placeholder="Mobilnummer"
                     />
                   </div>
                 </Field>
@@ -475,7 +595,7 @@ export function NeueSchueler() {
                       className="pl-9"
                       value={form.email}
                       onChange={(event) => update("email", event.target.value)}
-                      placeholder="lena.braun@example.com"
+                      placeholder="name@beispiel.de"
                     />
                   </div>
                 </Field>
@@ -488,7 +608,7 @@ export function NeueSchueler() {
                       className="min-h-16 pl-9"
                       value={form.address}
                       onChange={(event) => update("address", event.target.value)}
-                      placeholder="Weidingweg 31, 64297 Darmstadt"
+                      placeholder="Straße Hausnummer, PLZ Ort"
                     />
                   </div>
                 </Field>
@@ -568,39 +688,74 @@ export function NeueSchueler() {
             <Section
               id="ausbildung"
               title="Ausbildung"
-              description="Pflichtstunden (Klasse B). Der Stand wird aus den Fahrstunden im Kalender berechnet."
+              description={
+                classBDrives
+                  ? `Sonderfahrten für Klasse ${form.classes} (Mindestumfang Klasse B, Anlage 4 FahrschAusbO). Der Stand wird aus den Fahrstunden im Kalender berechnet.`
+                  : `Die Sonderfahrten für Klasse ${form.classes} richten sich nach Anlage 4 FahrschAusbO. Fahrstunden mit Fahrtart werden im Kalender erfasst.`
+              }
             >
-              <div className="overflow-hidden rounded-lg border">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/40 hover:bg-muted/40">
-                      <TableHead>Bereich</TableHead>
-                      <TableHead className="text-right">Stand</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {Object.entries(SPECIAL_DRIVE_REQUIREMENTS_B).map(
-                      ([kind, minutes]) => (
-                        <TableRow key={kind}>
-                          <TableCell>{kind}</TableCell>
-                          <TableCell className="text-right tabular-nums text-muted-foreground">
-                            0/{minutes} min
-                          </TableCell>
-                        </TableRow>
-                      ),
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
+              {classBDrives && (
+                <div className="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/40 hover:bg-muted/40">
+                        <TableHead>Bereich</TableHead>
+                        <TableHead className="text-right">Stand</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {Object.entries(SPECIAL_DRIVE_REQUIREMENTS_B).map(
+                        ([kind, minutes]) => (
+                          <TableRow key={kind}>
+                            <TableCell>{kind}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">
+                              0/{minutes} Min.
+                            </TableCell>
+                          </TableRow>
+                        ),
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </Section>
 
             {/* Vertrag */}
             <Section
               id="vertrag"
-              title="Vertrag"
-              description="Vertragsdaten, Fahrschule und Abrechnungszuordnung."
+              title="Vertrag & Preise"
+              description="Vertragsdaten, Fahrschule und Preisplan für die Abrechnung."
             >
               <FieldGroup className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {canSeeMoney && (
+                  <Field className="md:col-span-2">
+                    <FieldLabel htmlFor="pricePlan">Preisplan</FieldLabel>
+                    <NativeSelect
+                      id="pricePlan"
+                      value={form.pricePlanId}
+                      onChange={(event) => update("pricePlanId", event.target.value)}
+                      className="w-full"
+                      disabled={plans.length === 0}
+                    >
+                      <NativeSelectOption value="">
+                        {defaultPlan
+                          ? `${defaultPlan.name} (Standard für Klasse ${form.classes})`
+                          : "Kein Preisplan hinterlegt"}
+                      </NativeSelectOption>
+                      {plans.map((plan) => (
+                        <NativeSelectOption key={plan.id} value={String(plan.id)}>
+                          {plan.name}
+                          {(plan.classes ?? []).length > 0
+                            ? ` · ${(plan.classes ?? []).join(", ")}`
+                            : ""}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                    <FieldDescription>
+                      Bestimmt die Preise im Ausbildungsvertrag und beim Abrechnen.
+                    </FieldDescription>
+                  </Field>
+                )}
                 <AutoNumber label="Kundennummer" value={form.customerNumber} />
                 <AutoNumber label="Vertragsnummer" value={form.contractNumber} />
                 <Field>
@@ -644,6 +799,7 @@ export function NeueSchueler() {
                       className="pl-9"
                       value={form.drivingSchool}
                       onChange={(event) => update("drivingSchool", event.target.value)}
+                      placeholder="Name der Fahrschule"
                     />
                   </div>
                 </Field>
