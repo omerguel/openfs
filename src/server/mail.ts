@@ -20,7 +20,12 @@ import { getCompany } from "./db";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
 import { genericMail } from "./mail-templates";
-import { smtpConfigFromEnv, type MailTransport, type SmtpConfig } from "./smtp";
+import {
+  smtpConfigFromEnv,
+  type MailAttachment,
+  type MailTransport,
+  type SmtpConfig,
+} from "./smtp";
 import {
   normalizePhoneNumber,
   prepareSmsText,
@@ -69,6 +74,8 @@ export type OutboxEntry = {
   lastError: string | null;
   createdAt: string;
   sentAt: string | null;
+  /** File names of attached documents (e.g. "R-2026-00001.pdf"). */
+  attachmentNames?: string[];
 };
 
 export type QueueMailInput = {
@@ -78,6 +85,8 @@ export type QueueMailInput = {
   kind: MailKind;
   relatedType?: string | null;
   relatedId?: number | null;
+  /** Files sent along (stored with the entry so a retry sends them too). */
+  attachments?: MailAttachment[];
 };
 
 export type NotificationSettings = {
@@ -147,6 +156,10 @@ export function ensureMailTables(db: Database): void {
   if (!cols.includes("channel")) {
     db.exec("ALTER TABLE outbox ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'");
   }
+  // Attachments (JSON MailAttachment[]) — added for invoice mails.
+  if (!cols.includes("attachments")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN attachments TEXT");
+  }
   ensured.add(db);
 }
 
@@ -166,7 +179,17 @@ type OutboxRow = {
   last_error: string | null;
   created_at: string;
   sent_at: string | null;
+  attachments: string | null;
 };
+
+function parseAttachments(raw: string | null): MailAttachment[] {
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as MailAttachment[];
+  } catch {
+    return [];
+  }
+}
 
 const toEntry = (row: OutboxRow): OutboxEntry => ({
   id: row.id,
@@ -182,10 +205,11 @@ const toEntry = (row: OutboxRow): OutboxEntry => ({
   lastError: row.last_error,
   createdAt: row.created_at,
   sentAt: row.sent_at,
+  attachmentNames: parseAttachments(row.attachments).map((file) => file.filename),
 });
 
 const SELECT = `SELECT id, channel, recipient, subject, body_text, kind, related_type, related_id,
-  status, attempts, last_error, created_at, sent_at FROM outbox`;
+  status, attempts, last_error, created_at, sent_at, attachments FROM outbox`;
 
 export function listOutbox(
   db: Database,
@@ -250,13 +274,17 @@ export function queueMail(db: Database, input: QueueMailInput): OutboxEntry | nu
     );
   }
 
+  const attachments = input.attachments?.length
+    ? JSON.stringify(input.attachments)
+    : null;
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string | null, number | null]
+      [string, string, string, string, string | null, number | null, string | null]
     >(
-      `INSERT OR IGNORE INTO outbox (recipient, subject, body_text, kind, related_type, related_id)
-       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT OR IGNORE INTO outbox
+         (recipient, subject, body_text, kind, related_type, related_id, attachments)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       recipient,
@@ -265,6 +293,7 @@ export function queueMail(db: Database, input: QueueMailInput): OutboxEntry | nu
       input.kind,
       input.relatedType ?? null,
       input.relatedId ?? null,
+      attachments,
     );
   return row ? getOutboxEntry(db, row.id) : null;
 }
@@ -361,6 +390,9 @@ export async function deliverPending(
               to: row.recipient,
               subject: row.subject,
               text: row.body_text,
+              ...(row.attachments
+                ? { attachments: parseAttachments(row.attachments) }
+                : {}),
             })
         : null,
       sms: sms ? (row) => sms.send({ to: row.recipient, text: row.body_text }) : null,

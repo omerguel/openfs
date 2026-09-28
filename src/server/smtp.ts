@@ -22,10 +22,19 @@ export type SmtpConfig = {
   secure: SmtpSecurity;
 };
 
+export type MailAttachment = {
+  filename: string;
+  contentType: string;
+  /** File content, base64-encoded. */
+  contentBase64: string;
+};
+
 export type OutgoingMail = {
   to: string;
   subject: string;
   text: string;
+  /** Optional files; the message becomes multipart/mixed. */
+  attachments?: MailAttachment[];
 };
 
 export type MailTransport = {
@@ -190,10 +199,40 @@ export function buildMessage(
     `To: ${formatAddress(recipient)}`,
     `Subject: ${encodeHeaderWord(mail.subject)}`,
     "MIME-Version: 1.0",
+  ];
+  const textPart = [
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: quoted-printable",
   ];
-  return `${headers.join("\r\n")}\r\n\r\n${encodeQuotedPrintable(mail.text)}`;
+  const attachments = mail.attachments ?? [];
+  if (attachments.length === 0) {
+    return `${[...headers, ...textPart].join("\r\n")}\r\n\r\n${encodeQuotedPrintable(mail.text)}`;
+  }
+  const boundary = `=_openfs_${crypto.randomUUID().replaceAll("-", "")}`;
+  const parts = [
+    `${textPart.join("\r\n")}\r\n\r\n${encodeQuotedPrintable(mail.text)}`,
+    ...attachments.map((file) => {
+      const name = encodeHeaderWord(file.filename).replace(/"/g, "'");
+      const body = (file.contentBase64.replace(/\s+/g, "").match(/.{1,76}/g) ?? []).join(
+        "\r\n",
+      );
+      return [
+        `Content-Type: ${oneLine(file.contentType)}; name="${name}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: attachment; filename="${name}"`,
+        "",
+        body,
+      ].join("\r\n");
+    }),
+  ];
+  return [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    "This is a multi-part message in MIME format.",
+    ...parts.map((part) => `--${boundary}\r\n${part}`),
+    `--${boundary}--`,
+  ].join("\r\n");
 }
 
 /* ----------------------------- session ---------------------------- */
