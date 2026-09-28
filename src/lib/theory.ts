@@ -62,7 +62,8 @@ function isoMinusDays(today: string, days: number): string {
 }
 
 /** In Prüfung (Theorieprüfung scheduled ahead) > Bereit (all units) >
- *  Aktiv (attended within 30 days) > Pausiert. */
+ *  Nicht begonnen (no unit attended yet) > Aktiv (attended within
+ *  30 days) > Pausiert. */
 export function deriveTheoryStatus(input: {
   attended: number;
   required: number;
@@ -72,6 +73,7 @@ export function deriveTheoryStatus(input: {
 }): TheoryStatus {
   if (input.examScheduled) return "In Prüfung";
   if (input.attended >= input.required) return "Bereit";
+  if (input.attended === 0 && !input.lastSessionDate) return "Noch nicht begonnen";
   if (
     input.lastSessionDate &&
     input.lastSessionDate >= isoMinusDays(input.today, THEORY_ACTIVE_DAYS)

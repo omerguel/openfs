@@ -99,6 +99,7 @@ const theoryBadgeClass: Record<TheoryStatus, string> = {
   "In Prüfung": "border-transparent bg-amber-500/10 text-amber-600",
   Aktiv: "border-transparent bg-sky-500/10 text-sky-600",
   Pausiert: "border-transparent bg-muted text-muted-foreground",
+  "Noch nicht begonnen": "border-transparent bg-muted text-muted-foreground",
 };
 
 const studentName = (student: StudentRecord) =>
