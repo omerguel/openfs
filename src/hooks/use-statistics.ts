@@ -114,7 +114,11 @@ export function useStatistics(enabled = true) {
       setStatistics(await fetchStatistics(current.signal));
     } catch (error) {
       // Leaving the page (or a newer refresh) aborts the request — no error.
-      if (current.signal.aborted) return;
+      if (
+        current.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError")
+      )
+        return;
       console.warn("Statistik konnte nicht geladen werden:", error);
     } finally {
       if (!current.signal.aborted) setLoading(false);
