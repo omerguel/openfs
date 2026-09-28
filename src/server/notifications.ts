@@ -10,11 +10,19 @@ import type { Database } from "./sqlite";
 import type { AppointmentRequest } from "./appointment-requests";
 import { tableExists } from "./archive";
 import { getCalendarEvent, type CalendarEvent } from "./calendar-events";
-import { getNotificationSettings, isValidEmail, mailSchool, queueMail } from "./mail";
+import {
+  getNotificationSettings,
+  isValidEmail,
+  mailSchool,
+  queueMail,
+  queueSms,
+} from "./mail";
 import type { OutboxEntry } from "./mail";
+import { normalizePhoneNumber } from "./sms";
 import {
   lessonCancelledMail,
   lessonReminderMail,
+  lessonReminderSmsText,
   requestConfirmedMail,
   requestDeclinedMail,
 } from "./mail-templates";
@@ -180,6 +188,49 @@ export function queueLessonReminders(db: Database, today: string): number {
       kind: "lesson_reminder",
       relatedType: "calendar_event",
       relatedId: id,
+    });
+    if (entry) queued += 1;
+  }
+  return queued;
+}
+
+/** SMS twin of queueLessonReminders (toggle 'smsReminders', default off):
+ *  one short reminder per Praktisch/Prüfungs-Termin tomorrow whose
+ *  linked student has a plausible phone number. Idempotent through the
+ *  unique index for kind 'lesson_reminder_sms'. Returns the number of
+ *  newly queued SMS. */
+export function queueLessonReminderSms(db: Database, today: string): number {
+  if (!getNotificationSettings(db).smsReminders) return 0;
+  const tomorrow = addDays(today, 1);
+  const placeholders = REMINDER_TYPES.map(() => "?").join(", ");
+  const rows = db
+    .query<{ id: number; first_name: string; phone: string }, string[]>(
+      `SELECT ce.id, s.first_name, s.phone FROM calendar_events ce
+       JOIN students s ON s.id = ce.student_id
+       WHERE ce.date = ? AND ce.tentative = 0 AND ce.cancelled_at IS NULL
+         AND trim(s.phone) != ''
+         AND ce.type IN (${placeholders})
+         AND NOT EXISTS (
+           SELECT 1 FROM outbox o
+           WHERE o.kind = 'lesson_reminder_sms' AND o.related_type = 'calendar_event'
+             AND o.related_id = ce.id
+         )
+       ORDER BY ce.start, ce.id`,
+    )
+    .all(tomorrow, ...REMINDER_TYPES);
+
+  const school = mailSchool(db);
+  let queued = 0;
+  for (const row of rows) {
+    const phone = normalizePhoneNumber(row.phone);
+    if (!phone) continue;
+    const event = getCalendarEvent(db, row.id);
+    const entry = queueSms(db, {
+      recipient: phone,
+      text: lessonReminderSmsText(lessonData(event, row.first_name), school),
+      kind: "lesson_reminder_sms",
+      relatedType: "calendar_event",
+      relatedId: row.id,
     });
     if (entry) queued += 1;
   }

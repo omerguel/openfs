@@ -1,4 +1,6 @@
 /* ------------------------------------------------------------------ */
+/* Postausgang (outbox) for e-mail AND SMS: outbox.channel says which  */
+/* transport delivers an entry (SMTP: smtp.ts, SMS provider: sms.ts).  */
 /* E-Mail-Postausgang (outbox) — queue, delivery, notification         */
 /* settings and HTTP wrappers. Self-contained: ensureMailTables()       */
 /* creates the table; mailRoutes() mounts /api/outbox, /api/mail/status */
@@ -19,6 +21,16 @@ import { ValidationError } from "./engine";
 import { handle, json } from "./http";
 import { genericMail } from "./mail-templates";
 import { smtpConfigFromEnv, type MailTransport, type SmtpConfig } from "./smtp";
+import {
+  normalizePhoneNumber,
+  prepareSmsText,
+  smsConfigFromEnv,
+  type SmsConfig,
+  type SmsTransport,
+} from "./sms";
+
+export type OutboxChannel = "email" | "sms";
+export const OUTBOX_CHANNELS: OutboxChannel[] = ["email", "sms"];
 
 export type OutboxStatus =
   | "wartend"
@@ -39,10 +51,13 @@ export type MailKind =
   | "lesson_reminder"
   | "lesson_cancelled"
   | "portal_link"
+  | "lesson_reminder_sms"
   | "generic";
 
 export type OutboxEntry = {
   id: number;
+  channel: OutboxChannel;
+  /** E-mail address, or an E.164 phone number for SMS. */
   recipient: string;
   subject: string;
   bodyText: string;
@@ -72,12 +87,15 @@ export type NotificationSettings = {
   lessonReminders: boolean;
   /** Absage-Mail, wenn ein Termin gestrichen wird (notifyLessonCancelled). */
   lessonCancellations: boolean;
+  /** SMS-Erinnerung am Vortag (zusätzlich zur Mail, nur mit Handynummer). */
+  smsReminders: boolean;
 };
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   appointmentMails: true,
   lessonReminders: true,
   lessonCancellations: true,
+  smsReminders: false,
 };
 
 export const MAX_ATTEMPTS = 3;
@@ -93,6 +111,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL DEFAULT 'email',
   recipient TEXT NOT NULL,
   subject TEXT NOT NULL,
   body_text TEXT NOT NULL,
@@ -111,6 +130,8 @@ CREATE INDEX IF NOT EXISTS idx_outbox_related ON outbox(related_type, related_id
 -- One reminder per calendar event, ever (queueLessonReminders is idempotent).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_reminder_once
   ON outbox(related_type, related_id) WHERE kind = 'lesson_reminder';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_sms_reminder_once
+  ON outbox(related_type, related_id) WHERE kind = 'lesson_reminder_sms';
 `;
 
 const ensured = new WeakSet<Database>();
@@ -118,6 +139,14 @@ const ensured = new WeakSet<Database>();
 export function ensureMailTables(db: Database): void {
   if (ensured.has(db)) return;
   db.exec(DDL);
+  // Outboxes created before SMS support lack the channel column.
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(outbox)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("channel")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN channel TEXT NOT NULL DEFAULT 'email'");
+  }
   ensured.add(db);
 }
 
@@ -125,6 +154,7 @@ export function ensureMailTables(db: Database): void {
 
 type OutboxRow = {
   id: number;
+  channel: OutboxChannel;
   recipient: string;
   subject: string;
   body_text: string;
@@ -140,6 +170,7 @@ type OutboxRow = {
 
 const toEntry = (row: OutboxRow): OutboxEntry => ({
   id: row.id,
+  channel: row.channel === "sms" ? "sms" : "email",
   recipient: row.recipient,
   subject: row.subject,
   bodyText: row.body_text,
@@ -153,26 +184,29 @@ const toEntry = (row: OutboxRow): OutboxEntry => ({
   sentAt: row.sent_at,
 });
 
-const SELECT = `SELECT id, recipient, subject, body_text, kind, related_type, related_id,
+const SELECT = `SELECT id, channel, recipient, subject, body_text, kind, related_type, related_id,
   status, attempts, last_error, created_at, sent_at FROM outbox`;
 
 export function listOutbox(
   db: Database,
-  filter: { status?: OutboxStatus; limit?: number } = {},
+  filter: { status?: OutboxStatus; channel?: OutboxChannel; limit?: number } = {},
 ): OutboxEntry[] {
   ensureMailTables(db);
   const limit = Math.min(Math.max(filter.limit ?? 500, 1), 2000);
+  const where: string[] = [];
+  const params: (string | number)[] = [];
   if (filter.status) {
-    return db
-      .query<OutboxRow, [string, number]>(
-        `${SELECT} WHERE status = ? ORDER BY id DESC LIMIT ?`,
-      )
-      .all(filter.status, limit)
-      .map(toEntry);
+    where.push("status = ?");
+    params.push(filter.status);
   }
+  if (filter.channel) {
+    where.push("channel = ?");
+    params.push(filter.channel);
+  }
+  const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
   return db
-    .query<OutboxRow, [number]>(`${SELECT} ORDER BY id DESC LIMIT ?`)
-    .all(limit)
+    .query<OutboxRow, (string | number)[]>(`${SELECT}${clause} ORDER BY id DESC LIMIT ?`)
+    .all(...params, limit)
     .map(toEntry);
 }
 
@@ -235,6 +269,46 @@ export function queueMail(db: Database, input: QueueMailInput): OutboxEntry | nu
   return row ? getOutboxEntry(db, row.id) : null;
 }
 
+export type QueueSmsInput = {
+  recipient: string;
+  text: string;
+  kind: MailKind;
+  relatedType?: string | null;
+  relatedId?: number | null;
+};
+
+/** Inserts a 'wartend' SMS. The recipient is normalised to E.164 (German
+ *  numbers without country code get +49); the text is cut politely to
+ *  at most three segments. A duplicate SMS reminder returns null. */
+export function queueSms(db: Database, input: QueueSmsInput): OutboxEntry | null {
+  ensureMailTables(db);
+  const recipient = normalizePhoneNumber(
+    typeof input.recipient === "string" ? input.recipient : "",
+  );
+  if (!recipient) {
+    throw new ValidationError("Bitte eine gültige Handynummer angeben.");
+  }
+  const raw = typeof input.text === "string" ? input.text : "";
+  if (!raw.trim()) throw new ValidationError("SMS-Text darf nicht leer sein.");
+  if (raw.length > BODY_MAX_LEN) {
+    throw new ValidationError(`SMS-Text darf maximal ${BODY_MAX_LEN} Zeichen lang sein.`);
+  }
+  const row = db
+    .query<{ id: number }, [string, string, string, string | null, number | null]>(
+      `INSERT OR IGNORE INTO outbox
+         (channel, recipient, subject, body_text, kind, related_type, related_id)
+       VALUES ('sms', ?, '', ?, ?, ?, ?) RETURNING id`,
+    )
+    .get(
+      recipient,
+      prepareSmsText(raw),
+      input.kind,
+      input.relatedType ?? null,
+      input.relatedId ?? null,
+    );
+  return row ? getOutboxEntry(db, row.id) : null;
+}
+
 /** "Erneut senden": back to 'wartend' with a fresh attempt budget. */
 export function retryOutboxEntry(db: Database, id: number): OutboxEntry {
   const entry = getOutboxEntry(db, id);
@@ -258,26 +332,46 @@ export type DeliveryResult = {
 
 const delivering = new WeakSet<Database>();
 
-/** Sends every 'wartend' mail through `transport`. With transport = null
- *  (no SMTP configured) they are marked 'nicht_konfiguriert'. Re-entrant
+export type DeliveryOptions = {
+  limit?: number;
+  maxAttempts?: number;
+  /** SMS provider (sms.ts); null/absent → SMS become 'nicht_konfiguriert'. */
+  sms?: SmsTransport | null;
+};
+
+/** Sends every 'wartend' entry through the transport of its channel
+ *  (`transport` for e-mail, `options.sms` for SMS). Entries whose
+ *  channel has no transport are marked 'nicht_konfiguriert'. Re-entrant
  *  calls for the same DB are skipped so a slow run never double-sends. */
 export async function deliverPending(
   db: Database,
   transport: MailTransport | null,
-  options: { limit?: number; maxAttempts?: number } = {},
+  options: DeliveryOptions = {},
 ): Promise<DeliveryResult> {
   ensureMailTables(db);
   const result: DeliveryResult = { sent: 0, failed: 0, retrying: 0, notConfigured: 0 };
   if (delivering.has(db)) return result;
   delivering.add(db);
   try {
-    if (!transport) {
-      result.notConfigured = db
+    const sms = options.sms ?? null;
+    const senders: Record<OutboxChannel, ((row: OutboxRow) => Promise<void>) | null> = {
+      email: transport
+        ? (row) =>
+            transport.send({
+              to: row.recipient,
+              subject: row.subject,
+              text: row.body_text,
+            })
+        : null,
+      sms: sms ? (row) => sms.send({ to: row.recipient, text: row.body_text }) : null,
+    };
+    for (const channel of OUTBOX_CHANNELS) {
+      if (senders[channel]) continue;
+      result.notConfigured += db
         .prepare(
-          "UPDATE outbox SET status = 'nicht_konfiguriert' WHERE status = 'wartend'",
+          "UPDATE outbox SET status = 'nicht_konfiguriert' WHERE status = 'wartend' AND channel = ?",
         )
-        .run().changes;
-      return result;
+        .run(channel).changes;
     }
 
     const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS;
@@ -288,12 +382,10 @@ export async function deliverPending(
       .all(options.limit ?? 50);
 
     for (const row of pending) {
+      const send = senders[row.channel === "sms" ? "sms" : "email"];
+      if (!send) continue;
       try {
-        await transport.send({
-          to: row.recipient,
-          subject: row.subject,
-          text: row.body_text,
-        });
+        await send(row);
         db.prepare(
           `UPDATE outbox SET status = 'gesendet', attempts = attempts + 1,
              last_error = NULL, sent_at = datetime('now') WHERE id = ?`,
@@ -383,6 +475,8 @@ export function mailSchool(db: Database) {
 
 export type MailSchedulerOptions = {
   transport: MailTransport | null;
+  /** SMS provider transport (sms.ts); null = SMS stay unsent. */
+  smsTransport?: SmsTransport | null;
   intervalMs?: number;
   /** Extra periodic work before delivery (e.g. queueing reminders). */
   beforeDelivery?: (now: Date) => void;
@@ -397,7 +491,7 @@ export function startMailScheduler(
   const tick = async () => {
     try {
       options.beforeDelivery?.(new Date());
-      await deliverPending(db, options.transport);
+      await deliverPending(db, options.transport, { sms: options.smsTransport ?? null });
     } catch (error) {
       console.error("E-Mail-Versand fehlgeschlagen:", error);
     }
@@ -420,28 +514,47 @@ function parseId(raw: string): number {
 export type MailRouteOptions = {
   /** SMTP configuration; defaults to the SMTP_* environment variables. */
   config?: SmtpConfig | null;
+  /** SMS provider configuration; defaults to the SMS_* environment variables. */
+  sms?: SmsConfig | null;
 };
 
 export function mailRoutes(db: Database, options: MailRouteOptions = {}) {
   ensureMailTables(db);
   const config = options.config === undefined ? smtpConfigFromEnv() : options.config;
+  const sms = options.sms === undefined ? smsConfigFromEnv() : options.sms;
 
   return {
     "/api/mail/status": {
       GET: () =>
-        handle(() => json({ configured: config !== null, from: config?.from ?? "" }))(),
+        handle(() =>
+          json({
+            configured: config !== null,
+            from: config?.from ?? "",
+            sms: {
+              configured: sms !== null,
+              provider: sms?.provider ?? null,
+              from: sms?.from ?? "",
+            },
+          }),
+        )(),
     },
 
     "/api/outbox": {
       GET: (req: BunRequest) =>
         handle(() => {
-          const status = new URL(req.url).searchParams.get("status");
+          const params = new URL(req.url).searchParams;
+          const status = params.get("status");
           if (status && !OUTBOX_STATUSES.includes(status as OutboxStatus)) {
             throw new ValidationError("Ungültiger Status-Filter.");
+          }
+          const channel = params.get("channel");
+          if (channel && !OUTBOX_CHANNELS.includes(channel as OutboxChannel)) {
+            throw new ValidationError("Ungültiger Kanal-Filter.");
           }
           return json({
             items: listOutbox(db, {
               status: (status as OutboxStatus | null) ?? undefined,
+              channel: (channel as OutboxChannel | null) ?? undefined,
             }),
           });
         })(),
@@ -467,6 +580,30 @@ export function mailRoutes(db: Database, options: MailRouteOptions = {}) {
             recipient: typeof body.recipient === "string" ? body.recipient : "",
             subject: mail.subject,
             bodyText: mail.body,
+            kind: "generic",
+            relatedType: studentId !== null ? "student" : null,
+            relatedId: studentId,
+          });
+          return json(entry, 201);
+        })(),
+    },
+
+    /* Free-text SMS ("Neue SMS") — number normalised, text cut to 3 segments. */
+    "/api/outbox/sms": {
+      POST: (req: BunRequest) =>
+        handle(async () => {
+          const body = (await req.json().catch(() => ({}))) as {
+            recipient?: unknown;
+            text?: unknown;
+            studentId?: unknown;
+          };
+          const studentId =
+            typeof body.studentId === "number" && Number.isInteger(body.studentId)
+              ? body.studentId
+              : null;
+          const entry = queueSms(db, {
+            recipient: typeof body.recipient === "string" ? body.recipient : "",
+            text: typeof body.text === "string" ? body.text : "",
             kind: "generic",
             relatedType: studentId !== null ? "student" : null,
             relatedId: studentId,

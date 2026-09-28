@@ -9,7 +9,12 @@ import { ensureAttestationTables } from "./server/ausbildungsnachweis";
 import { buildApiRoutes } from "./server/app-routes";
 import { ensureMailTables, startMailScheduler } from "./server/mail";
 import { createSmtpTransport, smtpConfigFromEnv } from "./server/smtp";
-import { localIsoDate, queueLessonReminders } from "./server/notifications";
+import { createSmsTransport, smsConfigFromEnv } from "./server/sms";
+import {
+  localIsoDate,
+  queueLessonReminderSms,
+  queueLessonReminders,
+} from "./server/notifications";
 import { ensurePortalTables } from "./server/portal";
 
 // Demo mode keeps the full persistence layer intact but points it at an
@@ -35,14 +40,18 @@ ensurePortalTables(db);
    only marks queued mails 'nicht_konfiguriert' so the UI shows them. */
 const REMINDER_HOUR = 9;
 const smtpConfig = demoMode ? null : smtpConfigFromEnv();
+const smsConfig = demoMode ? null : smsConfigFromEnv();
 // `bun --hot` re-runs this module — stop the previous interval first.
 const hot = globalThis as { __openfsStopMailScheduler?: () => void };
 hot.__openfsStopMailScheduler?.();
 hot.__openfsStopMailScheduler = startMailScheduler(db, {
   transport: smtpConfig ? createSmtpTransport(smtpConfig) : null,
+  smsTransport: smsConfig ? createSmsTransport(smsConfig) : null,
   intervalMs: 60_000,
   beforeDelivery: (now) => {
-    if (now.getHours() >= REMINDER_HOUR) queueLessonReminders(db, localIsoDate(now));
+    if (now.getHours() < REMINDER_HOUR) return;
+    queueLessonReminders(db, localIsoDate(now));
+    queueLessonReminderSms(db, localIsoDate(now));
   },
 });
 
@@ -54,7 +63,7 @@ const server = serve({
     // Serve index.html for all unmatched routes.
     "/*": index,
 
-    ...buildApiRoutes(db, { mail: { config: smtpConfig } }),
+    ...buildApiRoutes(db, { mail: { config: smtpConfig, sms: smsConfig } }),
   },
 
   development: process.env.NODE_ENV !== "production" && {
