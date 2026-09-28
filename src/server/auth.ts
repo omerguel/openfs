@@ -30,6 +30,13 @@ import {
   type RequestIPSource,
 } from "./http";
 import { requestContext, type Role, type SessionUser } from "./request-context";
+import {
+  checkContentType,
+  limitBody,
+  MAX_REQUEST_BODY_BYTES,
+  PUBLIC_BODY_LIMIT_BYTES,
+} from "./request-guards";
+import { immediateTransaction } from "./sqlite";
 
 export type { Role, SessionUser } from "./request-context";
 
@@ -647,18 +654,39 @@ function guard(
       ({ db, tenant } = resolved);
     }
     const store = requestContext.getStore() ?? {};
-    const run = (user?: SessionUser) =>
-      requestContext.run({ ...store, db, tenant, user }, () => handler(req, server));
+    const mutating = method !== "GET" && method !== "HEAD";
+    const publicRoute = isPublic(method, path);
 
-    if (isPublic(method, path)) return run();
+    // Shape checks for every write, public or not: JSON only (415), a
+    // foreign Origin is refused, bodies are capped (413).
+    let request = req;
+    let ipSource: RequestIPSource | undefined = server;
+    if (mutating) {
+      const badType = checkContentType(req, method, path);
+      if (badType) return badType;
+      if (!sameOrigin(req)) return err("Ungültige Herkunft der Anfrage.", 403);
+    }
+    const run = async (user?: SessionUser) => {
+      const limited = await limitBody(
+        request,
+        ipSource,
+        publicRoute ? PUBLIC_BODY_LIMIT_BYTES : MAX_REQUEST_BODY_BYTES,
+      );
+      if (limited instanceof Response) return limited;
+      request = limited.req;
+      ipSource = limited.server;
+      return requestContext.run({ ...store, db, tenant, user }, () =>
+        handler(request, ipSource as RequestIPSource),
+      );
+    };
+
+    if (publicRoute) return run();
 
     const user = sessionUser(db, readCookie(req, SESSION_COOKIE));
     if (!user) return err("Bitte melden Sie sich an.", 401);
     if (!isAllowed(user.role, method, path)) {
       return err("Für diese Aktion fehlt die Berechtigung.", 403);
     }
-    const mutating = method !== "GET" && method !== "HEAD";
-    if (mutating && !sameOrigin(req)) return err("Ungültige Herkunft der Anfrage.", 403);
 
     const response = await run(user);
     if (mutating) {
@@ -668,10 +696,11 @@ function guard(
           method,
           path,
           status: response.status,
-          ip: clientIp(req, server),
+          ip: clientIp(req, ipSource),
         });
       } catch (error) {
         console.error("Protokoll konnte nicht geschrieben werden:", error);
+
       }
     }
     return response;
