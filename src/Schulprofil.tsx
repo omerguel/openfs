@@ -458,6 +458,20 @@ export function Schulprofil() {
                     onChange={(e) => update({ google_maps_url: e.target.value })}
                   />
                 </Field>
+                <Field
+                  label="Google Place ID"
+                  htmlFor="place-id"
+                  hint="Für den Import der Google-Bewertungen. Die ID (beginnt meist mit „ChIJ“) finden Sie mit dem Place ID Finder von Google."
+                >
+                  <Input
+                    id="place-id"
+                    className="font-mono"
+                    placeholder="ChIJ…"
+                    spellCheck={false}
+                    value={profile.google_place_id}
+                    onChange={(e) => update({ google_place_id: e.target.value })}
+                  />
+                </Field>
               </div>
             </Section>
 

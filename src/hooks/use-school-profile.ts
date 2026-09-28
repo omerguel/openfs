@@ -30,6 +30,7 @@ export const EMPTY_SCHOOL_PROFILE: SchoolProfile = {
   instagram: "",
   facebook: "",
   google_maps_url: "",
+  google_place_id: "",
   opening_hours: WEEK_DAYS.map((day) => ({ day, hours: "" })),
   services: [],
   highlights: [],
