@@ -19,6 +19,7 @@ import { FahrschuelerDetail } from "./FahrschuelerDetail";
 import { Fahrzeuge } from "./Fahrzeuge";
 import { Kalendar } from "./Kalendar";
 import { Marketing } from "./Marketing";
+import { Nachrichten } from "./Nachrichten";
 import { NeueSchueler } from "./NeueSchueler";
 import { Plaudern } from "./Plaudern";
 import { Preisangebot } from "./Preisangebot";
@@ -187,6 +188,12 @@ const contractsRoute = createRoute({
   component: Vertraege,
 });
 
+const messagesRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/nachrichten",
+  component: Nachrichten,
+});
+
 const archiveRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/archiv",
@@ -221,6 +228,7 @@ const portalRouteTree = portalRoute.addChildren([
   statisticsRoute,
   reviewsRoute,
   contractsRoute,
+  messagesRoute,
   archiveRoute,
 ]);
 
