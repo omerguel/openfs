@@ -190,13 +190,19 @@ describe("getCampaign", () => {
 describe("effective status", () => {
   test("a running campaign past its end date reads as beendet", () => {
     expect(effectiveCampaignStatus("aktiv", "2026-05-31", "2026-06-01")).toBe("beendet");
-    expect(effectiveCampaignStatus("pausiert", "2026-05-31", "2026-06-01")).toBe("beendet");
+    expect(effectiveCampaignStatus("pausiert", "2026-05-31", "2026-06-01")).toBe(
+      "beendet",
+    );
     expect(effectiveCampaignStatus("aktiv", "2026-05-31", "2026-05-31")).toBe("aktiv");
     expect(effectiveCampaignStatus("aktiv", "", "2030-01-01")).toBe("aktiv");
   });
 
   test("stored rows are derived on read and flagged", () => {
-    const created = createCampaign(db, { ...VALID, startDate: "2020-01-01", endDate: "2020-02-01" });
+    const created = createCampaign(db, {
+      ...VALID,
+      startDate: "2020-01-01",
+      endDate: "2020-02-01",
+    });
     expect(created.status).toBe("beendet");
     expect(created.endedByDate).toBe(true);
     const running = createCampaign(db, { ...VALID, name: "Läuft" });

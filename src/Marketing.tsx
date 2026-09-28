@@ -868,8 +868,8 @@ function CampaignsTable({
         <p className="text-xs text-pretty text-muted-foreground">
           Leads = Terminanfragen über den Tracking-Link der Kampagne plus von Hand
           erfasste Offline-Leads (Flyer, Telefon, Empfehlung). Anmeldungen = daraus als
-          Fahrschüler angelegte Personen plus von Hand erfasste Anmeldungen. Kampagnen
-          mit überschrittenem Enddatum gelten automatisch als beendet.
+          Fahrschüler angelegte Personen plus von Hand erfasste Anmeldungen. Kampagnen mit
+          überschrittenem Enddatum gelten automatisch als beendet.
         </p>
       </CardHeader>
       <CardContent className="p-0">
@@ -1020,7 +1020,8 @@ function CampaignsTable({
                         </span>
                         {campaign.trackedLeads > 0 && (
                           <span className="text-[11px] text-muted-foreground">
-                            {campaign.trackedLeads} per Link · {campaign.manualLeads} manuell
+                            {campaign.trackedLeads} per Link · {campaign.manualLeads}{" "}
+                            manuell
                           </span>
                         )}
                       </div>
