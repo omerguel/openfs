@@ -39,6 +39,8 @@ export type StudentFile = {
   sha256: string;
   uploadedAt: string;
   url: string;
+  /** Dokumentart ("Sehtest", "Passbild", …); "" = not classified. */
+  docType: string;
 };
 
 type StudentFileRow = {
@@ -50,6 +52,7 @@ type StudentFileRow = {
   sha256: string;
   storage_key: string;
   uploaded_at: string;
+  doc_type: string | null;
 };
 
 export function ensureStudentFileTables(db: Database): void {
@@ -67,6 +70,35 @@ export function ensureStudentFileTables(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_student_files_student
       ON student_files(student_id);
   `);
+  const columns = db
+    .query<{ name: string }, []>("PRAGMA table_info(student_files)")
+    .all()
+    .map((c) => c.name);
+  if (!columns.includes("doc_type")) {
+    db.exec("ALTER TABLE student_files ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''");
+  }
+}
+
+/** Dokumentart: free text up to 60 characters ("" = none). */
+function normalizeDocType(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw !== "string") throw new ValidationError("Ungültige Dokumentart.");
+  const value = raw.trim();
+  if (value.length > 60) throw new ValidationError("Dokumentart ist zu lang.");
+  return value;
+}
+
+export function setStudentFileType(
+  db: Database,
+  id: number,
+  docType: unknown,
+): StudentFile {
+  getFileRow(db, id);
+  db.prepare("UPDATE student_files SET doc_type = ? WHERE id = ?").run(
+    normalizeDocType(docType),
+    id,
+  );
+  return toFile(getFileRow(db, id));
 }
 
 const toFile = (row: StudentFileRow): StudentFile => ({
@@ -78,9 +110,11 @@ const toFile = (row: StudentFileRow): StudentFile => ({
   sha256: row.sha256,
   uploadedAt: row.uploaded_at,
   url: `/api/files/${row.id}`,
+  docType: row.doc_type ?? "",
 });
 
-const COLUMNS = "id, student_id, name, mime_type, size, sha256, storage_key, uploaded_at";
+const COLUMNS =
+  "id, student_id, name, mime_type, size, sha256, storage_key, uploaded_at, doc_type";
 
 export function listStudentFiles(db: Database, studentId: number): StudentFile[] {
   return db
@@ -152,9 +186,10 @@ export async function uploadStudentFile(
   db: Database,
   store: FileStore,
   studentId: number,
-  upload: { name: string; bytes: Uint8Array },
+  upload: { name: string; bytes: Uint8Array; docType?: unknown },
 ): Promise<StudentFile> {
   assertStudentExists(db, studentId);
+  const docType = normalizeDocType(upload.docType);
   if (upload.bytes.byteLength === 0) {
     throw new ValidationError("Die Datei ist leer.");
   }
@@ -171,10 +206,13 @@ export async function uploadStudentFile(
   await store.put(key, upload.bytes, mimeType);
   try {
     const row = db
-      .query<{ id: number }, [number, string, string, number, string, string, string]>(
+      .query<
+        { id: number },
+        [number, string, string, number, string, string, string, string]
+      >(
         `INSERT INTO student_files
-           (student_id, name, mime_type, size, sha256, storage_key, uploaded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+           (student_id, name, mime_type, size, sha256, storage_key, uploaded_at, doc_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .get(
         studentId,
@@ -184,6 +222,7 @@ export async function uploadStudentFile(
         sha256Hex(upload.bytes),
         key,
         new Date().toISOString(),
+        docType,
       )!;
     return toFile(getFileRow(db, row.id));
   } catch (error) {
@@ -275,7 +314,7 @@ export function decodeDataUrl(
   }
 }
 
-type NewFileRow = Omit<StudentFileRow, "id">;
+type NewFileRow = Omit<StudentFileRow, "id" | "doc_type">;
 
 /* Writes the inline uploads of one documents list to the store; returns
    the checklist strings that stay in the JSON plus the metadata rows. */
@@ -465,7 +504,11 @@ export function fileRoutes(db: Database, store: FileStore) {
           }
           const bytes = new Uint8Array(await file.arrayBuffer());
           return json(
-            await uploadStudentFile(db, store, studentId, { name: file.name, bytes }),
+            await uploadStudentFile(db, store, studentId, {
+              name: file.name,
+              bytes,
+              docType: form?.get("docType") ?? undefined,
+            }),
             201,
           );
         })(),
@@ -496,6 +539,19 @@ export function fileRoutes(db: Database, store: FileStore) {
               "Cache-Control": "private, max-age=300",
             },
           });
+        })(),
+      PATCH: (req: BunRequest<"/api/files/:id">) =>
+        handle(async () => {
+          const body = (await req.json().catch(() => null)) as {
+            docType?: unknown;
+          } | null;
+          return json(
+            setStudentFileType(
+              db,
+              parseId(req.params.id, "Ungültige Datei-ID."),
+              body?.docType,
+            ),
+          );
         })(),
       DELETE: (req: BunRequest<"/api/files/:id">) =>
         handle(async () => {

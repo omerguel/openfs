@@ -69,6 +69,35 @@ function upload(studentId: number, bytes: Uint8Array, name: string, type = "") {
 /* Routes                                                               */
 /* ================================================================== */
 
+describe("Dokumentart", () => {
+  test("is taken from the upload and can be changed later", async () => {
+    const student = newStudent();
+    const body = new FormData();
+    body.append("file", new File([PDF as Uint8Array<ArrayBuffer>], "scan.pdf"));
+    body.append("docType", "Sehtest");
+    const res = await fetch(url(`/api/students/${student.id}/files`), {
+      method: "POST",
+      body,
+    });
+    const file = await res.json();
+    expect(file.docType).toBe("Sehtest");
+
+    const patched = await fetch(url(`/api/files/${file.id}`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docType: " Erste-Hilfe-Nachweis " }),
+    });
+    expect((await patched.json()).docType).toBe("Erste-Hilfe-Nachweis");
+    expect(listStudentFiles(db, student.id)[0]!.docType).toBe("Erste-Hilfe-Nachweis");
+  });
+
+  test("defaults to unclassified", async () => {
+    const student = newStudent();
+    const file = await (await upload(student.id, PNG, "bild.png")).json();
+    expect(file.docType).toBe("");
+  });
+});
+
 describe("POST /api/students/:id/files", () => {
   test("stores a PDF and lists it", async () => {
     const student = newStudent();

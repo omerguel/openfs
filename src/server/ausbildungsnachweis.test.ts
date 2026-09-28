@@ -138,6 +138,26 @@ describe("createAttestation — happy path", () => {
     const list = listAttestationsForStudent(db, sid);
     expect(list).toHaveLength(2);
   });
+
+  test("the list carries the lesson date and Fahrtart for the printout", () => {
+    const sid = insertStudent(db);
+    const eid = insertPraktischEvent(db, sid);
+    db.prepare("UPDATE calendar_events SET lesson_kind = 'Nachtfahrt' WHERE id = ?").run(
+      eid,
+    );
+    createAttestation(db, {
+      eventId: eid,
+      studentId: sid,
+      instructor: "",
+      content: "",
+      durationMin: 45,
+      signatureDataUrl: SIG,
+    });
+    expect(listAttestationsForStudent(db, sid)[0]).toMatchObject({
+      lessonDate: "2026-06-10",
+      lessonKind: "Nachtfahrt",
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ */
