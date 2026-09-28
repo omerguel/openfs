@@ -80,6 +80,10 @@ export type Invoice = {
   totalCents: number;
   /** Payments already applied to this invoice's charges when it was issued. */
   prepaidCents: number;
+  /** prepaidCents split by the tax rate of the positions it was applied to
+   *  (see allocatePrepaid in src/server/invoices.ts). Never carries more VAT
+   *  than the invoiced positions of that rate. */
+  prepaidVat: VatSummaryRow[];
   note: string;
   stornoOf: { id: number; invoiceNr: string } | null;
   stornoReason: string | null;
@@ -90,6 +94,34 @@ export type Invoice = {
   /** Days past due (0 when not overdue or settled). */
   overdueDays: number;
   reminders: InvoiceReminder[];
+  /** Earliest date the next Mahnstufe can be issued (null: none possible). */
+  nextReminderOn: string | null;
+};
+
+/** Mahnung over an opening debt (Saldovortrag „offener Betrag“). */
+export type OpeningBalanceReminder = Omit<InvoiceReminder, "invoiceId"> & {
+  transactionId: number;
+};
+
+/** An opening debt taken over from the previous software — not an
+ *  invoice, but an open item that is settled by payments (FIFO, oldest
+ *  first) and can be dunned like an invoice. */
+export type OpeningBalanceItem = {
+  transactionId: number;
+  belegNr: string | null;
+  date: string;
+  studentId: number | null;
+  customerNo: string;
+  recipient: { name: string; address: string };
+  contractNo: string;
+  classes: string;
+  /** Current profile data (a Saldovortrag has no frozen issuer snapshot). */
+  issuer: InvoiceIssuer;
+  amountCents: number;
+  openCents: number;
+  overdueDays: number;
+  reminders: OpeningBalanceReminder[];
+  nextReminderOn: string | null;
 };
 
 export type UninvoicedCharge = {
@@ -109,6 +141,8 @@ export type OpenItemsStudent = {
   invoicedOpenCents: number;
   /** Open charges that are not on any invoice yet. */
   uninvoicedOpenCents: number;
+  /** Open part of an opening debt (Saldovortrag). */
+  openingOpenCents: number;
   /** Positive = Guthaben (credit). */
   balanceCents: number;
 };
@@ -116,7 +150,14 @@ export type OpenItemsStudent = {
 export type OpenItems = {
   invoices: Invoice[];
   students: OpenItemsStudent[];
-  totals: { openCents: number; overdueCents: number; overdueCount: number };
+  openingBalances: OpeningBalanceItem[];
+  totals: {
+    openCents: number;
+    overdueCents: number;
+    overdueCount: number;
+    /** Open opening debts (Saldovortrag), not included in openCents. */
+    openingCents: number;
+  };
 };
 
 export type InvoicingSettings = {
