@@ -15,7 +15,9 @@ import {
   type LegalField,
   type LegalInfo,
 } from "../lib/legal";
+import type { RetentionCategory } from "../lib/retention";
 import { getCompany } from "./db";
+import { getRetentionPolicy } from "./retention";
 import { handle, json } from "./http";
 
 export const PUBLIC_LEGAL_PATH = "/api/public/legal";
@@ -23,14 +25,19 @@ export const PUBLIC_LEGAL_PATH = "/api/public/legal";
 /* `missing` lists the required Impressum/Datenschutz fields that are
    still empty, so the staff app can warn the owner. The public pages
    never show it to visitors — they simply omit empty fields. */
-export type PublicLegalInfo = LegalInfo & { missing: LegalField[] };
+export type PublicLegalInfo = LegalInfo & {
+  missing: LegalField[];
+  /** Löschfristen in months (Löschkonzept) — the Datenschutzerklärung
+      states the periods the retention job actually applies. */
+  retention: Record<RetentionCategory, number>;
+};
 
 export function publicLegalInfo(db: Database): PublicLegalInfo {
   const info = toLegalInfo(getCompany(db));
   const missing = [
     ...new Set([...missingImpressumFields(info), ...missingDatenschutzFields(info)]),
   ];
-  return { ...info, missing };
+  return { ...info, missing, retention: getRetentionPolicy(db).months };
 }
 
 export function legalRoutes(db: Database) {
