@@ -28,6 +28,15 @@ const PUBLIC_PAGES = [
 
 /* Tabs worth clicking per page (visible button/tab labels). */
 const CLICK_THROUGH: Record<string, string[]> = {
+  "/fahrschule": [
+    "Bankverbindung",
+    "Öffentliches Profil",
+    "Öffnungszeiten",
+    "Standorte",
+    "Rechtliches",
+    "Terminabsagen",
+  ],
+  "/benutzer": ["Protokoll"],
   "/fahrlehrer": ["Arbeitszeiten"],
   "/rechnungen": ["Offene Posten", "Ratenpläne", "Lastschriften", "Einstellungen"],
   "/fahrschueler/$studentId": [
@@ -134,6 +143,43 @@ async function check(page: Page, url: string, clicks: string[]): Promise<string[
   return problems;
 }
 
+/* Regression checks for form behaviour that a render smoke test misses.
+   Each returns a problem description or null. */
+const FORM_CHECKS: { name: string; run: (page: Page) => Promise<string | null> }[] = [
+  {
+    // The first keystroke into an untouched settings field used to be
+    // dropped (dirty state set in a capture handler reset the input).
+    name: "Einstellungen: erste Eingabe in ein unberührtes Feld bleibt erhalten",
+    run: async (page) => {
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page.locator("#company-ustidnr").fill("DE123456789");
+      const filled = await page.inputValue("#company-ustidnr");
+      if (filled !== "DE123456789") return `fill() ergab „${filled}“`;
+      await page.locator("#company-steuernummer").fill("");
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page
+        .locator("#company-steuernummer")
+        .pressSequentially("315/5", { delay: 20 });
+      const typed = await page.inputValue("#company-steuernummer");
+      if (typed !== "315/5") return `Tippen ergab „${typed}“`;
+      const save = page.getByRole("button", { name: "Speichern" }).first();
+      if (!(await save.isEnabled()))
+        return "Speichern blieb nach der Eingabe deaktiviert";
+      return null;
+    },
+  },
+  {
+    name: "Einstellungen: Klick auf einen Tab markiert nichts als geändert",
+    run: async (page) => {
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page.getByRole("tab", { name: "Öffnungszeiten" }).click();
+      await page.getByRole("tab", { name: "Stammdaten & Steuer" }).click();
+      const save = page.getByRole("button", { name: "Speichern" }).first();
+      return (await save.isEnabled()) ? "Speichern ist ohne Änderung aktiv" : null;
+    },
+  },
+];
+
 const server = Bun.spawn(["bun", "src/index.ts"], {
   cwd: ROOT,
   env: { ...process.env, DEMO_MODE: "1", PORT: String(PORT), NODE_ENV: "production" },
@@ -164,6 +210,20 @@ try {
       for (const problem of problems) console.log(`    ${problem}`);
     } else {
       console.log(`✓ ${route}`);
+    }
+  }
+  for (const check of FORM_CHECKS) {
+    let problem: string | null;
+    try {
+      problem = await check.run(page);
+    } catch (error) {
+      problem = error instanceof Error ? error.message.split("\n")[0]! : String(error);
+    }
+    if (problem) {
+      failed += 1;
+      console.log(`✗ ${check.name}\n    ${problem}`);
+    } else {
+      console.log(`✓ ${check.name}`);
     }
   }
   // Signed out: public pages still work, staff pages show the sign-in form.
