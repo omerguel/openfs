@@ -20,6 +20,14 @@ export const PUBLIC_BODY_LIMIT_BYTES = 64 * 1024;
 
 const TOO_LARGE = "Die Anfrage ist zu groß.";
 
+/* The unread rest of the body must not be parsed as the next request on
+   a kept-alive connection — close it. */
+function tooLarge(): Response {
+  const response = err(TOO_LARGE, 413);
+  response.headers.set("Connection", "close");
+  return response;
+}
+
 /* Multipart uploads: the student documents endpoint only. */
 const MULTIPART_ROUTES = [/^\/api\/students\/[^/]+\/files$/];
 
@@ -39,7 +47,10 @@ export function checkContentType(
   path: string,
 ): Response | null {
   if (!BODY_METHODS.has(method) || !hasBody(req)) return null;
-  const type = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const type = (req.headers.get("content-type") ?? "")
+    .split(";")[0]!
+    .trim()
+    .toLowerCase();
   if (type === "application/json") return null;
   if (type === "multipart/form-data" && MULTIPART_ROUTES.some((p) => p.test(path))) {
     return null;
@@ -62,7 +73,7 @@ export async function limitBody<R extends Request>(
 ): Promise<Limited<R>> {
   const length = req.headers.get("content-length");
   if (length !== null) {
-    return Number(length) > maxBytes ? err(TOO_LARGE, 413) : { req, server };
+    return Number(length) > maxBytes ? tooLarge() : { req, server };
   }
   if (!req.body || !req.headers.has("transfer-encoding")) return { req, server };
 
@@ -75,7 +86,7 @@ export async function limitBody<R extends Request>(
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel().catch(() => {});
-      return err(TOO_LARGE, 413);
+      return tooLarge();
     }
     chunks.push(value);
   }
