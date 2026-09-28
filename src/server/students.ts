@@ -5,7 +5,10 @@
 
 import type { Database, SQLQueryBindings } from "./sqlite";
 
-import type { Student, TheoryManual } from "../lib/student-data";
+import { parseContractPriceOverrides } from "../lib/contract-prices";
+import { defaultPlanForClasses } from "../lib/price-plan";
+import { listPricePlans } from "./price-plans";
+import type { Companion, Student, TheoryManual } from "../lib/student-data";
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
 import {
@@ -53,7 +56,19 @@ type StudentRow = {
   theory: string;
   price_plan_id: number | null;
   license_date: string | null;
+  contract_prices: string | null;
+  companion: string | null;
+  open_documents: string | null;
 };
+
+function parseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return (JSON.parse(raw) as T) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 const DEFAULT_THEORY: TheoryManual = { preExams: "Keine", exam: "Nicht geplant" };
 
@@ -105,6 +120,9 @@ const toStudent = (row: StudentRow, facts: StudentFacts): StudentRecord => {
     documents: JSON.parse(row.documents),
     theory: withDerivedTheory(parseTheory(row.theory), facts),
     pricePlanId: row.price_plan_id,
+    contractPrices: parseJson(row.contract_prices, {}),
+    companion: parseJson<Companion | null>(row.companion, null),
+    openDocuments: parseJson<string[]>(row.open_documents, []),
   };
   if (row.license_date) record.licenseDate = row.license_date;
   return record;
@@ -114,7 +132,8 @@ const SELECT = `SELECT s.id, s.first_name, s.last_name, s.birthday, s.phone, s.e
   s.address, s.classes, s.driving_school, s.registration_date, s.contract_number,
   s.customer_number, s.status, s.instructor_id, s.vehicle_id,
   ${instructorNameSql("s")} AS instructor, ${vehicleNameSql("s")} AS vehicle,
-  s.progress, s.documents, s.theory, s.price_plan_id, s.license_date FROM students s`;
+  s.progress, s.documents, s.theory, s.price_plan_id, s.license_date,
+  s.contract_prices, s.companion, s.open_documents FROM students s`;
 
 function withFacts(db: Database, rows: StudentRow[]): StudentRecord[] {
   const facts = deriveStudentFacts(
@@ -166,6 +185,22 @@ type StudentData = Omit<Student, "theory"> & {
   vehicleId: number | null;
   theory: TheoryManual;
 };
+
+function normalizeCompanion(input: unknown): Companion | null {
+  if (input === null) return null;
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new ValidationError("Feld 'companion' muss ein Objekt oder null sein.");
+  }
+  const { name, phone } = input as Partial<Companion>;
+  if (
+    (name !== undefined && typeof name !== "string") ||
+    (phone !== undefined && typeof phone !== "string")
+  ) {
+    throw new ValidationError("Begleitperson: Name und Telefon müssen Texte sein.");
+  }
+  const clean = { name: (name ?? "").trim(), phone: (phone ?? "").trim() };
+  return clean.name || clean.phone ? clean : null;
+}
 
 function normalize(
   db: Database,
@@ -233,6 +268,28 @@ function normalize(
     next.documents = (input.documents as string[])
       .map((entry) => entry.trim())
       .filter(Boolean);
+  }
+
+  if (input.openDocuments !== undefined) {
+    if (
+      !Array.isArray(input.openDocuments) ||
+      input.openDocuments.some((entry) => typeof entry !== "string")
+    ) {
+      throw new ValidationError("Feld 'openDocuments' darf nur Texte enthalten.");
+    }
+    next.openDocuments = [
+      ...new Set(input.openDocuments.map((entry) => entry.trim()).filter(Boolean)),
+    ];
+  }
+
+  if (input.contractPrices !== undefined) {
+    const parsed = parseContractPriceOverrides(input.contractPrices);
+    if (!parsed.ok) throw new ValidationError(parsed.error);
+    next.contractPrices = parsed.value;
+  }
+
+  if (input.companion !== undefined) {
+    next.companion = normalizeCompanion(input.companion);
   }
 
   if (input.theory !== undefined) {
@@ -346,11 +403,20 @@ function writeParams(data: StudentData) {
     JSON.stringify(data.theory),
     data.pricePlanId ?? null,
     data.licenseDate ?? null,
+    JSON.stringify(data.contractPrices ?? {}),
+    data.companion ? JSON.stringify(data.companion) : null,
+    JSON.stringify(data.openDocuments ?? []),
   ] as const;
 }
 
 export function createStudent(db: Database, input: StudentInput): StudentRecord {
   const data = normalize(db, input, EMPTY);
+  // No plan chosen: pin the class default so the student's prices no
+  // longer shift when plans are reordered or added later.
+  if (input.pricePlanId === undefined && tableExists(db, "price_plans")) {
+    data.pricePlanId =
+      defaultPlanForClasses(listPricePlans(db), data.classes)?.id ?? null;
+  }
   const row = guardUnique(() =>
     db
       .query<{ id: number }, SQLQueryBindings[]>(
@@ -358,8 +424,8 @@ export function createStudent(db: Database, input: StudentInput): StudentRecord 
            first_name, last_name, birthday, phone, email, address, classes,
            driving_school, registration_date, contract_number, customer_number,
            status, instructor_id, vehicle_id, progress, documents, theory,
-           price_plan_id, license_date
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           price_plan_id, license_date, contract_prices, companion, open_documents
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
       )
       .get(...writeParams(data)),
@@ -381,7 +447,8 @@ export function updateStudent(
          address = ?, classes = ?, driving_school = ?, registration_date = ?,
          contract_number = ?, customer_number = ?, status = ?, instructor_id = ?,
          vehicle_id = ?, progress = ?, documents = ?, theory = ?,
-         price_plan_id = ?, license_date = ?
+         price_plan_id = ?, license_date = ?, contract_prices = ?, companion = ?,
+         open_documents = ?
        WHERE id = ?`,
     ).run(...writeParams(data), id);
     // Chat threads carry a denormalized student_name next to their
@@ -399,7 +466,23 @@ export function updateStudent(
   return getStudent(db, id);
 }
 
-export function deleteStudent(db: Database, id: number): void {
+/** Why a student leaves the active list — shown in Archiv and Verträge. */
+export const ARCHIVE_REASONS: Record<string, string> = {
+  abgeschlossen: "Ausbildung abgeschlossen",
+  abgebrochen: "Ausbildung abgebrochen",
+  wechsel: "Wechsel zu anderer Fahrschule",
+  sonstiges: "Sonstiges",
+};
+
+export function deleteStudent(
+  db: Database,
+  id: number,
+  options: { reason?: string | null } = {},
+): void {
+  const reason = options.reason ?? null;
+  if (reason != null && !(reason in ARCHIVE_REASONS)) {
+    throw new ValidationError("Ungültiger Grund für die Archivierung.");
+  }
   const student = getStudent(db, id); // throws ValidationError if unknown
   const remove = db.transaction(() => {
     // Remember which theory groups and chats pointed here so a restore
@@ -427,6 +510,7 @@ export function deleteStudent(db: Database, id: number): void {
       `${student.firstName} ${student.lastName}`.trim() ||
         `Vertrag ${student.contractNumber}`,
       { theoryGroups: theoryGroups.map((group) => group.id), conversations },
+      reason ? ARCHIVE_REASONS[reason] : undefined,
     );
     // Drop the id from member lists — a ghost id would keep counting
     // toward the group capacity (theory-groups.ts validates against

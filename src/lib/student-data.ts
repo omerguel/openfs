@@ -8,11 +8,21 @@
 /* accounting transactions (src/server/seed.ts).                       */
 /* ------------------------------------------------------------------ */
 
+import type { ContractPriceOverrides } from "./contract-prices";
+
 export type StudentStatus = "aktiv" | "inaktiv";
 
-export type TheoryStatus = "Aktiv" | "In Prüfung" | "Bereit" | "Pausiert";
+export type TheoryStatus =
+  | "Noch nicht begonnen"
+  | "Aktiv"
+  | "In Prüfung"
+  | "Bereit"
+  | "Pausiert";
 
 export type Lesson = { label: string; done: string };
+
+/** Begleitperson for Begleitetes Fahren ab 17 (BF17). */
+export type Companion = { name: string; phone: string };
 
 /** Checklist entry ("Personalausweis", "Sehtest", …). Uploaded files are
  *  not part of the student record — see /api/students/:id/files. */
@@ -67,6 +77,12 @@ export type Student = {
   balanceCents?: number;
   /** Assigned Preisplan (price_plans.id) — null/undefined = default plan. */
   pricePlanId?: number | null;
+  /** Contract prices (§ 32 FahrlG) that differ from the plan, in cents. */
+  contractPrices?: ContractPriceOverrides;
+  /** Begleitperson (BF17) — only for learners under 18. */
+  companion?: Companion | null;
+  /** Checklist entries still missing (documents = entries handed in). */
+  openDocuments?: string[];
   // Milestone
   /** ISO date (YYYY-MM-DD) the license was issued; undefined = not yet issued. */
   licenseDate?: string;

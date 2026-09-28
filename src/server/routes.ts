@@ -7,7 +7,12 @@ import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
 import type { CompanyProfile } from "../lib/accounting-types";
-import { listArchive, purgeArchived, restoreArchived } from "./archive";
+import {
+  listArchive,
+  listArchivedContracts,
+  purgeArchived,
+  restoreArchived,
+} from "./archive";
 import { getCompany, setCompany } from "./db";
 import { getSchoolProfile, setSchoolProfile } from "./school-profile";
 import { generateDatevExport } from "./datev";
@@ -110,6 +115,11 @@ export function studentRoutes(db: Database) {
         handle(async () => json(createStudent(db, await req.json()), 201))(),
     },
 
+    "/api/students/archived": {
+      GET: (req: BunRequest) =>
+        handle(() => json({ contracts: listArchivedContracts(db) }))(),
+    },
+
     "/api/students/:id": {
       PATCH: (req: BunRequest<"/api/students/:id">) =>
         handle(async () => {
@@ -125,7 +135,9 @@ export function studentRoutes(db: Database) {
           if (!Number.isInteger(id)) {
             throw new ValidationError("Ungültige Fahrschüler-ID.");
           }
-          deleteStudent(db, id);
+          deleteStudent(db, id, {
+            reason: new URL(req.url).searchParams.get("reason"),
+          });
           return json({ ok: true });
         })(),
     },
