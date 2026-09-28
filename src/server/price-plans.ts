@@ -5,7 +5,13 @@
 
 import type { Database } from "./sqlite";
 
-import type { PriceComponent, PricePlanInput, PricePlanRecord } from "../lib/price-plan";
+import {
+  BILLABLE_EVENT_TYPES,
+  type BillableEventType,
+  type PriceComponent,
+  type PricePlanInput,
+  type PricePlanRecord,
+} from "../lib/price-plan";
 import { archiveRow } from "./archive";
 import { ValidationError } from "./engine";
 
@@ -35,7 +41,7 @@ export function getPricePlan(db: Database, id: number): PricePlanRecord {
   return toPlan(row);
 }
 
-function normalizeComponents(input: unknown): PriceComponent[] {
+function normalizeComponents(db: Database, input: unknown): PriceComponent[] {
   if (!Array.isArray(input)) {
     throw new ValidationError("Feld 'components' muss eine Liste sein.");
   }
@@ -43,7 +49,8 @@ function normalizeComponents(input: unknown): PriceComponent[] {
     if (typeof entry !== "object" || entry === null) {
       throw new ValidationError("Jede Preiskomponente muss ein Objekt sein.");
     }
-    const { label, durationMin, priceCents } = entry as PriceComponent;
+    const { label, durationMin, priceCents, erloesKonto, eventType } =
+      entry as PriceComponent;
     if (typeof label !== "string" || !label.trim()) {
       throw new ValidationError("Jede Preiskomponente braucht eine Bezeichnung.");
     }
@@ -57,15 +64,34 @@ function normalizeComponents(input: unknown): PriceComponent[] {
         `Preis von '${label.trim()}' muss ein Betrag in Cent (>= 0) sein.`,
       );
     }
+    if (erloesKonto != null && erloesKonto !== "") {
+      const account = db
+        .query<{ kind: string }, [string]>("SELECT kind FROM accounts WHERE number = ?")
+        .get(String(erloesKonto));
+      if (!account || (account.kind !== "erloes" && account.kind !== "durchlaufend")) {
+        throw new ValidationError(
+          `Konto von '${label.trim()}' muss ein Erlöskonto oder durchlaufender Posten sein.`,
+        );
+      }
+    }
+    if (
+      eventType != null &&
+      !BILLABLE_EVENT_TYPES.includes(eventType as BillableEventType)
+    ) {
+      throw new ValidationError(`Ungültiger Termin-Typ bei '${label.trim()}'.`);
+    }
     return {
       label: label.trim(),
       durationMin: durationMin ?? null,
       priceCents,
+      erloesKonto: erloesKonto ? String(erloesKonto) : null,
+      eventType: eventType ?? null,
     };
   });
 }
 
 function normalize(
+  db: Database,
   input: Partial<PricePlanInput>,
   current: PricePlanInput,
 ): PricePlanInput {
@@ -89,7 +115,7 @@ function normalize(
   }
 
   if (input.components !== undefined) {
-    next.components = normalizeComponents(input.components);
+    next.components = normalizeComponents(db, input.components);
   }
 
   if (!next.name) {
@@ -112,7 +138,7 @@ export function createPricePlan(
   db: Database,
   input: Partial<PricePlanInput>,
 ): PricePlanRecord {
-  const data = normalize(input, EMPTY);
+  const data = normalize(db, input, EMPTY);
   const row = db
     .query<{ id: number }, [string, number, string]>(
       `INSERT INTO price_plans (name, guaranteed_months, components)
@@ -128,7 +154,7 @@ export function updatePricePlan(
   input: Partial<PricePlanInput>,
 ): PricePlanRecord {
   const current = getPricePlan(db, id);
-  const data = normalize(input, current);
+  const data = normalize(db, input, current);
   db.prepare(
     `UPDATE price_plans SET name = ?, guaranteed_months = ?, components = ?
      WHERE id = ?`,

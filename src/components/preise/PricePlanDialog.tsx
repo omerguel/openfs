@@ -8,7 +8,12 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import type { PricePlanInput, PricePlanRecord } from "@/lib/price-plan";
+import {
+  BILLABLE_EVENT_TYPES,
+  type BillableEventType,
+  type PricePlanInput,
+  type PricePlanRecord,
+} from "@/lib/price-plan";
 import { createPricePlan, updatePricePlan } from "@/hooks/use-price-plans";
 import { formatCents, parseEuroToCents } from "@/lib/money";
 import { Button } from "@/components/ui/button";
@@ -22,14 +27,38 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 
 type ComponentDraft = {
   label: string;
   duration: string; // minutes as text, "" = none
   price: string; // euro string, "" = inklusive
+  eventType: BillableEventType | ""; // "" = not charged per Termin
+  erloesKonto: string; // "" = default Erlöskonto
 };
 
-const emptyRow: ComponentDraft = { label: "", duration: "", price: "" };
+const emptyRow: ComponentDraft = {
+  label: "",
+  duration: "",
+  price: "",
+  eventType: "",
+  erloesKonto: "",
+};
+
+const EVENT_TYPE_LABELS: Record<BillableEventType, string> = {
+  Praktisch: "Fahrstunde",
+  Theorieprüfung: "Theorieprüfung",
+  "Vorstellung zur prakt. Prüfung": "Prakt. Prüfung",
+};
+
+/* Revenue accounts offered per component — the tax treatment is a
+   Steuerberater decision (§ 4 Nr. 21 UStG), so it stays configurable. */
+const KONTO_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "4400 · 19 %" },
+  { value: "4300", label: "4300 · 7 %" },
+  { value: "4100", label: "4100 · steuerfrei" },
+  { value: "1370", label: "1370 · durchlaufend" },
+];
 
 function toDrafts(plan: PricePlanRecord | null): ComponentDraft[] {
   if (!plan) return [{ ...emptyRow }];
@@ -37,6 +66,11 @@ function toDrafts(plan: PricePlanRecord | null): ComponentDraft[] {
     label: component.label,
     duration: component.durationMin == null ? "" : String(component.durationMin),
     price: component.priceCents == null ? "" : formatCents(component.priceCents),
+    eventType: component.eventType ?? "",
+    erloesKonto:
+      component.erloesKonto && component.erloesKonto !== "4400"
+        ? component.erloesKonto
+        : "",
   }));
 }
 
@@ -115,7 +149,13 @@ export function PricePlanDialog({
           return;
         }
       }
-      components.push({ label: row.label.trim(), durationMin, priceCents });
+      components.push({
+        label: row.label.trim(),
+        durationMin,
+        priceCents,
+        eventType: row.eventType || null,
+        erloesKonto: row.erloesKonto || null,
+      });
     }
     if (components.length === 0) {
       toast.error("Ein Preisplan braucht mindestens eine Preiskomponente.");
@@ -153,11 +193,13 @@ export function PricePlanDialog({
         if (!value) onClose();
       }}
     >
-      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-auto sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>{plan ? "Preisplan bearbeiten" : "Preisplan anlegen"}</DialogTitle>
           <DialogDescription>
-            Preise gelten brutto; ein leerer Preis bedeutet „inklusive".
+            Preise gelten brutto; ein leerer Preis bedeutet „inklusive". „Abrechnen bei"
+            legt fest, welche Komponenten beim Abrechnen eines Termins vorgeschlagen
+            werden.
           </DialogDescription>
         </DialogHeader>
 
@@ -185,16 +227,18 @@ export function PricePlanDialog({
           </div>
 
           <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-[1fr_6rem_8rem_2rem] gap-2 text-xs font-medium text-muted-foreground">
+            <div className="grid grid-cols-[1fr_5rem_7rem_9rem_9rem_2rem] gap-2 text-xs font-medium text-muted-foreground">
               <span>Preiskomponente</span>
               <span>Dauer (Min)</span>
               <span>Preis, EUR</span>
+              <span>Abrechnen bei</span>
+              <span>Konto</span>
               <span />
             </div>
             {rows.map((row, index) => (
               <div
                 key={index}
-                className="grid grid-cols-[1fr_6rem_8rem_2rem] items-center gap-2"
+                className="grid grid-cols-[1fr_5rem_7rem_9rem_9rem_2rem] items-center gap-2"
               >
                 <Input
                   value={row.label}
@@ -216,6 +260,37 @@ export function PricePlanDialog({
                   placeholder="inklusive"
                   aria-label={`Preis Komponente ${index + 1}`}
                 />
+                <NativeSelect
+                  value={row.eventType}
+                  onChange={(event) =>
+                    updateRow(index, {
+                      eventType: event.target.value as ComponentDraft["eventType"],
+                    })
+                  }
+                  aria-label={`Abrechnen bei Komponente ${index + 1}`}
+                  className="w-full"
+                >
+                  <NativeSelectOption value="">—</NativeSelectOption>
+                  {BILLABLE_EVENT_TYPES.map((type) => (
+                    <NativeSelectOption key={type} value={type}>
+                      {EVENT_TYPE_LABELS[type]}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <NativeSelect
+                  value={row.erloesKonto}
+                  onChange={(event) =>
+                    updateRow(index, { erloesKonto: event.target.value })
+                  }
+                  aria-label={`Konto Komponente ${index + 1}`}
+                  className="w-full"
+                >
+                  {KONTO_OPTIONS.map((option) => (
+                    <NativeSelectOption key={option.value} value={option.value}>
+                      {option.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
                 <Button
                   type="button"
                   variant="ghost"

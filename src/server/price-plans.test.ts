@@ -258,3 +258,44 @@ describe("deletePricePlan", () => {
     expect(() => getPricePlan(db, plan.id)).toThrow(ValidationError);
   });
 });
+
+describe("component billing metadata", () => {
+  test("erloesKonto and eventType survive a save round-trip", () => {
+    const plan = createPricePlan(
+      db,
+      makePlan({
+        components: [
+          {
+            label: "TÜV-Gebühr Praxis",
+            priceCents: 12983,
+            erloesKonto: "1370",
+            eventType: "Vorstellung zur prakt. Prüfung",
+          },
+        ],
+      }),
+    );
+    const updated = updatePricePlan(db, plan.id, { name: "Neu" });
+    expect(updated.components[0]).toMatchObject({
+      erloesKonto: "1370",
+      eventType: "Vorstellung zur prakt. Prüfung",
+    });
+  });
+
+  test("an account that is not Erlös/durchlaufend is rejected", () => {
+    expect(() =>
+      createPricePlan(
+        db,
+        makePlan({ components: [{ label: "X", priceCents: 1, erloesKonto: "1600" }] }),
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  test("an unknown event type is rejected", () => {
+    expect(() =>
+      createPricePlan(
+        db,
+        makePlan({ components: [{ label: "X", priceCents: 1, eventType: "Theorie" }] }),
+      ),
+    ).toThrow(ValidationError);
+  });
+});
