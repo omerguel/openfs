@@ -1,15 +1,33 @@
 /* ------------------------------------------------------------------ */
 /* Fahrschüler detail — Dokumente tab. The Ausbildungsvertrag (print   */
-/* via VertragDialog) plus the document checklist, persisted through   */
-/* the students API like every other student edit.                     */
+/* via VertragDialog), uploaded files (/api/students/:id/files, bytes  */
+/* in the server's FileStore) and the document checklist, persisted    */
+/* through the students API like every other student edit.             */
 /* ------------------------------------------------------------------ */
 
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Download, FileText, Plus, Printer, Upload, X } from "lucide-react";
+import { useRef, useState, type ChangeEvent } from "react";
+import { Download, FileText, Plus, Printer, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { StudentRecord } from "@/hooks/use-students";
+import {
+  deleteStudentFile,
+  uploadStudentFile,
+  useStudentFiles,
+  type StudentFile,
+} from "@/hooks/use-student-files";
 import { VertragDialog } from "@/components/VertragDialog.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -19,15 +37,12 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
-import type { StudentDocument, UploadedStudentDocument } from "@/lib/student-data";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
-  fileToStudentDocument,
-  getStudentDocumentKey,
-  getStudentDocumentMeta,
-  getStudentDocumentName,
+  getStudentFileMeta,
   hasStudentDocumentNamed,
-  isUploadedStudentDocument,
-  MAX_STUDENT_DOCUMENT_BYTES,
+  STUDENT_FILE_ACCEPT,
+  validateStudentFile,
 } from "@/lib/student-documents";
 import type { StudentEdit } from "./fields";
 
@@ -40,42 +55,25 @@ function DocumentTile({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* Scaled-down first page of a PDF. Chrome's viewer needs a blob URL for
-   the #toolbar fragment params, so the data URL is converted once. */
-function PdfThumbnail({ dataUrl }: { dataUrl: string }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+/* Types the browser can render as a thumbnail (HEIC usually cannot). */
+const PREVIEW_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
 
-  useEffect(() => {
-    let url: string | null = null;
-    let cancelled = false;
-    void fetch(dataUrl)
-      .then((response) => response.blob())
-      .then((blob) => {
-        if (cancelled) return;
-        url = URL.createObjectURL(blob.slice(0, blob.size, "application/pdf"));
-        setBlobUrl(url);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [dataUrl]);
-
-  if (!blobUrl) {
-    return (
-      <DocumentTile>
-        <FileText className="size-5 text-muted-foreground" />
-      </DocumentTile>
-    );
-  }
+/* Scaled-down first page of a PDF, rendered by the browser's PDF viewer
+   from the inline /api/files/:id response (or a local blob URL). */
+function PdfThumbnail({ url }: { url: string }) {
   return (
     <DocumentTile>
       <iframe
-        src={`${blobUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+        src={`${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
         title="PDF-Vorschau"
         tabIndex={-1}
         aria-hidden="true"
+        loading="lazy"
         className="pointer-events-none origin-top-left border-0 bg-white"
         style={{ width: 192, height: 192, transform: "scale(0.25)" }}
       />
@@ -83,21 +81,27 @@ function PdfThumbnail({ dataUrl }: { dataUrl: string }) {
   );
 }
 
-function UploadedDocumentPreview({ document }: { document: UploadedStudentDocument }) {
-  if (document.mimeType.startsWith("image/")) {
+/** Thumbnail for an uploaded (or picked, not yet uploaded) file. */
+export function StudentFilePreview({
+  file,
+}: {
+  file: { name: string; mimeType: string; url: string };
+}) {
+  if (PREVIEW_IMAGE_TYPES.has(file.mimeType)) {
     return (
       <img
-        src={document.dataUrl}
+        src={file.url}
         alt=""
+        loading="lazy"
         className="size-12 shrink-0 rounded-md border object-cover"
       />
     );
   }
-  if (document.mimeType === "application/pdf") {
-    return <PdfThumbnail dataUrl={document.dataUrl} />;
+  if (file.mimeType === "application/pdf") {
+    return <PdfThumbnail url={file.url} />;
   }
-  const extension = document.name.includes(".")
-    ? document.name.split(".").pop()!.slice(0, 4)
+  const extension = file.name.includes(".")
+    ? file.name.split(".").pop()!.slice(0, 4)
     : null;
   return (
     <DocumentTile>
@@ -112,15 +116,67 @@ function UploadedDocumentPreview({ document }: { document: UploadedStudentDocume
   );
 }
 
-function DocumentPreview({ document }: { document: StudentDocument }) {
-  if (isUploadedStudentDocument(document)) {
-    return <UploadedDocumentPreview document={document} />;
-  }
-  // Checklist entry — no file data to preview.
+function FileRow({
+  file,
+  busy,
+  onDelete,
+}: {
+  file: StudentFile;
+  busy: boolean;
+  onDelete: () => void;
+}) {
   return (
-    <DocumentTile>
-      <FileText className="size-5 text-muted-foreground" />
-    </DocumentTile>
+    <div className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <StudentFilePreview file={file} />
+        <div className="flex min-w-0 flex-col">
+          <a
+            href={file.url}
+            target="_blank"
+            rel="noopener"
+            className="truncate text-sm font-medium hover:underline"
+          >
+            {file.name}
+          </a>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {getStudentFileMeta(file)}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-1">
+        <Button asChild variant="outline" size="sm">
+          <a href={file.url} download={file.name}>
+            <Download data-icon="inline-start" />
+            Download
+          </a>
+        </Button>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              disabled={busy}
+              aria-label={`${file.name} löschen`}
+            >
+              <Trash2 />
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Datei löschen?</AlertDialogTitle>
+              <AlertDialogDescription>
+                „{file.name}" wird unwiderruflich gelöscht.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+              <AlertDialogAction onClick={onDelete}>Löschen</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </div>
   );
 }
 
@@ -135,8 +191,14 @@ export function DokumenteTab({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [documentInput, setDocumentInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const {
+    files,
+    loading: filesLoading,
+    refresh: refreshFiles,
+  } = useStudentFiles(student.id);
 
-  const saveDocuments = async (documents: StudentDocument[], successMessage: string) => {
+  const saveDocuments = async (documents: string[], successMessage: string) => {
     setSaving(true);
     try {
       await onSave({ documents });
@@ -152,7 +214,7 @@ export function DokumenteTab({
     const nextDocument = documentInput.trim();
     if (!nextDocument) return;
     if (hasStudentDocumentNamed(student.documents, nextDocument)) {
-      toast.info("Dieses Dokument ist bereits hinterlegt.");
+      toast.info("Dieser Eintrag ist bereits hinterlegt.");
       return;
     }
     await saveDocuments(
@@ -162,69 +224,54 @@ export function DokumenteTab({
     setDocumentInput("");
   };
 
-  const uploadDocuments = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.currentTarget.files ?? []);
-    event.currentTarget.value = "";
-    if (files.length === 0) return;
+  const removeDocument = (index: number) =>
+    saveDocuments(
+      student.documents.filter((_, documentIndex) => documentIndex !== index),
+      `„${student.documents[index]}" entfernt.`,
+    );
 
-    const tooLarge = files.find((file) => file.size > MAX_STUDENT_DOCUMENT_BYTES);
-    if (tooLarge) {
-      toast.error(`„${tooLarge.name}" ist größer als 12 MB und wurde nicht hochgeladen.`);
+  const uploadFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    if (picked.length === 0) return;
+
+    const invalid = picked.map(validateStudentFile).find(Boolean);
+    if (invalid) {
+      toast.error(invalid);
       return;
     }
 
-    const duplicates = files.filter((file) =>
-      hasStudentDocumentNamed(student.documents, file.name),
-    );
-    if (duplicates.length > 0) {
-      toast.info(
-        duplicates.length === 1
-          ? `„${duplicates[0]!.name}" ist bereits hinterlegt.`
-          : `${duplicates.length} Dateien sind bereits hinterlegt.`,
-      );
-    }
-
-    const newFiles = files.filter(
-      (file) => !hasStudentDocumentNamed(student.documents, file.name),
-    );
-    if (newFiles.length === 0) return;
-
-    setSaving(true);
+    setUploading(true);
+    let uploaded = 0;
     try {
-      const uploadedDocuments = await Promise.all(newFiles.map(fileToStudentDocument));
-      await onSave({ documents: [...student.documents, ...uploadedDocuments] });
+      for (const file of picked) {
+        await uploadStudentFile(student.id, file);
+        uploaded += 1;
+      }
       toast.success(
-        uploadedDocuments.length === 1
-          ? `„${uploadedDocuments[0]!.name}" hochgeladen.`
-          : `${uploadedDocuments.length} Dokumente hochgeladen.`,
+        uploaded === 1
+          ? `„${picked[0]!.name}" hochgeladen.`
+          : `${uploaded} Dateien hochgeladen.`,
       );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Upload fehlgeschlagen.");
     } finally {
-      setSaving(false);
+      setUploading(false);
+      await refreshFiles();
     }
   };
 
-  const removeDocument = (documentToRemove: StudentDocument, index: number) =>
-    saveDocuments(
-      student.documents.filter(
-        (document, documentIndex) =>
-          getStudentDocumentKey(document, documentIndex) !==
-          getStudentDocumentKey(documentToRemove, index),
-      ),
-      `„${getStudentDocumentName(documentToRemove)}" entfernt.`,
-    );
-
-  const downloadDocument = (documentToDownload: StudentDocument) => {
-    if (!isUploadedStudentDocument(documentToDownload)) return;
-
-    const link = document.createElement("a");
-    link.href = documentToDownload.dataUrl;
-    link.download = documentToDownload.name;
-    link.rel = "noopener";
-    document.body.append(link);
-    link.click();
-    link.remove();
+  const removeFile = async (file: StudentFile) => {
+    setUploading(true);
+    try {
+      await deleteStudentFile(file.id);
+      toast.success(`„${file.name}" gelöscht.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Löschen fehlgeschlagen.");
+    } finally {
+      setUploading(false);
+      await refreshFiles();
+    }
   };
 
   return (
@@ -256,10 +303,10 @@ export function DokumenteTab({
         </div>
       </div>
 
-      {/* Checklist — documents the student handed in */}
+      {/* Uploaded files */}
       <div className="flex flex-col gap-2">
         <h3 className="text-sm font-medium text-muted-foreground">
-          Eingereichte Dokumente
+          Hochgeladene Dateien
         </h3>
         <div className="flex flex-col gap-2 rounded-lg border border-dashed bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
@@ -267,7 +314,7 @@ export function DokumenteTab({
             <div className="flex min-w-0 flex-col">
               <span className="text-sm font-medium">Datei hochladen</span>
               <span className="text-xs text-muted-foreground">
-                PDF, Bild oder Office-Datei bis 12 MB
+                PDF oder Bild (PNG, JPEG, WebP, HEIC) bis 12 MB
               </span>
             </div>
           </div>
@@ -276,8 +323,9 @@ export function DokumenteTab({
             type="file"
             className="hidden"
             multiple
-            disabled={saving}
-            onChange={uploadDocuments}
+            accept={STUDENT_FILE_ACCEPT}
+            disabled={uploading}
+            onChange={uploadFiles}
             tabIndex={-1}
             aria-hidden="true"
           />
@@ -285,66 +333,65 @@ export function DokumenteTab({
             type="button"
             variant="outline"
             size="sm"
-            disabled={saving}
+            disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
           >
             <Upload data-icon="inline-start" />
-            Hochladen
+            {uploading ? "Wird hochgeladen …" : "Hochladen"}
           </Button>
         </div>
 
+        {filesLoading ? (
+          <Skeleton className="h-[74px] rounded-lg" />
+        ) : files.length === 0 ? (
+          <p className="px-1 text-sm text-muted-foreground">
+            Noch keine Dateien hochgeladen.
+          </p>
+        ) : (
+          files.map((file) => (
+            <FileRow
+              key={file.id}
+              file={file}
+              busy={uploading}
+              onDelete={() => void removeFile(file)}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Checklist — documents the student handed in */}
+      <div className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium text-muted-foreground">Checkliste</h3>
         {student.documents.length === 0 ? (
-          <Empty className="min-h-40 border">
+          <Empty className="min-h-32 border">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <FileText />
               </EmptyMedia>
-              <EmptyTitle>Noch keine Dokumente hinterlegt</EmptyTitle>
+              <EmptyTitle>Noch keine Einträge</EmptyTitle>
               <EmptyDescription>
-                Lade Dateien hoch oder füge einen Checklisteneintrag hinzu.
+                Halte fest, welche Unterlagen vorliegen – z. B. Sehtest oder Passbild.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
           student.documents.map((document, index) => (
             <div
-              key={getStudentDocumentKey(document, index)}
-              className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:items-center"
+              key={`${document}-${index}`}
+              className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
             >
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <DocumentPreview document={document} />
-                <div className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm font-medium">
-                    {getStudentDocumentName(document)}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {getStudentDocumentMeta(document)}
-                  </span>
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-1">
-                {isUploadedStudentDocument(document) && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => downloadDocument(document)}
-                  >
-                    <Download data-icon="inline-start" />
-                    Download
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={saving}
-                  onClick={() => removeDocument(document, index)}
-                  aria-label={`${getStudentDocumentName(document)} entfernen`}
-                >
-                  <X />
-                </Button>
-              </div>
+              <FileText className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm">{document}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                disabled={saving}
+                onClick={() => removeDocument(index)}
+                aria-label={`${document} entfernen`}
+              >
+                <X />
+              </Button>
             </div>
           ))
         )}

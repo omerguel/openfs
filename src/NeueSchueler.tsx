@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import {
   Building2,
@@ -9,6 +9,8 @@ import {
   Mail,
   MapPin,
   Phone,
+  Upload,
+  X,
 } from "lucide-react";
 
 import { FormSection as Section, FormSectionIndex } from "./components/FormSection.tsx";
@@ -16,6 +18,8 @@ import { PageHeader } from "./components/PageHeader.tsx";
 import { useInstructors } from "@/hooks/use-instructors";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import { createStudent, useStudents } from "@/hooks/use-students";
+import { uploadStudentFile } from "@/hooks/use-student-files";
+import { StudentFilePreview } from "@/components/fahrschueler/DokumenteTab";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -43,6 +47,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { nextStudentNumbers } from "@/lib/student-numbers";
 import { SPECIAL_DRIVE_REQUIREMENTS_B } from "@/lib/special-drives";
+import {
+  formatStudentDocumentSize,
+  STUDENT_FILE_ACCEPT,
+  validateStudentFile,
+} from "@/lib/student-documents";
 import { cn } from "@/lib/utils";
 
 const classOptions = ["A", "B", "B197", "BE"];
@@ -113,6 +122,43 @@ const sections = [
   { id: "vertrag", label: "Vertrag" },
 ];
 
+/* A file picked before the student exists — uploaded right after the
+   student is created. Previews from a local blob URL. */
+function PendingFileRow({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(file);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border bg-card p-2.5">
+      {url ? (
+        <StudentFilePreview file={{ name: file.name, mimeType: file.type, url }} />
+      ) : (
+        <div className="size-12 shrink-0 rounded-md border bg-muted/40" />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-medium">{file.name}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {formatStudentDocumentSize(file.size)} · wird beim Anlegen hochgeladen
+        </span>
+      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        onClick={onRemove}
+        aria-label={`${file.name} entfernen`}
+      >
+        <X />
+      </Button>
+    </div>
+  );
+}
+
 /* System-assigned identifier, shown read-only. IDs keep the mono face. */
 function AutoNumber({ label, value }: { label: string; value: string }) {
   return (
@@ -135,6 +181,8 @@ export function NeueSchueler() {
   }));
   const [dirty, setDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Assignable instructors come from the DB-backed roster (/fahrlehrer).
   const { assignableNames: instructorOptions } = useInstructors();
 
@@ -159,8 +207,22 @@ export function NeueSchueler() {
     setDirty(true);
   };
 
+  const pickFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    const invalid = picked.map(validateStudentFile).find(Boolean);
+    if (invalid) {
+      toast.error(invalid);
+      return;
+    }
+    if (picked.length === 0) return;
+    setPendingFiles((current) => [...current, ...picked]);
+    setDirty(true);
+  };
+
   const reset = () => {
     setForm({ ...initialForm, ...nextStudentNumbers(students) });
+    setPendingFiles([]);
     setDirty(false);
   };
 
@@ -171,13 +233,29 @@ export function NeueSchueler() {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      await createStudent({
+      const created = await createStudent({
         ...form,
         progress: 0,
       });
       toast.success("Schüler/in angelegt", {
         description: `${form.firstName} ${form.lastName} wurde zur Fahrschule hinzugefügt.`,
       });
+      // Files can only be attached once the student has an id.
+      const failed: string[] = [];
+      for (const file of pendingFiles) {
+        try {
+          await uploadStudentFile(created.id, file);
+        } catch (error) {
+          failed.push(
+            `${file.name}: ${error instanceof Error ? error.message : "Upload fehlgeschlagen."}`,
+          );
+        }
+      }
+      if (failed.length > 0) {
+        toast.error("Nicht alle Dateien wurden hochgeladen", {
+          description: `${failed.join(" · ")} — bitte im Tab „Dokumente" erneut hochladen.`,
+        });
+      }
       await refresh();
       reset();
     } catch (error) {
@@ -378,7 +456,7 @@ export function NeueSchueler() {
             <Section
               id="dokumente"
               title="Dokumente"
-              description="Vorliegende Unterlagen."
+              description="Vorliegende Unterlagen und hochgeladene Dateien."
             >
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {documentOptions.map((doc) => {
@@ -401,6 +479,45 @@ export function NeueSchueler() {
                     </Label>
                   );
                 })}
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                <div className="flex flex-col gap-2 rounded-lg border border-dashed bg-muted/20 p-2.5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Upload className="size-4 text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">
+                      PDF oder Bild (PNG, JPEG, WebP, HEIC) bis 12 MB
+                    </span>
+                  </div>
+                  <Input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    multiple
+                    accept={STUDENT_FILE_ACCEPT}
+                    onChange={pickFiles}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={submitting}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload data-icon="inline-start" />
+                    Datei auswählen
+                  </Button>
+                </div>
+                {pendingFiles.map((file, index) => (
+                  <PendingFileRow
+                    key={`${file.name}-${file.lastModified}-${index}`}
+                    file={file}
+                    onRemove={() =>
+                      setPendingFiles((current) => current.filter((_, i) => i !== index))
+                    }
+                  />
+                ))}
               </div>
             </Section>
 

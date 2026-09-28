@@ -4,109 +4,48 @@
 /* ------------------------------------------------------------------ */
 
 import { describe, expect, test } from "bun:test";
-import type { UploadedStudentDocument } from "@/lib/student-data";
 import {
   formatStudentDocumentSize,
   formatStudentDocumentUploadedAt,
-  getStudentDocumentKey,
-  getStudentDocumentName,
-  isUploadedStudentDocument,
+  getStudentFileMeta,
+  hasStudentDocumentNamed,
+  MAX_STUDENT_DOCUMENT_BYTES,
+  validateStudentFile,
 } from "./student-documents";
 
-/* ================================================================== */
-/* Helpers                                                              */
-/* ================================================================== */
-
-function makeUpload(
-  overrides: Partial<UploadedStudentDocument> = {},
-): UploadedStudentDocument {
-  return {
-    kind: "upload",
-    id: "test-id-123",
-    name: "Lichtbildausweis.pdf",
-    mimeType: "application/pdf",
-    size: 204800,
-    uploadedAt: "2026-01-15T10:30:00.000Z",
-    dataUrl: "data:application/pdf;base64,ABC=",
-    ...overrides,
-  };
-}
-
-/* ================================================================== */
-/* isUploadedStudentDocument                                            */
-/* ================================================================== */
-
-describe("isUploadedStudentDocument", () => {
-  test("valid UploadedStudentDocument → true", () => {
-    expect(isUploadedStudentDocument(makeUpload())).toBe(true);
+describe("hasStudentDocumentNamed", () => {
+  test("matches case- and whitespace-insensitively", () => {
+    expect(hasStudentDocumentNamed(["Sehtest", "Passbild"], "  sehtest ")).toBe(true);
   });
 
-  test("plain string → false", () => {
-    expect(isUploadedStudentDocument("Führerscheinantrag")).toBe(false);
-  });
-
-  test("object missing kind → false", () => {
-    const bad = { id: "x", name: "x", dataUrl: "x" } as unknown;
-    expect(isUploadedStudentDocument(bad as string)).toBe(false);
-  });
-
-  test("object with kind='checklist' → false", () => {
-    const bad = { kind: "checklist", id: "x", name: "x", dataUrl: "x" } as unknown;
-    expect(isUploadedStudentDocument(bad as string)).toBe(false);
-  });
-
-  test("object with kind='upload' but missing id → false", () => {
-    const bad = { kind: "upload", name: "x", dataUrl: "x" } as unknown;
-    expect(isUploadedStudentDocument(bad as string)).toBe(false);
-  });
-
-  test("object with kind='upload' but missing dataUrl → false", () => {
-    const bad = { kind: "upload", id: "x", name: "x" } as unknown;
-    expect(isUploadedStudentDocument(bad as string)).toBe(false);
-  });
-
-  test("null → false", () => {
-    expect(isUploadedStudentDocument(null as unknown as string)).toBe(false);
+  test("no match → false", () => {
+    expect(hasStudentDocumentNamed(["Sehtest"], "Passbild")).toBe(false);
   });
 });
 
-/* ================================================================== */
-/* getStudentDocumentName                                               */
-/* ================================================================== */
-
-describe("getStudentDocumentName", () => {
-  test("UploadedStudentDocument with name → returns name", () => {
-    expect(getStudentDocumentName(makeUpload({ name: "Mein Dokument.pdf" }))).toBe(
-      "Mein Dokument.pdf",
-    );
+describe("validateStudentFile", () => {
+  test("allowed extension within the limit → null", () => {
+    expect(validateStudentFile({ name: "Ausweis.PDF", size: 1000 })).toBeNull();
+    expect(validateStudentFile({ name: "foto.heic", size: 1000 })).toBeNull();
   });
 
-  test("UploadedStudentDocument with empty name → 'Unbenanntes Dokument'", () => {
-    expect(getStudentDocumentName(makeUpload({ name: "" }))).toBe("Unbenanntes Dokument");
+  test("too large → error mentions 12 MB", () => {
+    expect(
+      validateStudentFile({ name: "a.pdf", size: MAX_STUDENT_DOCUMENT_BYTES + 1 }),
+    ).toContain("12 MB");
   });
 
-  test("plain string → returns the string itself", () => {
-    expect(getStudentDocumentName("Führerscheinantrag")).toBe("Führerscheinantrag");
+  test("disallowed type → error", () => {
+    expect(validateStudentFile({ name: "vertrag.docx", size: 10 })).toContain("nur PDF");
+    expect(validateStudentFile({ name: "ohne-endung", size: 10 })).not.toBeNull();
   });
 });
 
-/* ================================================================== */
-/* getStudentDocumentKey                                                */
-/* ================================================================== */
-
-describe("getStudentDocumentKey", () => {
-  test("UploadedStudentDocument → 'upload-{id}'", () => {
-    expect(getStudentDocumentKey(makeUpload({ id: "abc-123" }), 0)).toBe(
-      "upload-abc-123",
-    );
-  });
-
-  test("plain string at index 0 → 'checklist-{string}-0'", () => {
-    expect(getStudentDocumentKey("Sehtest", 0)).toBe("checklist-Sehtest-0");
-  });
-
-  test("plain string at index 3 → index is included", () => {
-    expect(getStudentDocumentKey("Erstehilfe", 3)).toBe("checklist-Erstehilfe-3");
+describe("getStudentFileMeta", () => {
+  test("size and upload time joined by a middle dot", () => {
+    const meta = getStudentFileMeta({ size: 2048, uploadedAt: "2026-01-15T10:30:00Z" });
+    expect(meta).toStartWith("2 KB · ");
+    expect(meta).toContain("2026");
   });
 });
 

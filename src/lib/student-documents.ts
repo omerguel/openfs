@@ -1,6 +1,27 @@
-import type { StudentDocument, UploadedStudentDocument } from "@/lib/student-data";
+/* ------------------------------------------------------------------ */
+/* Student documents: the checklist strings in students.documents and */
+/* the uploaded files served by /api/students/:id/files.               */
+/* ------------------------------------------------------------------ */
 
 export const MAX_STUDENT_DOCUMENT_BYTES = 12 * 1024 * 1024;
+
+/** Accepted by the upload endpoint (the server re-checks the bytes). */
+export const STUDENT_FILE_ACCEPT =
+  ".pdf,.png,.jpg,.jpeg,.webp,.heic,application/pdf,image/png,image/jpeg,image/webp,image/heic";
+
+const ALLOWED_EXTENSIONS = ["pdf", "png", "jpg", "jpeg", "webp", "heic"];
+
+/** Mirrors the server's StudentFile (src/server/student-files.ts). */
+export type StudentFile = {
+  id: number;
+  studentId: number;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  uploadedAt: string;
+  url: string;
+};
 
 const byteFormatter = new Intl.NumberFormat("de-DE", {
   maximumFractionDigits: 1,
@@ -10,32 +31,6 @@ const uploadedAtFormatter = new Intl.DateTimeFormat("de-DE", {
   dateStyle: "medium",
   timeStyle: "short",
 });
-
-export function isUploadedStudentDocument(
-  document: StudentDocument,
-): document is UploadedStudentDocument {
-  return (
-    typeof document === "object" &&
-    document !== null &&
-    document.kind === "upload" &&
-    typeof document.id === "string" &&
-    typeof document.name === "string" &&
-    typeof document.dataUrl === "string"
-  );
-}
-
-export function getStudentDocumentName(document: StudentDocument): string {
-  if (isUploadedStudentDocument(document)) {
-    return document.name || "Unbenanntes Dokument";
-  }
-  return document;
-}
-
-export function getStudentDocumentKey(document: StudentDocument, index: number): string {
-  return isUploadedStudentDocument(document)
-    ? `upload-${document.id}`
-    : `checklist-${document}-${index}`;
-}
 
 export function formatStudentDocumentSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
@@ -51,50 +46,28 @@ export function formatStudentDocumentUploadedAt(uploadedAt: string): string {
   return uploadedAtFormatter.format(date);
 }
 
-export function getStudentDocumentMeta(document: StudentDocument): string {
-  if (!isUploadedStudentDocument(document)) return "Checkliste";
-  return `${formatStudentDocumentSize(document.size)} · ${formatStudentDocumentUploadedAt(document.uploadedAt)}`;
+export function getStudentFileMeta(file: Pick<StudentFile, "size" | "uploadedAt">) {
+  return `${formatStudentDocumentSize(file.size)} · ${formatStudentDocumentUploadedAt(file.uploadedAt)}`;
 }
 
-export function hasStudentDocumentNamed(
-  documents: StudentDocument[],
-  name: string,
-): boolean {
+export function hasStudentDocumentNamed(names: string[], name: string): boolean {
   const normalizedName = name.trim().toLocaleLowerCase("de-DE");
-  return documents.some(
-    (document) =>
-      getStudentDocumentName(document).trim().toLocaleLowerCase("de-DE") ===
-      normalizedName,
+  return names.some(
+    (existing) => existing.trim().toLocaleLowerCase("de-DE") === normalizedName,
   );
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-      reject(new Error("Datei konnte nicht gelesen werden."));
-    });
-    reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Datei konnte nicht gelesen werden."));
-    });
-    reader.readAsDataURL(file);
-  });
-}
-
-export async function fileToStudentDocument(
-  file: File,
-): Promise<UploadedStudentDocument> {
-  return {
-    kind: "upload",
-    id: crypto.randomUUID(),
-    name: file.name,
-    mimeType: file.type || "application/octet-stream",
-    size: file.size,
-    uploadedAt: new Date().toISOString(),
-    dataUrl: await readFileAsDataUrl(file),
-  };
+/** German error message for a file the upload endpoint would reject,
+ *  or null if it looks acceptable. */
+export function validateStudentFile(file: { name: string; size: number }): string | null {
+  if (file.size > MAX_STUDENT_DOCUMENT_BYTES) {
+    return `„${file.name}" ist größer als 12 MB.`;
+  }
+  const extension = file.name.includes(".")
+    ? file.name.split(".").pop()!.toLowerCase()
+    : "";
+  if (!ALLOWED_EXTENSIONS.includes(extension)) {
+    return `„${file.name}": nur PDF, PNG, JPEG, WebP oder HEIC erlaubt.`;
+  }
+  return null;
 }

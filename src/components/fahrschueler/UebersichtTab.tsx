@@ -38,11 +38,8 @@ import {
   type StudentEdit,
 } from "./fields";
 import { PortalLinkCard } from "./PortalLinkCard";
-import {
-  getStudentDocumentKey,
-  getStudentDocumentMeta,
-  getStudentDocumentName,
-} from "@/lib/student-documents";
+import { useStudentFiles } from "@/hooks/use-student-files";
+import { getStudentFileMeta } from "@/lib/student-documents";
 
 /** "11.08.1999" → "26 Jahre" (empty string when unparsable). */
 function formatAge(birthday: string): string {
@@ -73,6 +70,7 @@ export function UebersichtTab({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<StudentEdit | null>(null);
   const [saving, setSaving] = useState(false);
+  const { files } = useStudentFiles(student.id);
 
   useEffect(() => {
     if (!editing) return;
@@ -444,25 +442,46 @@ export function UebersichtTab({
               <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
-              {student.documents.length === 0 ? (
+              {student.documents.length === 0 && files.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   Noch keine Dokumente hinterlegt.
                 </p>
               ) : (
-                student.documents.map((document, index) => (
-                  <div
-                    key={getStudentDocumentKey(document, index)}
-                    className="flex min-w-0 items-start gap-2 text-sm"
-                  >
-                    <FileText />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate">{getStudentDocumentName(document)}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {getStudentDocumentMeta(document)}
+                <>
+                  {files.map((file) => (
+                    <div
+                      key={`file-${file.id}`}
+                      className="flex min-w-0 items-start gap-2 text-sm"
+                    >
+                      <FileText />
+                      <span className="flex min-w-0 flex-col">
+                        <a
+                          href={file.url}
+                          target="_blank"
+                          rel="noopener"
+                          className="truncate hover:underline"
+                        >
+                          {file.name}
+                        </a>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {getStudentFileMeta(file)}
+                        </span>
                       </span>
-                    </span>
-                  </div>
-                ))
+                    </div>
+                  ))}
+                  {student.documents.map((document, index) => (
+                    <div
+                      key={`checklist-${document}-${index}`}
+                      className="flex min-w-0 items-start gap-2 text-sm"
+                    >
+                      <FileText />
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate">{document}</span>
+                        <span className="text-xs text-muted-foreground">Checkliste</span>
+                      </span>
+                    </div>
+                  ))}
+                </>
               )}
             </CardContent>
           </Card>
