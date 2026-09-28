@@ -20,6 +20,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { PageHeader } from "./components/PageHeader.tsx";
+import { MeinTagHint } from "./components/MeinTagHint.tsx";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -510,6 +511,7 @@ export function Dashboard() {
             so everything stacks. The cap keeps ultra-wide monitors from
             stretching the cards into slabs. */}
         <div className="stagger-in mx-auto grid w-full max-w-[1800px] grid-cols-1 gap-4 2xl:gap-5 xl:grid-cols-12">
+          <MeinTagHint />
           <div className="xl:col-span-4 2xl:col-span-5">
             <Chart events={events} />
           </div>

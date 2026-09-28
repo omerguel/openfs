@@ -24,6 +24,7 @@ import { Fahrzeuge } from "./Fahrzeuge";
 import { Impressum } from "./Impressum";
 import { Kalendar } from "./Kalendar";
 import { Marketing } from "./Marketing";
+import { MeinTag } from "./MeinTag";
 import { Nachrichten } from "./Nachrichten";
 import { NeueSchueler } from "./NeueSchueler";
 import { Plaudern } from "./Plaudern";
@@ -108,6 +109,12 @@ const calendarRoute = createRoute({
     filter: search.filter === "non-fahrstunde" ? search.filter : undefined,
   }),
   component: Kalendar,
+});
+
+const myDayRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/mein-tag",
+  component: MeinTag,
 });
 
 const vehiclesRoute = createRoute({
@@ -272,6 +279,7 @@ const portalRouteTree = portalRoute.addChildren([
   studentDetailRoute,
   accountingRoute,
   calendarRoute,
+  myDayRoute,
   vehiclesRoute,
   instructorsRoute,
   newStudentRoute,

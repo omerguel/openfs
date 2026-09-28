@@ -78,6 +78,10 @@ export type CalendarEvent = {
   cancellationFeeTransactionId?: number;
   /** Derived: true while the fee transaction has not been storniert. */
   cancellationFeeActive?: boolean;
+  /** Derived: booked amount of the Ausfallentschädigung in cents. */
+  cancellationFeeCents?: number;
+  /** Free-text note for this lesson (Abholort, Lernstand, …). */
+  notes?: string;
   /** Non-blocking hints from create/update (e.g. daily limit exceeded).
       Only present on write responses, never stored. */
   warnings?: string[];
@@ -102,6 +106,7 @@ export type CalendarEventInput = Omit<
   | "cancellationKind"
   | "cancellationFeeTransactionId"
   | "cancellationFeeActive"
+  | "cancellationFeeCents"
   | "warnings"
 > & {
   instructorId?: number | null;
@@ -144,6 +149,7 @@ type CalendarEventRow = {
   cancellation_kind: string | null;
   cancellation_fee_transaction_id: number | null;
   fee_storniert_by: number | null;
+  notes: string | null;
 };
 
 const toEvent = (row: CalendarEventRow): CalendarEvent => {
@@ -181,6 +187,7 @@ const toEvent = (row: CalendarEventRow): CalendarEvent => {
     event.cancellationFeeTransactionId = row.cancellation_fee_transaction_id;
     event.cancellationFeeActive = row.fee_storniert_by == null;
   }
+  if (row.notes) event.notes = row.notes;
   return event;
 };
 
@@ -192,7 +199,7 @@ const SELECT = `
     ce.type, ce.tentative,
     ce.student_id, ce.billed_transaction_id, ce.exam_result,
     ce.lesson_kind, ce.series_id, ce.cancelled_at, ce.cancellation_kind,
-    ce.cancellation_fee_transaction_id,
+    ce.cancellation_fee_transaction_id, ce.notes,
     CASE
       WHEN ce.billed_transaction_id IS NOT NULL THEN (
         SELECT t.storniert_by FROM transactions t WHERE t.id = ce.billed_transaction_id
@@ -209,6 +216,34 @@ const SELECT = `
   FROM calendar_events ce
 `;
 
+/* Booked amount of each Ausfallentschädigung (sum of its bookings).
+   Separate from SELECT because minimal schemas (some unit tests) have
+   no bookings table. */
+function withFeeAmounts(db: Database, events: CalendarEvent[]): CalendarEvent[] {
+  const ids = events
+    .map((event) => event.cancellationFeeTransactionId)
+    .filter((id): id is number => id != null);
+  if (ids.length === 0 || !tableExists(db, "bookings")) return events;
+  const amounts = new Map(
+    db
+      .query<{ transaction_id: number; cents: number }, number[]>(
+        `SELECT transaction_id, sum(amount_cents) AS cents FROM bookings
+         WHERE transaction_id IN (${ids.map(() => "?").join(",")})
+         GROUP BY transaction_id`,
+      )
+      .all(...ids)
+      .map((row) => [row.transaction_id, row.cents]),
+  );
+  for (const event of events) {
+    const cents =
+      event.cancellationFeeTransactionId != null
+        ? amounts.get(event.cancellationFeeTransactionId)
+        : undefined;
+    if (cents != null) event.cancellationFeeCents = cents;
+  }
+  return events;
+}
+
 export function listCalendarEvents(
   db: Database,
   filter?: { from?: string; to?: string },
@@ -224,16 +259,19 @@ export function listCalendarEvents(
     params.push(filter.to);
   }
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
-  return db
-    .query<CalendarEventRow, string[]>(`${SELECT}${where} ORDER BY ce.date, ce.start`)
-    .all(...params)
-    .map(toEvent);
+  return withFeeAmounts(
+    db,
+    db
+      .query<CalendarEventRow, string[]>(`${SELECT}${where} ORDER BY ce.date, ce.start`)
+      .all(...params)
+      .map(toEvent),
+  );
 }
 
 export function getCalendarEvent(db: Database, id: number): CalendarEvent {
   const row = db.query<CalendarEventRow, [number]>(`${SELECT} WHERE ce.id = ?`).get(id);
   if (!row) throw new ValidationError("Termin nicht gefunden.");
-  return toEvent(row);
+  return withFeeAmounts(db, [toEvent(row)])[0]!;
 }
 
 const toMinutes = (value: string): number => {
@@ -254,6 +292,7 @@ const EMPTY: CalendarEventData = {
   tentative: false,
   studentId: undefined,
   lessonKind: null,
+  notes: "",
 };
 
 /* Merge a partial payload over current values, trimming strings and
@@ -264,7 +303,7 @@ function normalize(
   current: CalendarEventData,
 ): CalendarEventData {
   const str = (
-    key: "date" | "start" | "end" | "title" | "subtitle" | "location",
+    key: "date" | "start" | "end" | "title" | "subtitle" | "location" | "notes",
     fallback: string,
   ): string => {
     const value = input[key];
@@ -359,6 +398,11 @@ function normalize(
   }
   if (type !== "Praktisch") lessonKind = null;
 
+  const notes = str("notes", current.notes ?? "");
+  if (notes.length > 2000) {
+    throw new ValidationError("Notiz darf höchstens 2000 Zeichen lang sein.");
+  }
+
   return {
     date,
     start,
@@ -366,6 +410,7 @@ function normalize(
     title,
     subtitle: str("subtitle", current.subtitle ?? ""),
     location: str("location", current.location ?? ""),
+    notes,
     instructorId,
     vehicleId,
     type: type as CalendarEventType,
@@ -379,64 +424,82 @@ function normalize(
 /* Scheduling checks (absences, overlaps) and daily-limit warnings     */
 /* ------------------------------------------------------------------ */
 
-/** Throws when the instructor is absent on that day or when the slot
-    overlaps another non-cancelled event of the same instructor or
-    vehicle. `excludeId` is the event being updated. */
+type OverlapRow = {
+  title: string;
+  subtitle: string;
+  start: string;
+  end: string;
+  instructor: string;
+  vehicle: string;
+};
+
+/** First non-cancelled event on the same day that overlaps the slot and
+    uses the given resource. Touching edges don't overlap ("HH:MM" strings
+    compare correctly as text). */
+function findResourceOverlap(
+  db: Database,
+  column: "instructor_id" | "vehicle_id",
+  resourceId: number,
+  data: Pick<CalendarEventData, "date" | "start" | "end">,
+  excludeId: number | null,
+): OverlapRow | null {
+  return db
+    .query<OverlapRow, [number, string, string, string, number]>(
+      `SELECT ce.title, ce.subtitle, ce.start, ce."end",
+              ${instructorNameSql("ce")} AS instructor, ${vehicleNameSql("ce", "")} AS vehicle
+       FROM calendar_events ce
+       WHERE ce.id != ? AND ce.date = ? AND ce.cancelled_at IS NULL
+         AND ce.start < ? AND ce."end" > ? AND ce.${column} = ?
+       ORDER BY ce.start
+       LIMIT 1`,
+    )
+    .get(excludeId ?? 0, data.date, data.end, data.start, resourceId);
+}
+
+const describeOverlap = (row: OverlapRow) =>
+  `„${row.title}“${row.subtitle ? ` mit ${row.subtitle}` : ""} (${row.start}–${row.end})`;
+
+/** Scheduling rules for a new or moved Termin:
+    - A vehicle can only be in one place: a double booking is always
+      rejected, even with allowConflicts.
+    - An absent instructor or an instructor overlap is rejected unless the
+      user confirmed it (allowConflicts) — those can be intentional (e.g.
+      a Besprechung during a lesson, a hand-over at the Prüfstelle).
+    `excludeId` is the event being updated. */
 export function checkScheduling(
   db: Database,
   data: Pick<CalendarEventData, "date" | "start" | "end" | "instructorId" | "vehicleId">,
   excludeId: number | null,
+  options: { allowConflicts?: boolean } = {},
 ): void {
-  if (data.instructorId != null) {
-    const absence = findAbsence(db, data.instructorId, data.date);
-    if (absence) {
+  if (data.vehicleId != null) {
+    const clash = findResourceOverlap(db, "vehicle_id", data.vehicleId, data, excludeId);
+    if (clash) {
       throw new ValidationError(
-        `${absence.instructor} ist am ${formatGermanDate(data.date)} abwesend (${absence.kind}).`,
+        `Fahrzeug ${clash.vehicle} ist bereits belegt: ${describeOverlap(clash)}${
+          clash.instructor ? ` bei ${clash.instructor}` : ""
+        }. Bitte ein anderes Fahrzeug oder eine andere Zeit wählen.`,
       );
     }
   }
-  if (data.instructorId == null && data.vehicleId == null) return;
+  if (options.allowConflicts === true || data.instructorId == null) return;
 
-  // "HH:MM" strings compare correctly as text; touching edges don't overlap.
-  const conflict = db
-    .query<
-      {
-        title: string;
-        start: string;
-        end: string;
-        same_instructor: number;
-        instructor: string;
-        vehicle: string;
-      },
-      [number, number, string, string, string, number, number, number, number]
-    >(
-      `SELECT ce.title, ce.start, ce."end",
-              (ce.instructor_id IS NOT NULL AND ce.instructor_id = ?) AS same_instructor,
-              ${instructorNameSql("ce")} AS instructor, ${vehicleNameSql("ce", "")} AS vehicle
-       FROM calendar_events ce
-       WHERE ce.id != ? AND ce.date = ? AND ce.cancelled_at IS NULL
-         AND ce.start < ? AND ce."end" > ?
-         AND ((? != 0 AND ce.instructor_id = ?) OR (? != 0 AND ce.vehicle_id = ?))
-       ORDER BY same_instructor DESC, ce.start
-       LIMIT 1`,
-    )
-    .get(
-      data.instructorId ?? 0,
-      excludeId ?? 0,
-      data.date,
-      data.end,
-      data.start,
-      data.instructorId ?? 0,
-      data.instructorId ?? 0,
-      data.vehicleId ?? 0,
-      data.vehicleId ?? 0,
-    );
-  if (conflict) {
-    const resource = conflict.same_instructor
-      ? `Fahrlehrer/in ${conflict.instructor}`
-      : `Fahrzeug ${conflict.vehicle}`;
+  const absence = findAbsence(db, data.instructorId, data.date);
+  if (absence) {
     throw new ValidationError(
-      `Überschneidung mit „${conflict.title}“ (${conflict.start}–${conflict.end}) für ${resource}.`,
+      `${absence.instructor} ist am ${formatGermanDate(data.date)} abwesend (${absence.kind}).`,
+    );
+  }
+  const overlap = findResourceOverlap(
+    db,
+    "instructor_id",
+    data.instructorId,
+    data,
+    excludeId,
+  );
+  if (overlap) {
+    throw new ValidationError(
+      `Überschneidung mit ${describeOverlap(overlap)} für Fahrlehrer/in ${overlap.instructor}.`,
     );
   }
 }
@@ -469,8 +532,26 @@ export function dailyLimitWarnings(db: Database, event: CalendarEvent): string[]
   ];
 }
 
-const withWarnings = (db: Database, event: CalendarEvent): CalendarEvent => {
-  const warnings = dailyLimitWarnings(db, event);
+/** Hint when the booked vehicle is marked as "wartung" (not blocking:
+    the status may be outdated, the office decides). */
+export function vehicleWarnings(db: Database, event: CalendarEvent): string[] {
+  if (event.vehicleId == null || event.cancelledAt) return [];
+  const row = db
+    .query<{ status: string }, [number]>("SELECT status FROM vehicles WHERE id = ?")
+    .get(event.vehicleId);
+  if (row?.status !== "wartung") return [];
+  return [`Fahrzeug ${event.vehicle} ist als „In Wartung“ markiert.`];
+}
+
+const withWarnings = (
+  db: Database,
+  event: CalendarEvent,
+  checkVehicle = true,
+): CalendarEvent => {
+  const warnings = [
+    ...dailyLimitWarnings(db, event),
+    ...(checkVehicle ? vehicleWarnings(db, event) : []),
+  ];
   return warnings.length ? { ...event, warnings } : event;
 };
 
@@ -480,7 +561,7 @@ export function createCalendarEvent(
   options: { seriesId?: string } = {},
 ): CalendarEvent {
   const data = normalize(db, input, EMPTY);
-  if (input.allowConflicts !== true) checkScheduling(db, data, null);
+  checkScheduling(db, data, null, { allowConflicts: input.allowConflicts === true });
   const row = db
     .query<
       { id: number },
@@ -498,12 +579,13 @@ export function createCalendarEvent(
         number | null,
         string | null,
         string | null,
+        string,
       ]
     >(
       `INSERT INTO calendar_events
          (date, start, "end", title, subtitle, location, instructor_id, vehicle_id, type,
-          tentative, student_id, lesson_kind, series_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          tentative, student_id, lesson_kind, series_id, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       data.date,
@@ -519,6 +601,7 @@ export function createCalendarEvent(
       data.studentId ?? null,
       data.lessonKind,
       options.seriesId ?? null,
+      data.notes ?? "",
     )!;
   return withWarnings(db, getCalendarEvent(db, row.id));
 }
@@ -542,14 +625,14 @@ export function updateCalendarEvent(
     data.end !== current.end ||
     data.instructorId !== current.instructorId ||
     data.vehicleId !== current.vehicleId;
-  if (moved && !current.cancelledAt && input.allowConflicts !== true) {
-    checkScheduling(db, data, id);
+  if (moved && !current.cancelledAt) {
+    checkScheduling(db, data, id, { allowConflicts: input.allowConflicts === true });
   }
   db.prepare(
     `UPDATE calendar_events
      SET date = ?, start = ?, "end" = ?, title = ?, subtitle = ?, location = ?,
          instructor_id = ?, vehicle_id = ?, type = ?, tentative = ?, student_id = ?,
-         lesson_kind = ?
+         lesson_kind = ?, notes = ?
      WHERE id = ?`,
   ).run(
     data.date,
@@ -564,9 +647,10 @@ export function updateCalendarEvent(
     data.tentative ? 1 : 0,
     data.studentId ?? null,
     data.lessonKind,
+    data.notes ?? "",
     id,
   );
-  return withWarnings(db, getCalendarEvent(db, id));
+  return withWarnings(db, getCalendarEvent(db, id), moved);
 }
 
 /** Mark an event as billed by storing the transaction id. Call this

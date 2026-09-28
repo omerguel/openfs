@@ -56,6 +56,10 @@ export type CalEvent = {
   cancellationFeeTransactionId?: number;
   /** Derived: fee booked and not storniert. */
   cancellationFeeActive?: boolean;
+  /** Derived: booked Ausfallentschädigung in cents. */
+  cancellationFeeCents?: number;
+  /** Free-text note for this lesson (Abholort, Lernstand, …). */
+  notes?: string;
   /** Non-blocking hints returned by create/update (never stored). */
   warnings?: string[];
 };

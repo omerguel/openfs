@@ -480,6 +480,75 @@ describe("theoryGroupRoutes", () => {
 /* ------------------------------------------------------------------ */
 
 describe("attendance domain", () => {
+  const theoryEvent = (date: string, type = "Theorie") =>
+    db
+      .query<{ id: number }, [string, string]>(
+        `INSERT INTO calendar_events (date, start, "end", title, type)
+         VALUES (?, '18:00', '19:30', 'Thema 9: Fahrmanöver', ?) RETURNING id`,
+      )
+      .get(date, type)!.id;
+
+  test("topic and calendar Termin are stored per session", () => {
+    const anna = insertStudent(db, "Anna", "Albers");
+    const group = createTheoryGroup(db, { ...VALID, studentIds: [anna] });
+    const eventId = theoryEvent("2026-06-09");
+
+    setAttendance(db, group.id, "2026-06-09", [{ studentId: anna, attended: true }], {
+      topic: " Grundstoff 9 ",
+      eventId,
+    });
+    expect(listAttendance(db, group.id)[0]).toMatchObject({
+      sessionDate: "2026-06-09",
+      topic: "Grundstoff 9",
+      eventId,
+    });
+
+    // Re-saving without meta keeps the stored topic and link.
+    setAttendance(db, group.id, "2026-06-09", [{ studentId: anna, attended: false }]);
+    expect(listAttendance(db, group.id)[0]).toMatchObject({
+      topic: "Grundstoff 9",
+      eventId,
+    });
+
+    // Changing only the topic keeps the link.
+    setAttendance(db, group.id, "2026-06-09", [{ studentId: anna, attended: true }], {
+      topic: "Grundstoff 10",
+    });
+    expect(listAttendance(db, group.id)[0]).toMatchObject({
+      topic: "Grundstoff 10",
+      eventId,
+    });
+  });
+
+  test("sessions without meta report an empty topic", () => {
+    const anna = insertStudent(db, "Anna", "Albers");
+    const group = createTheoryGroup(db, { ...VALID, studentIds: [anna] });
+    setAttendance(db, group.id, "2026-06-09", [{ studentId: anna, attended: true }]);
+    expect(listAttendance(db, group.id)[0]).toMatchObject({ topic: "", eventId: null });
+  });
+
+  test("the linked Termin must be a Theorie Termin on the session date", () => {
+    const anna = insertStudent(db, "Anna", "Albers");
+    const group = createTheoryGroup(db, { ...VALID, studentIds: [anna] });
+    const entries = [{ studentId: anna, attended: true }];
+    expect(() =>
+      setAttendance(db, group.id, "2026-06-09", entries, { eventId: 999999 }),
+    ).toThrow("Termin nicht gefunden.");
+    expect(() =>
+      setAttendance(db, group.id, "2026-06-09", entries, {
+        eventId: theoryEvent("2026-06-09", "Praktisch"),
+      }),
+    ).toThrow(/nur zu Theorie-Terminen/);
+    expect(() =>
+      setAttendance(db, group.id, "2026-06-10", entries, {
+        eventId: theoryEvent("2026-06-09"),
+      }),
+    ).toThrow(/Datum des Termins/);
+    expect(() =>
+      setAttendance(db, group.id, "2026-06-09", entries, { topic: "x".repeat(201) }),
+    ).toThrow(/höchstens 200 Zeichen/);
+  });
+
   test("happy upsert: setAttendance creates rows, listAttendance returns them", () => {
     const anna = insertStudent(db, "Anna", "Albers");
     const ben = insertStudent(db, "Ben", "Berger");

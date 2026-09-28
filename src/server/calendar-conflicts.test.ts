@@ -39,7 +39,13 @@ describe("listSchedulingConflicts", () => {
 
   test("reports instructor and vehicle overlaps as separate pairs", () => {
     const a = lesson({ vehicle: "VW Golf", title: "A" });
-    const b = lesson({ start: "09:30", end: "10:30", vehicle: "VW Golf", title: "B" });
+    // New vehicle double bookings are rejected outright; this is legacy
+    // data from before that rule.
+    const b = lesson({ start: "09:30", end: "10:30", title: "B" });
+    db.prepare("UPDATE calendar_events SET vehicle_id = ? WHERE id = ?").run(
+      a.vehicleId,
+      Number(b.id),
+    );
     lesson({ start: "10:00", end: "11:00", instructor: "Nadine Aksoy", title: "C" });
     const result = listSchedulingConflicts(db, RANGE);
     expect(result.count).toBe(2);

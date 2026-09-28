@@ -2,12 +2,13 @@
 /* Arbeitszeiten — per instructor and day: practical / theory / other  */
 /* minutes from the calendar (cancelled Termine excluded), with the    */
 /* Fahrlehrergesetz daily limit for practical instruction flagged.     */
+/* Absences (Urlaub, Krank, …) in the period are listed per person.    */
 /* ------------------------------------------------------------------ */
 
 import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import { useInstructorHours } from "@/hooks/use-absences";
+import { type Absence, useAbsences, useInstructorHours } from "@/hooks/use-absences";
 import { addDays, parseISODate, startOfWeek, toISODate } from "@/lib/calendar-data";
 import { formatGermanDate, PRACTICAL_LIMIT_LABEL } from "@/lib/working-time";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,16 @@ export function WorkingTimeReport() {
   const [anchor, setAnchor] = useState(() => new Date());
   const range = useMemo(() => rangeFor(mode, anchor), [mode, anchor]);
   const { data: report, isPending, error } = useInstructorHours(range.from, range.to);
+  const { data: absences = [] } = useAbsences({ from: range.from, to: range.to });
+  const absencesFor = (instructorId: number): Absence[] =>
+    absences.filter((absence) => absence.instructorId === instructorId);
+  const absentOn = (instructorId: number, date: string) =>
+    absences.find(
+      (absence) =>
+        absence.instructorId === instructorId &&
+        absence.fromDate <= date &&
+        absence.toDate >= date,
+    );
 
   const move = (direction: -1 | 1) =>
     setAnchor((current) =>
@@ -158,6 +169,25 @@ export function WorkingTimeReport() {
                   )}
                 </dl>
               </header>
+              {absencesFor(row.instructorId).length > 0 && (
+                <ul className="flex flex-wrap gap-x-4 gap-y-1 border-b px-4 py-2 text-xs text-muted-foreground">
+                  {absencesFor(row.instructorId).map((absence) => (
+                    <li key={absence.id} className="flex items-center gap-1.5">
+                      <span
+                        aria-hidden
+                        className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                      />
+                      <span className="font-medium text-foreground">{absence.kind}</span>
+                      <span className="tabular-nums">
+                        {absence.fromDate === absence.toDate
+                          ? formatGermanDate(absence.fromDate)
+                          : `${formatGermanDate(absence.fromDate)} – ${formatGermanDate(absence.toDate)}`}
+                      </span>
+                      {absence.note && <span>· {absence.note}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {row.days.length === 0 ? (
                 <p className="px-4 py-3 text-sm text-muted-foreground">
                   Keine Termine im Zeitraum.
@@ -202,6 +232,16 @@ export function WorkingTimeReport() {
                           {formatHours(day.totalMinutes)}
                         </TableCell>
                         <TableCell className="pr-4 whitespace-normal">
+                          {absentOn(row.instructorId, day.date) && (
+                            <span className="mr-3 inline-flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                              <span
+                                aria-hidden
+                                className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                              />
+                              Termine trotz Abwesenheit (
+                              {absentOn(row.instructorId, day.date)!.kind})
+                            </span>
+                          )}
                           {day.overLimit && (
                             <span className="inline-flex items-center gap-1.5 text-xs text-destructive">
                               <span

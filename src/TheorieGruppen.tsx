@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
+import { AttendanceDialog } from "./components/theorie/AttendanceDialog.tsx";
 import { panelActionsClass, panelInteractiveClass } from "./components/Panel.tsx";
 import { useInstructors } from "@/hooks/use-instructors";
 import { useStudents } from "@/hooks/use-students";
@@ -20,10 +21,6 @@ import {
   createTheoryGroup,
   updateTheoryGroup,
   deleteTheoryGroup,
-  fetchAttendance,
-  putAttendance,
-  type AttendanceEntry,
-  type AttendanceSession,
   type TheoryGroup,
   type TheoryGroupInput,
   type TheoryGroupStatus,
@@ -40,7 +37,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardAction,
@@ -494,211 +490,6 @@ function MembersDialog({
 }
 
 /* ------------------------------------------------------------------ */
-/* Attendance helpers                                                  */
-/* ------------------------------------------------------------------ */
-
-const WEEKDAY_ISO: Record<string, number> = {
-  Montag: 1,
-  Dienstag: 2,
-  Mittwoch: 3,
-  Donnerstag: 4,
-  Freitag: 5,
-  Samstag: 6,
-  Sonntag: 0,
-};
-
-/** Returns the ISO "YYYY-MM-DD" of today or the most recent past occurrence
- *  of the given weekday name (German). */
-function lastOccurrence(weekday: string): string {
-  const targetDow = WEEKDAY_ISO[weekday] ?? 1;
-  const today = new Date();
-  const todayDow = today.getDay(); // 0=Sun…6=Sat
-  const diff = (todayDow - targetDow + 7) % 7;
-  const date = new Date(today);
-  date.setDate(today.getDate() - diff);
-  return date.toISOString().slice(0, 10);
-}
-
-/* ------------------------------------------------------------------ */
-/* Attendance dialog                                                   */
-/* ------------------------------------------------------------------ */
-
-function AttendanceDialog({
-  group,
-  open,
-  onOpenChange,
-}: {
-  group: TheoryGroup | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const [sessions, setSessions] = useState<AttendanceSession[]>([]);
-  const [sessionDate, setSessionDate] = useState<string>("");
-  const [checked, setChecked] = useState<Record<number, boolean>>({});
-  const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  // Load attendance whenever the dialog opens for a group
-  useEffect(() => {
-    if (!open || !group) {
-      setSessions([]);
-      setChecked({});
-      return;
-    }
-
-    const defaultDate = lastOccurrence(group.weekday);
-    setSessionDate(defaultDate);
-
-    setLoading(true);
-    fetchAttendance(group.id)
-      .then((fetched) => {
-        setSessions(fetched);
-        // Pre-fill the checkboxes from the most recent session for this date
-        const existing = fetched.find((s) => s.sessionDate === defaultDate);
-        if (existing) {
-          const map: Record<number, boolean> = {};
-          for (const e of existing.entries) map[e.studentId] = e.attended;
-          setChecked(map);
-        } else {
-          // Default: all members checked (present)
-          const map: Record<number, boolean> = {};
-          for (const m of group.members) map[m.id] = true;
-          setChecked(map);
-        }
-      })
-      .catch(() => toast.error("Anwesenheit konnte nicht geladen werden."))
-      .finally(() => setLoading(false));
-  }, [open, group?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // When the date changes, re-populate checkboxes from existing session data
-  function handleDateChange(date: string) {
-    setSessionDate(date);
-    if (!group) return;
-    const existing = sessions.find((s) => s.sessionDate === date);
-    if (existing) {
-      const map: Record<number, boolean> = {};
-      for (const e of existing.entries) map[e.studentId] = e.attended;
-      setChecked(map);
-    } else {
-      const map: Record<number, boolean> = {};
-      for (const m of group.members) map[m.id] = true;
-      setChecked(map);
-    }
-  }
-
-  async function save() {
-    if (!group || !sessionDate) return;
-    setBusy(true);
-    try {
-      const entries: AttendanceEntry[] = group.members.map((m) => ({
-        studentId: m.id,
-        attended: checked[m.id] ?? false,
-      }));
-      const updated = await putAttendance(group.id, sessionDate, entries);
-      setSessions(updated);
-      toast.success("Anwesenheit gespeichert.");
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Anwesenheit konnte nicht gespeichert werden.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!group) return null;
-
-  // Build per-member attended counts from all sessions
-  const countByMember: Record<number, number> = {};
-  for (const session of sessions) {
-    for (const entry of session.entries) {
-      if (entry.attended) {
-        countByMember[entry.studentId] = (countByMember[entry.studentId] ?? 0) + 1;
-      }
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Anwesenheit</DialogTitle>
-          <DialogDescription>{group.name}</DialogDescription>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-4">
-          <Field>
-            <FieldLabel htmlFor="attendance-date">Datum</FieldLabel>
-            <Input
-              id="attendance-date"
-              type="date"
-              value={sessionDate}
-              onChange={(e) => handleDateChange(e.target.value)}
-            />
-          </Field>
-
-          <Separator />
-
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Lade Anwesenheit…</p>
-          ) : group.members.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Keine Teilnehmer in dieser Gruppe.
-            </p>
-          ) : (
-            <ul className="flex max-h-64 flex-col gap-1 overflow-auto">
-              {group.members.map((member) => (
-                <li
-                  key={member.id}
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Checkbox
-                      id={`attendance-${member.id}`}
-                      checked={checked[member.id] ?? false}
-                      onCheckedChange={(value) =>
-                        setChecked((prev) => ({ ...prev, [member.id]: !!value }))
-                      }
-                    />
-                    <label
-                      htmlFor={`attendance-${member.id}`}
-                      className="truncate text-sm font-medium cursor-pointer"
-                    >
-                      {member.name}
-                    </label>
-                  </div>
-                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {countByMember[member.id] ?? 0}{" "}
-                    {(countByMember[member.id] ?? 0) === 1 ? "Einheit" : "Einheiten"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type="button" variant="outline">
-              Schließen
-            </Button>
-          </DialogClose>
-          <Button
-            type="button"
-            disabled={busy || loading || group.members.length === 0 || !sessionDate}
-            onClick={() => void save()}
-          >
-            Speichern
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Group card                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -958,7 +749,8 @@ export function TheorieGruppen() {
       />
 
       <AttendanceDialog
-        group={attendanceGroup}
+        groups={attendanceGroup ? [attendanceGroup] : []}
+        prefill={attendanceGroup ? { groupId: attendanceGroup.id } : undefined}
         open={attendanceGroup !== null}
         onOpenChange={(open) => {
           if (!open) setAttendanceGroupId(null);

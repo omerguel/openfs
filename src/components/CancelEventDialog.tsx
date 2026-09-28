@@ -59,7 +59,10 @@ export function CancelEventDialog({
   const defaultFeeCents = useMemo(() => {
     if (policy.feeCents > 0) return policy.feeCents;
     const student = students.find((candidate) => candidate.id === event?.studentId);
-    const plan = plans.find((candidate) => candidate.id === student?.pricePlanId);
+    // No plan assigned → the default (first) plan, like the Preise tab
+    // and the server.
+    const plan =
+      plans.find((candidate) => candidate.id === student?.pricePlanId) ?? plans[0];
     return resolveLessonPrice(plan)?.priceCents ?? null;
   }, [event?.studentId, plans, policy.feeCents, students]);
 
@@ -170,12 +173,19 @@ export function CancelEventDialog({
           {chargeFee && hasStudent && (
             <Field>
               <FieldLabel htmlFor="cancel-fee">Betrag (EUR)</FieldLabel>
+              {defaultFeeCents == null && (
+                <p className="text-xs text-muted-foreground">
+                  Im Preisplan ist kein Preis für eine Fahrübungsstunde hinterlegt — bitte
+                  den Betrag eingeben.
+                </p>
+              )}
               <Input
                 id="cancel-fee"
                 inputMode="decimal"
                 className="tabular-nums"
                 placeholder="z. B. 65,00"
                 value={amount}
+                required
                 aria-invalid={feeCents == null || feeCents <= 0}
                 onChange={(e) => setAmount(e.target.value)}
               />

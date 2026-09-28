@@ -748,6 +748,7 @@ export function migrateCalendarEventScheduling(db: Database) {
     "TEXT CHECK (cancellation_kind IN ('abgesagt','nicht_erschienen'))",
   );
   add("cancellation_fee_transaction_id", "INTEGER REFERENCES transactions(id)");
+  add("notes", "TEXT NOT NULL DEFAULT ''");
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_calendar_events_series ON calendar_events(series_id);",
   );

@@ -730,17 +730,19 @@ export function StundenTab({
                               <span className="size-1.5 rounded-full border border-current" />
                               Offen
                             </span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-xs"
-                              onClick={() =>
-                                isExam ? setExamBillTarget(event) : setBillTarget(event)
-                              }
-                            >
-                              <Receipt className="mr-1 size-3" />
-                              Abrechnen
-                            </Button>
+                            {canSeeMoney && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                onClick={() =>
+                                  isExam ? setExamBillTarget(event) : setBillTarget(event)
+                                }
+                              >
+                                <Receipt className="mr-1 size-3" />
+                                Abrechnen
+                              </Button>
+                            )}
                             {cancelButton}
                           </div>
                         )}
