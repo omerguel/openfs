@@ -678,7 +678,11 @@ describe("vehicle maintenance warning", () => {
   test("booking a vehicle in 'wartung' returns a warning, not an error", () => {
     const event = createCalendarEvent(db, { ...VALID, vehicle: "Audi A3" });
     expect(event.warnings).toEqual(["Fahrzeug Audi A3 ist als „In Wartung“ markiert."]);
-    const ok = createCalendarEvent(db, { ...VALID, date: "2026-06-11", vehicle: "VW Golf" });
+    const ok = createCalendarEvent(db, {
+      ...VALID,
+      date: "2026-06-11",
+      vehicle: "VW Golf",
+    });
     expect(ok.warnings).toBeUndefined();
   });
 

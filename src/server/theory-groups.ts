@@ -590,7 +590,9 @@ export function setAttendance(
       .get(eventId);
     if (!event) throw new ValidationError("Termin nicht gefunden.");
     if (event.type !== "Theorie") {
-      throw new ValidationError("Anwesenheit kann nur zu Theorie-Terminen erfasst werden.");
+      throw new ValidationError(
+        "Anwesenheit kann nur zu Theorie-Terminen erfasst werden.",
+      );
     }
     if (event.date !== sessionDate) {
       throw new ValidationError("Datum muss dem Datum des Termins entsprechen.");

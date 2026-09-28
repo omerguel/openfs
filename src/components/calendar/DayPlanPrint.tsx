@@ -54,11 +54,7 @@ export function DayPlanPrint({ plan, onDone }: { plan: DayPlan; onDone: () => vo
 
   return createPortal(
     <div className="text-[11pt] text-black">
-      {byInstructor.size === 0 && (
-        <p>
-          Keine Termine am {dateLabel}.
-        </p>
-      )}
+      {byInstructor.size === 0 && <p>Keine Termine am {dateLabel}.</p>}
       {[...byInstructor.entries()].map(([instructor, events], index) => (
         <section
           key={instructor}
@@ -95,7 +91,9 @@ export function DayPlanPrint({ plan, onDone }: { plan: DayPlan; onDone: () => vo
                     )}
                   </td>
                   <td className="py-1.5 pr-2 whitespace-nowrap tabular-nums">
-                    {event.studentId != null ? (plan.phones.get(event.studentId) ?? "") : ""}
+                    {event.studentId != null
+                      ? (plan.phones.get(event.studentId) ?? "")
+                      : ""}
                   </td>
                   <td className="py-1.5 pr-2">{event.lessonKind ?? event.type}</td>
                   <td className="py-1.5 pr-2">{event.vehicle ?? ""}</td>

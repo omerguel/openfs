@@ -58,7 +58,10 @@ export function DatePickerField({
           type="button"
           variant="outline"
           aria-invalid={ariaInvalid}
-          className={cn("h-8 w-full justify-start px-2.5 font-normal tabular-nums", className)}
+          className={cn(
+            "h-8 w-full justify-start px-2.5 font-normal tabular-nums",
+            className,
+          )}
         >
           <CalendarDays data-icon="inline-start" />
           <span className={cn("truncate", !value && "text-muted-foreground")}>

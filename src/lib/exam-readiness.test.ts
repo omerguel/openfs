@@ -88,7 +88,11 @@ describe("rankForExamPlanning", () => {
     };
     const done = { ...student, id: 9, firstName: "Lena", licenseDate: "2026-01-01" };
     const inactive = { ...student, id: 10, status: "inaktiv" as const };
-    const ranked = rankForExamPlanning([student, ready, done, inactive], [], "2026-09-28");
+    const ranked = rankForExamPlanning(
+      [student, ready, done, inactive],
+      [],
+      "2026-09-28",
+    );
     expect(ranked.map(({ student: entry }) => entry.id)).toEqual([8, 7]);
   });
 });

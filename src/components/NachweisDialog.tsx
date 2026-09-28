@@ -82,14 +82,15 @@ export function NachweisDialog({
         <DialogHeader>
           <DialogTitle>Ausbildungsnachweis erfassen</DialogTitle>
           <DialogDescription className="tabular-nums">
-            {event.subtitle ?? "Ohne Fahrschüler"} · {dateLabel} · {event.start}–{event.end}{" "}
-            ({durationMin} Min.)
+            {event.subtitle ?? "Ohne Fahrschüler"} · {dateLabel} · {event.start}–
+            {event.end} ({durationMin} Min.)
           </DialogDescription>
         </DialogHeader>
 
         {studentId == null ? (
           <p className="text-sm text-destructive">
-            Kein Fahrschüler verknüpft — bitte den Termin zuerst einem Fahrschüler zuordnen.
+            Kein Fahrschüler verknüpft — bitte den Termin zuerst einem Fahrschüler
+            zuordnen.
           </p>
         ) : (
           <div className="flex flex-col gap-4">
@@ -101,12 +102,16 @@ export function NachweisDialog({
                 <dd>{event.instructor}</dd>
               </div>
               <div>
-                <dt className="text-[11px] font-medium text-muted-foreground">Fahrzeug</dt>
+                <dt className="text-[11px] font-medium text-muted-foreground">
+                  Fahrzeug
+                </dt>
                 <dd>{event.vehicle ?? "–"}</dd>
               </div>
               {event.lessonKind && (
                 <div>
-                  <dt className="text-[11px] font-medium text-muted-foreground">Fahrtart</dt>
+                  <dt className="text-[11px] font-medium text-muted-foreground">
+                    Fahrtart
+                  </dt>
                   <dd>{event.lessonKind}</dd>
                 </div>
               )}

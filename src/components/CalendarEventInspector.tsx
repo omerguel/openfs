@@ -295,7 +295,11 @@ export function CalendarEventInspector({
                 </a>
               )}
             </DetailRow>
-            <DetailRow icon={GraduationCap} label="Fahrlehrer/in" muted={!event.instructor}>
+            <DetailRow
+              icon={GraduationCap}
+              label="Fahrlehrer/in"
+              muted={!event.instructor}
+            >
               {event.instructor || "Nicht zugeteilt"}
             </DetailRow>
             <DetailRow icon={Car} label="Fahrzeug" muted={!hasVehicle}>

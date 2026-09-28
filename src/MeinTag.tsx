@@ -172,7 +172,9 @@ function LessonCard({
         </div>
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className={cn("text-[15px] font-semibold", cancelled && "line-through")}>
+            <span
+              className={cn("text-[15px] font-semibold", cancelled && "line-through")}
+            >
               {primary}
             </span>
             {isNext && !cancelled && (
@@ -297,7 +299,8 @@ export function MeinTag() {
       .filter((event) => event.date === iso)
       .toSorted((a, b) => a.start.localeCompare(b.start));
   const lessons = byDay(date);
-  const countFor = (iso: string) => byDay(iso).filter((event) => !event.cancelledAt).length;
+  const countFor = (iso: string) =>
+    byDay(iso).filter((event) => !event.cancelledAt).length;
 
   const phoneById = useMemo(
     () => new Map(students.map((student) => [student.id, student.phone])),
@@ -305,7 +308,8 @@ export function MeinTag() {
   );
 
   const attestable = lessons.filter(
-    (event) => event.type === "Praktisch" && event.studentId != null && !event.cancelledAt,
+    (event) =>
+      event.type === "Praktisch" && event.studentId != null && !event.cancelledAt,
   );
   // One request per student of the day (not per lesson) — the per-event
   // endpoint answers 404 for lessons without a Nachweis.
@@ -364,7 +368,9 @@ export function MeinTag() {
           </Button>
         }
       >
-        <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">Mein Tag</h1>
+        <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
+          Mein Tag
+        </h1>
       </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-y-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background">
@@ -425,8 +431,8 @@ export function MeinTag() {
               <EmptyHeader>
                 <EmptyTitle>Kein Fahrlehrer-Profil verknüpft</EmptyTitle>
                 <EmptyDescription>
-                  Ihr Benutzerkonto ist noch keinem Fahrlehrer zugeordnet. Bitte wenden Sie
-                  sich an das Büro (Benutzer verwalten).
+                  Ihr Benutzerkonto ist noch keinem Fahrlehrer zugeordnet. Bitte wenden
+                  Sie sich an das Büro (Benutzer verwalten).
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>

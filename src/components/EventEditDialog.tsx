@@ -88,7 +88,8 @@ const keepDialogOpenForFloatingContent = (event: Event) => {
 const vehicleForLabel = (vehicles: Vehicle[], label: string | undefined) =>
   label
     ? vehicles.find(
-        (vehicle) => label === vehicle.model || label === `${vehicle.model} · ${vehicle.plate}`,
+        (vehicle) =>
+          label === vehicle.model || label === `${vehicle.model} · ${vehicle.plate}`,
       )
     : undefined;
 
@@ -282,7 +283,8 @@ export function EventEditDialog({
         next.instructor = student.instructor;
         taken.push(`Fahrlehrer/in ${student.instructor}`);
       }
-      const needsVehicle = current.type !== "Theorie" && current.type !== "Theorieprüfung";
+      const needsVehicle =
+        current.type !== "Theorie" && current.type !== "Theorieprüfung";
       if (
         needsVehicle &&
         student.vehicle &&
@@ -653,7 +655,10 @@ export function EventEditDialog({
                       value={repeatCount}
                       onChange={(e) =>
                         setRepeatCount(
-                          Math.min(52, Math.max(2, Math.round(Number(e.target.value) || 2))),
+                          Math.min(
+                            52,
+                            Math.max(2, Math.round(Number(e.target.value) || 2)),
+                          ),
                         )
                       }
                     />

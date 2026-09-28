@@ -99,7 +99,10 @@ describe("reassignLessons", () => {
       toDate: "2026-07-15",
       kind: "Urlaub",
     });
-    const result = reassignLessons(db, { eventIds: [Number(event.id)], instructorId: nadine });
+    const result = reassignLessons(db, {
+      eventIds: [Number(event.id)],
+      instructorId: nadine,
+    });
     expect(result.done).toHaveLength(0);
     expect(result.failed[0]!.reason).toMatch(/abwesend \(Urlaub\)/);
   });

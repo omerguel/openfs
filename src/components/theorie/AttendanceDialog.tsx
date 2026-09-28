@@ -166,7 +166,9 @@ export function AttendanceDialog({
       if (prefill?.eventId != null) onOpenChange(false);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Anwesenheit konnte nicht gespeichert werden.",
+        error instanceof Error
+          ? error.message
+          : "Anwesenheit konnte nicht gespeichert werden.",
       );
     } finally {
       setBusy(false);
@@ -273,7 +275,10 @@ export function AttendanceDialog({
                         <Checkbox
                           checked={checked[member.id] ?? false}
                           onCheckedChange={(value) =>
-                            setChecked((prev) => ({ ...prev, [member.id]: value === true }))
+                            setChecked((prev) => ({
+                              ...prev,
+                              [member.id]: value === true,
+                            }))
                           }
                         />
                         <span className="truncate">{member.name}</span>
@@ -315,7 +320,9 @@ export function AttendanceDialog({
           </DialogClose>
           <Button
             type="button"
-            disabled={busy || loading || !group || group.members.length === 0 || !sessionDate}
+            disabled={
+              busy || loading || !group || group.members.length === 0 || !sessionDate
+            }
             onClick={() => void save()}
           >
             Speichern

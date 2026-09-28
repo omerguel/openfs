@@ -1,5 +1,14 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { Ban, Car, Moon, Pencil, Route, StickyNote, Trash2, Waypoints } from "lucide-react";
+import {
+  Ban,
+  Car,
+  Moon,
+  Pencil,
+  Route,
+  StickyNote,
+  Trash2,
+  Waypoints,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { CalEvent } from "@/lib/calendar-data";
@@ -115,7 +124,10 @@ export function CalendarEventCard({
                 {primary}
               </span>
               {kind && (
-                <kind.Icon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+                <kind.Icon
+                  aria-hidden
+                  className="size-3 shrink-0 text-muted-foreground"
+                />
               )}
               <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
                 {event.start}
@@ -137,7 +149,7 @@ export function CalendarEventCard({
                   />
                 )}
               </span>
-              <span className="flex min-w-0 items-center gap-1 text-[10px] leading-none text-muted-foreground tabular-nums">
+              <span className="flex min-w-0 items-center gap-1 text-[10px] leading-tight text-muted-foreground tabular-nums">
                 <span className="shrink-0">
                   {event.start}–{event.end}
                 </span>

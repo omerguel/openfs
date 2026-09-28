@@ -106,7 +106,8 @@ export function reassignLessons(
   db: Database,
   input: { eventIds?: unknown; instructorId?: unknown },
 ): LessonActionResult {
-  if (!input || typeof input !== "object") throw new ValidationError("Ungültige Anfrage.");
+  if (!input || typeof input !== "object")
+    throw new ValidationError("Ungültige Anfrage.");
   const ids = requireEventIds(input.eventIds);
   const instructorId = requirePositiveInt(input.instructorId, "Fahrlehrer-ID");
   if (!db.query("SELECT 1 FROM instructors WHERE id = ?").get(instructorId)) {
@@ -123,7 +124,8 @@ export function cancelLessonsWithoutFee(
   db: Database,
   input: { eventIds?: unknown },
 ): LessonActionResult {
-  if (!input || typeof input !== "object") throw new ValidationError("Ungültige Anfrage.");
+  if (!input || typeof input !== "object")
+    throw new ValidationError("Ungültige Anfrage.");
   const ids = requireEventIds(input.eventIds);
   return forEachLesson(
     db,

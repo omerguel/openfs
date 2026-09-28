@@ -95,7 +95,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import {
   Sheet,
   SheetContent,
@@ -144,7 +148,8 @@ const formatMinutes = (minutes: number) => {
 const defaultStartTime = (date: Date) => {
   const now = new Date();
   if (!isSameDay(date, now)) return "09:00";
-  const minutes = Math.ceil((now.getHours() * 60 + now.getMinutes()) / SNAP_MINUTES) * SNAP_MINUTES;
+  const minutes =
+    Math.ceil((now.getHours() * 60 + now.getMinutes()) / SNAP_MINUTES) * SNAP_MINUTES;
   return formatMinutes(clamp(minutes, 7 * 60, 23 * 60 - 45));
 };
 
@@ -310,7 +315,10 @@ const DayColumn = memo(
       event: CalEvent,
       pointerEvent: ReactPointerEvent<HTMLButtonElement>,
     ) => void;
-    onResizeStart: (event: CalEvent, pointerEvent: ReactPointerEvent<HTMLElement>) => void;
+    onResizeStart: (
+      event: CalEvent,
+      pointerEvent: ReactPointerEvent<HTMLElement>,
+    ) => void;
     onSelect: (event: CalEvent) => void;
     onEdit: (event: CalEvent) => void;
     onDelete: (event: CalEvent) => void;
@@ -335,7 +343,10 @@ const DayColumn = memo(
         {placed.map(({ event, column, columns }) => {
           const start = toMinutes(event.start);
           const end = toMinutes(event.end);
-          const height = Math.max(((end - start) / 60) * HOUR_HEIGHT - 2, MIN_CARD_HEIGHT);
+          const height = Math.max(
+            ((end - start) / 60) * HOUR_HEIGHT - 2,
+            MIN_CARD_HEIGHT,
+          );
           return (
             <CalendarEventCard
               key={event.id}
@@ -655,7 +666,9 @@ export function Kalendar() {
       const next = dragResultRef.current;
       if (!next) return;
       setCalendarEvents((current) =>
-        current.map((event) => (event.id === dragging.id ? { ...event, ...next } : event)),
+        current.map((event) =>
+          event.id === dragging.id ? { ...event, ...next } : event,
+        ),
       );
     };
 
@@ -720,7 +733,11 @@ export function Kalendar() {
         result.end === dragging.end;
       // null = plain click (no PATCH); unchanged = dropped where it was.
       if (result && !unchanged) {
-        const previous = { date: dragging.date, start: dragging.start, end: dragging.end };
+        const previous = {
+          date: dragging.date,
+          start: dragging.start,
+          end: dragging.end,
+        };
         const id = dragging.id;
         const verb = dragging.mode === "move" ? "verschoben" : "geändert";
         // The server rejects overlaps / absent instructors — show why and
@@ -731,7 +748,10 @@ export function Kalendar() {
               action: {
                 label: "Rückgängig",
                 onClick: () => {
-                  void updateCalendarEvent(Number(id), { ...previous, allowConflicts: true })
+                  void updateCalendarEvent(Number(id), {
+                    ...previous,
+                    allowConflicts: true,
+                  })
                     .then(() => toast.success("Änderung rückgängig gemacht."))
                     .catch((error: unknown) =>
                       toast.error(errorMessage(error, "Rückgängig fehlgeschlagen.")),
@@ -810,7 +830,8 @@ export function Kalendar() {
       const edgeMinutes = toMinutes(event.end);
       const dayGrid = dayGridRef.current;
       const pointerMinutes = dayGrid
-        ? ((pointerEvent.clientY - dayGrid.getBoundingClientRect().top) / HOUR_HEIGHT) * 60 +
+        ? ((pointerEvent.clientY - dayGrid.getBoundingClientRect().top) / HOUR_HEIGHT) *
+            60 +
           grid.startHour * 60
         : edgeMinutes;
       dragResultRef.current = null;
@@ -870,23 +891,34 @@ export function Kalendar() {
 
   /* Default resources for a new Termin: the logged-in Fahrlehrer/in (or
      the one instructor filtered to), and that instructor's car unless it
-     is in the workshop. */
-  const newEventDefaults = () => {
+     is in the workshop or already booked in that slot. */
+  const newEventDefaults = (slot: { date: string; start: string; end: string }) => {
     const instructor =
       (role === "fahrlehrer" && ownInstructor) ||
       (instructorFilter.size === 1 ? [...instructorFilter][0]! : null) ||
       instructorOptions[0] ||
       "Nicht zugeteilt";
-    const record = instructors.find((candidate) => instructorName(candidate) === instructor);
+    const record = instructors.find(
+      (candidate) => instructorName(candidate) === instructor,
+    );
     const usable = (label: string | undefined) => {
       if (!label || label === UNASSIGNED_VEHICLE || !vehicleOptions.includes(label)) {
         return false;
       }
       const vehicle = vehicles.find(
         (candidate) =>
-          label === candidate.model || label === `${candidate.model} · ${candidate.plate}`,
+          label === candidate.model ||
+          label === `${candidate.model} · ${candidate.plate}`,
       );
-      return vehicle?.status !== "wartung";
+      if (vehicle?.status === "wartung") return false;
+      return !calendarEvents.some(
+        (event) =>
+          event.vehicle === label &&
+          !event.cancelledAt &&
+          event.date === slot.date &&
+          event.start < slot.end &&
+          event.end > slot.start,
+      );
     };
     const vehicle = usable(record?.vehicle)
       ? record?.vehicle
@@ -895,12 +927,13 @@ export function Kalendar() {
   };
 
   const openPresetEditor = (preset: EventPreset, date: string, start: string) => {
+    const end = formatMinutes(toMinutes(start) + preset.duration);
     openNewEventDialog({
       date,
       start,
-      end: formatMinutes(toMinutes(start) + preset.duration),
+      end,
       title: preset.title,
-      ...newEventDefaults(),
+      ...newEventDefaults({ date, start, end }),
       type: preset.type,
     });
   };
@@ -908,12 +941,14 @@ export function Kalendar() {
   const handleEventCreate = () => {
     setMobileInspectorOpen(false);
     const start = defaultStartTime(selected);
+    const date = toISODate(selected);
+    const end = formatMinutes(toMinutes(start) + 45);
     openNewEventDialog({
-      date: toISODate(selected),
+      date,
       start,
-      end: formatMinutes(toMinutes(start) + 45),
+      end,
       title: "Fahrstunde",
-      ...newEventDefaults(),
+      ...newEventDefaults({ date, start, end }),
       type: "Praktisch",
     });
   };
@@ -956,7 +991,11 @@ export function Kalendar() {
       }
 
       const dayWidth = rect.width / dayCount;
-      const day = clamp(Math.floor((event.clientX - rect.left) / dayWidth), 0, dayCount - 1);
+      const day = clamp(
+        Math.floor((event.clientX - rect.left) / dayWidth),
+        0,
+        dayCount - 1,
+      );
       const rawStartMinutes =
         ((event.clientY - rect.top) / HOUR_HEIGHT) * 60 + grid.startHour * 60;
       const startMinutes = clamp(
@@ -1020,7 +1059,10 @@ export function Kalendar() {
 
     if (id === NEW_EVENT_ID) {
       if (options.repeat) {
-        const series = await createCalendarEventSeries({ ...payload, repeat: options.repeat });
+        const series = await createCalendarEventSeries({
+          ...payload,
+          repeat: options.repeat,
+        });
         setCalendarEvents((current) => [...current, ...series.events]);
         toast.success(`${series.events.length} Serientermine angelegt.`);
         showWarnings(series.warnings);
@@ -1084,7 +1126,9 @@ export function Kalendar() {
         try {
           restored = await uncancelCalendarEvent(event.id, true);
         } catch (retryError) {
-          toast.error(errorMessage(retryError, "Absage konnte nicht zurückgenommen werden."));
+          toast.error(
+            errorMessage(retryError, "Absage konnte nicht zurückgenommen werden."),
+          );
           return;
         }
       }
@@ -1134,7 +1178,8 @@ export function Kalendar() {
         weekday: "long",
       });
       const byInstructor = theoryGroups.filter(
-        (group) => group.instructorId != null && group.instructorId === event.instructorId,
+        (group) =>
+          group.instructorId != null && group.instructorId === event.instructorId,
       );
       const group =
         byInstructor.find((g) => g.weekday === weekday && g.time === event.start) ??
@@ -1179,7 +1224,6 @@ export function Kalendar() {
           weekday: "short",
           day: "numeric",
           month: "short",
-          year: "numeric",
         })
       : monthRangeLabel(days[0]!, days[dayCount - 1]!);
 
@@ -1192,7 +1236,10 @@ export function Kalendar() {
   };
 
   const move = (direction: -1 | 1) => {
-    const next = addDays(view === "tag" ? selected : weekStart, direction * (view === "tag" ? 1 : 7));
+    const next = addDays(
+      view === "tag" ? selected : weekStart,
+      direction * (view === "tag" ? 1 : 7),
+    );
     setAnchor(next);
     setSelected(next);
     setSelectedEventId(null);
@@ -1217,9 +1264,13 @@ export function Kalendar() {
     });
 
   const legend = instructorFilter.size ? [...instructorFilter] : roster;
-  const selectedConflicts = selectedEvent ? (conflictMessages.get(selectedEvent.id) ?? []) : [];
+  const selectedConflicts = selectedEvent
+    ? (conflictMessages.get(selectedEvent.id) ?? [])
+    : [];
   const selectedPhone =
-    selectedEvent?.studentId != null ? phoneByStudentId.get(selectedEvent.studentId) : undefined;
+    selectedEvent?.studentId != null
+      ? phoneByStudentId.get(selectedEvent.studentId)
+      : undefined;
   const gridMinWidth = view === "woche" ? "min-w-[740px]" : "";
 
   const inspectorProps = {
@@ -1261,7 +1312,9 @@ export function Kalendar() {
                   </div>
                   <ul className="max-h-80 divide-y overflow-y-auto text-xs">
                     {rangeConflicts.overlaps.map((overlap) => (
-                      <li key={`${overlap.resource}-${overlap.first.id}-${overlap.second.id}`}>
+                      <li
+                        key={`${overlap.resource}-${overlap.first.id}-${overlap.second.id}`}
+                      >
                         <button
                           type="button"
                           className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-muted"
@@ -1299,8 +1352,8 @@ export function Kalendar() {
                             {absence.instructor} abwesend ({absence.kind})
                           </span>
                           <span className="text-muted-foreground tabular-nums">
-                            {formatGermanDate(event.date)} · {event.subtitle || event.title}{" "}
-                            {event.start}–{event.end}
+                            {formatGermanDate(event.date)} ·{" "}
+                            {event.subtitle || event.title} {event.start}–{event.end}
                           </span>
                         </button>
                       </li>
@@ -1376,7 +1429,9 @@ export function Kalendar() {
                 inspectorOpen ? "Detailleiste ausblenden" : "Detailleiste einblenden"
               }
               aria-pressed={inspectorOpen}
-              title={inspectorOpen ? "Detailleiste ausblenden" : "Detailleiste einblenden"}
+              title={
+                inspectorOpen ? "Detailleiste ausblenden" : "Detailleiste einblenden"
+              }
               onClick={() => setInspectorOpen((open) => !open)}
             >
               <PanelRight />
@@ -1447,7 +1502,9 @@ export function Kalendar() {
                   <DropdownMenuCheckboxItem
                     key={name}
                     checked={instructorFilter.has(name)}
-                    onCheckedChange={(checked) => toggleInstructor(name, checked === true)}
+                    onCheckedChange={(checked) =>
+                      toggleInstructor(name, checked === true)
+                    }
                     onSelect={(event) => event.preventDefault()}
                   >
                     <span
@@ -1477,7 +1534,7 @@ export function Kalendar() {
               </InputGroupAddon>
               <InputGroupInput
                 type="search"
-                placeholder="Fahrschüler suchen"
+                placeholder="Suchen"
                 aria-label="Termine nach Fahrschüler, Titel oder Notiz durchsuchen"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1659,7 +1716,9 @@ export function Kalendar() {
                     <span className="size-1.5 -translate-x-0.5 rounded-full bg-red-500" />
                     <span
                       className="-ml-0.5 grid flex-1"
-                      style={{ gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` }}
+                      style={{
+                        gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))`,
+                      }}
                     >
                       {days.map((day) => (
                         <span
@@ -1674,30 +1733,34 @@ export function Kalendar() {
                   </div>
                 )}
 
-                {presetDrag && presetDrag.day !== null && presetDrag.startMinutes !== null && (
-                  <div
-                    className="pointer-events-none absolute z-40 overflow-hidden rounded-md border border-dashed border-primary/50 bg-primary/[0.08]"
-                    style={{
-                      top: topForMinutes(presetDrag.startMinutes, grid),
-                      left: `calc(${(presetDrag.day * 100) / dayCount}% + 3px)`,
-                      width: `calc(${100 / dayCount}% - 6px)`,
-                      height: Math.max(
-                        (presetDrag.preset.duration / 60) * HOUR_HEIGHT - 2,
-                        MIN_CARD_HEIGHT,
-                      ),
-                    }}
-                  >
-                    <div className="flex h-full flex-col justify-center gap-0.5 px-2 py-1">
-                      <span className="truncate text-xs font-medium">
-                        {presetDrag.preset.title}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground tabular-nums">
-                        {formatMinutes(presetDrag.startMinutes)}–
-                        {formatMinutes(presetDrag.startMinutes + presetDrag.preset.duration)}
-                      </span>
+                {presetDrag &&
+                  presetDrag.day !== null &&
+                  presetDrag.startMinutes !== null && (
+                    <div
+                      className="pointer-events-none absolute z-40 overflow-hidden rounded-md border border-dashed border-primary/50 bg-primary/[0.08]"
+                      style={{
+                        top: topForMinutes(presetDrag.startMinutes, grid),
+                        left: `calc(${(presetDrag.day * 100) / dayCount}% + 3px)`,
+                        width: `calc(${100 / dayCount}% - 6px)`,
+                        height: Math.max(
+                          (presetDrag.preset.duration / 60) * HOUR_HEIGHT - 2,
+                          MIN_CARD_HEIGHT,
+                        ),
+                      }}
+                    >
+                      <div className="flex h-full flex-col justify-center gap-0.5 px-2 py-1">
+                        <span className="truncate text-xs font-medium">
+                          {presetDrag.preset.title}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          {formatMinutes(presetDrag.startMinutes)}–
+                          {formatMinutes(
+                            presetDrag.startMinutes + presetDrag.preset.duration,
+                          )}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
                 {days.map((day) => {
                   const iso = toISODate(day);

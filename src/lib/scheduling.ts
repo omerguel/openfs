@@ -105,7 +105,10 @@ export function formatDuration(minutes: number): string {
 /** Practical minutes (Praktisch + Prüfungsfahrt, not cancelled) of one
     instructor on one day, optionally without the event being edited. */
 export function practicalMinutes(
-  events: Pick<CalEvent, "id" | "date" | "start" | "end" | "type" | "instructor" | "cancelledAt">[],
+  events: Pick<
+    CalEvent,
+    "id" | "date" | "start" | "end" | "type" | "instructor" | "cancelledAt"
+  >[],
   instructor: string,
   date: string,
   excludeId?: string,
@@ -190,10 +193,7 @@ export function eventMatchesSearch(
   term: string,
 ): boolean {
   const normalize = (value: string) =>
-    value
-      .toLocaleLowerCase("de-DE")
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "");
+    value.toLocaleLowerCase("de-DE").normalize("NFD").replace(/[̀-ͯ]/g, "");
   const needle = normalize(term.trim());
   if (!needle) return true;
   return [event.subtitle, event.title, event.instructor, event.notes, event.location]

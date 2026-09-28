@@ -37,7 +37,12 @@ describe("parseTimeInput", () => {
 
 describe("quarterHourOptions", () => {
   test("steps in 15 minutes", () => {
-    expect(quarterHourOptions(7 * 60, 8 * 60)).toEqual(["07:00", "07:15", "07:30", "07:45"]);
+    expect(quarterHourOptions(7 * 60, 8 * 60)).toEqual([
+      "07:00",
+      "07:15",
+      "07:30",
+      "07:45",
+    ]);
   });
 });
 
@@ -62,7 +67,10 @@ describe("slotIssues", () => {
 
   test("end before start is an error", () => {
     expect(
-      slotIssues({ date: "2026-09-30", start: "10:00", end: "09:00", type: "Praktisch" }, now),
+      slotIssues(
+        { date: "2026-09-30", start: "10:00", end: "09:00", type: "Praktisch" },
+        now,
+      ),
     ).toEqual([{ level: "error", message: "„Bis“ muss nach „Von“ liegen." }]);
   });
 
@@ -76,7 +84,10 @@ describe("slotIssues", () => {
       "Der Termin liegt in der Vergangenheit.",
     ]);
     expect(
-      slotIssues({ date: "2026-09-29", start: "08:00", end: "17:15", type: "Andere" }, now),
+      slotIssues(
+        { date: "2026-09-29", start: "08:00", end: "17:15", type: "Andere" },
+        now,
+      ),
     ).toEqual([]);
   });
 });
