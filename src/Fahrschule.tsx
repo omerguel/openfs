@@ -277,7 +277,6 @@ function StammdatenTab({ value, errors, setCompany, ownerOnlyLocked }: TabProps)
             <Input
               inputMode="numeric"
               className="font-mono text-[13px]"
-              disabled={ownerOnlyLocked}
               value={c.beraterNr}
               onChange={(e) =>
                 setCompany({ beraterNr: e.target.value.replace(/\D/g, "") })
@@ -293,7 +292,6 @@ function StammdatenTab({ value, errors, setCompany, ownerOnlyLocked }: TabProps)
             <Input
               inputMode="numeric"
               className="font-mono text-[13px]"
-              disabled={ownerOnlyLocked}
               value={c.mandantNr}
               onChange={(e) =>
                 setCompany({ mandantNr: e.target.value.replace(/\D/g, "") })

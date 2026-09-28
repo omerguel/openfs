@@ -67,20 +67,20 @@ function SidebarLinkHoverEffect() {
    storage may be unavailable, then the defaults apply). */
 const COLLAPSED_KEY = "openfs:nav-collapsed";
 
-function readCollapsed(): string[] {
+function readCollapsed(defaults: string[]): string[] {
   try {
     const raw = window.localStorage.getItem(COLLAPSED_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;
     return Array.isArray(parsed)
       ? parsed.filter((id): id is string => typeof id === "string")
-      : DEFAULT_COLLAPSED_GROUPS;
+      : defaults;
   } catch {
-    return DEFAULT_COLLAPSED_GROUPS;
+    return defaults;
   }
 }
 
-function useCollapsedGroups() {
-  const [collapsed, setCollapsed] = useState<string[]>(readCollapsed);
+function useCollapsedGroups(defaults: string[]) {
+  const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed(defaults));
   const toggle = useCallback((id: string, open: boolean) => {
     setCollapsed((current) => {
       const next = open
@@ -211,7 +211,10 @@ function AppSidebar({ path }: { path: string }) {
   const user = auth.data?.user ?? null;
   const role = user?.role;
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const { collapsed, toggle } = useCollapsedGroups();
+  // The short Fahrlehrer menu fits without collapsing anything.
+  const { collapsed, toggle } = useCollapsedGroups(
+    role === "fahrlehrer" ? [] : DEFAULT_COLLAPSED_GROUPS,
+  );
   const contentRef = useRef<HTMLDivElement | null>(null);
   const sidebarCanScrollDownRef = useRef(false);
   const [sidebarCanScrollDown, setSidebarCanScrollDown] = useState(false);
