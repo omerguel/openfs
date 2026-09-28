@@ -6,6 +6,7 @@ import {
   migrateExamResults,
   migrateSkr03ToSkr04,
   openDb,
+  SKR04_ACCOUNTS,
 } from "./db";
 import { listAccounts, listJournal, listLedger } from "./engine";
 import { seedTransactions } from "./seed";
@@ -90,7 +91,7 @@ describe("SKR 03 → SKR 04 migration", () => {
     for (const alt of ["1000", "1360", "1590", "1718", "8400", "8300", "8100"]) {
       expect(accounts.has(alt)).toBe(false);
     }
-    expect(accounts.size).toBe(19);
+    expect(accounts.size).toBe(SKR04_ACCOUNTS.length);
 
     // every booking now references SKR-04 accounts — none dangling
     const journal = listJournal(db, {});
@@ -113,7 +114,7 @@ describe("SKR 03 → SKR 04 migration", () => {
   test("is idempotent and leaves fresh SKR-04 databases alone", () => {
     migrateSkr03ToSkr04(db);
     migrateSkr03ToSkr04(db); // second run must be a no-op
-    expect(listAccounts(db)).toHaveLength(19);
+    expect(listAccounts(db)).toHaveLength(SKR04_ACCOUNTS.length);
     expect(listAccounts(db).find((a) => a.number === "1800")?.name).toBe("Bank");
 
     const fresh = openDb(":memory:");

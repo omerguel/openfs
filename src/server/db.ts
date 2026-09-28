@@ -161,7 +161,57 @@ CREATE TABLE IF NOT EXISTS archive (
   deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Rechnungen (§ 14 UStG): immutable documents over already-booked
+-- charges (guthaben_uebertragung). Corrections only via a Storno-
+-- rechnung (kind 'storno', storno_of → original). Numbers come from the
+-- gapless per-year sequence 'rechnung:<year>'.
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_nr TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL CHECK (kind IN ('rechnung', 'storno')),
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  student_id INTEGER,
+  student_customer_no TEXT NOT NULL,
+  recipient_name TEXT NOT NULL,
+  recipient_address TEXT NOT NULL DEFAULT '',
+  student_contract_no TEXT NOT NULL DEFAULT '',
+  student_classes TEXT NOT NULL DEFAULT '',
+  issuer TEXT NOT NULL,
+  lines TEXT NOT NULL,
+  total_cents INTEGER NOT NULL,
+  prepaid_cents INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  storno_of INTEGER REFERENCES invoices(id),
+  storno_reason TEXT,
+  storniert_by INTEGER REFERENCES invoices(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(student_customer_no);
+
+CREATE TABLE IF NOT EXISTS invoice_items (
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+  PRIMARY KEY (invoice_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_tx ON invoice_items(transaction_id);
+
+-- Mahnwesen: one row per Zahlungserinnerung/Mahnung (level 1–3).
+CREATE TABLE IF NOT EXISTS invoice_reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3),
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  open_cents INTEGER NOT NULL,
+  fee_cents INTEGER NOT NULL DEFAULT 0,
+  fee_transaction_id INTEGER REFERENCES transactions(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (invoice_id, level)
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_customer ON transactions(student_customer_no);
 CREATE INDEX IF NOT EXISTS idx_bookings_transaction ON bookings(transaction_id);
 `;
 
@@ -252,6 +302,14 @@ export const SKR04_ACCOUNTS: AccountSeed[] = [
     vatLabel: "steuerfrei § 4 UStG",
   },
   { number: "4300", name: "Erlöse 7 % USt", kind: "erloes", vatRate: 7, vatLabel: "7%" },
+  {
+    // Mahngebühren (pauschalierter Schadensersatz) — nicht steuerbar.
+    number: "4830",
+    name: "Sonstige betriebliche Erträge (nicht steuerbar)",
+    kind: "erloes",
+    vatRate: null,
+    vatLabel: "nicht steuerbar",
+  },
   {
     number: "4400",
     name: "Erlöse 19 % USt",
@@ -886,13 +944,12 @@ function initInstructors(db: Database) {
   }
 }
 
+/* Seeds the chart on a fresh database and adds accounts introduced by
+   later versions (e.g. 4830 for Mahngebühren) to existing ones. Existing
+   rows are never touched — INSERT OR IGNORE on the account number. */
 function initAccounts(db: Database) {
-  const count = db
-    .query<{ n: number }, []>("SELECT count(*) AS n FROM accounts")
-    .get()!.n;
-  if (count > 0) return;
   const insert = db.prepare(
-    `INSERT INTO accounts (number, name, kind, vat_rate, vat_label, active, opening_cents, opening_date)
+    `INSERT OR IGNORE INTO accounts (number, name, kind, vat_rate, vat_label, active, opening_cents, opening_date)
      VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
   );
   for (const a of SKR04_ACCOUNTS) {

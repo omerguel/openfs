@@ -493,6 +493,19 @@ export function stornoTransaction(
   if (original.storniert_by != null) {
     throw new ValidationError("Diese Buchung wurde bereits storniert.");
   }
+  // An invoiced charge is part of an issued Rechnung — reversing it alone
+  // would leave the document stating a service that no longer exists.
+  const invoice = db
+    .query<{ invoice_nr: string }, [number]>(
+      `SELECT i.invoice_nr FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
+       WHERE ii.transaction_id = ? AND i.kind = 'rechnung' AND i.storniert_by IS NULL`,
+    )
+    .get(id);
+  if (invoice) {
+    throw new ValidationError(
+      `Die Buchung ist Teil der Rechnung ${invoice.invoice_nr} — bitte zuerst die Rechnung stornieren.`,
+    );
+  }
   const originalBookings = db
     .query<BookingRow, [number]>(
       "SELECT * FROM bookings WHERE transaction_id = ? ORDER BY id",

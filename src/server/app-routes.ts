@@ -10,6 +10,7 @@ import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
+import { invoiceRoutes } from "./invoices";
 import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
@@ -44,5 +45,6 @@ export function buildApiRoutes(db: Database) {
     ...schoolProfileRoutes(db),
     ...statisticsRoutes(db),
     ...attestationRoutes(db),
+    ...invoiceRoutes(db),
   };
 }
