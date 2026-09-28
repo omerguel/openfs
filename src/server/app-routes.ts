@@ -8,6 +8,7 @@ import type { Database } from "./sqlite";
 import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
+import { calendarSeriesRoutes } from "./calendar-series";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { theoryGroupRoutes } from "./theory-groups";
@@ -30,6 +31,7 @@ export function buildApiRoutes(db: Database) {
     ...accountingRoutes(db),
     ...archiveRoutes(db),
     ...calendarEventRoutes(db),
+    ...calendarSeriesRoutes(db),
     ...instructorRoutes(db),
     ...pricePlanRoutes(db),
     ...studentRoutes(db),
