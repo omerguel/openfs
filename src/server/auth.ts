@@ -411,6 +411,8 @@ export const PUBLIC_ROUTES: Rule[] = [
   { method: "GET", pattern: /^\/api\/public\// },
   // Token-gated, rate-limited Schülerportal.
   { method: "*", pattern: /^\/api\/portal\// },
+  // Multi-tenant platform: school info + self-service signup.
+  { method: "*", pattern: /^\/api\/platform\// },
 ];
 
 /* Inhaber only: user admin, protocol, backups, raw database export. */
@@ -481,8 +483,9 @@ type Handler = (req: BunRequest, server: RequestIPSource) => Response | Promise<
 type RouteValue = Handler | Record<string, Handler> | unknown;
 
 export type ProtectOptions = {
-  /** Resolves the database for a request (tenant DB in multi-tenant mode). */
-  resolveDb?: (req: Request) => Database | Response;
+  /** Resolves the tenant (and its database) for a request in multi-tenant
+      mode; a Response (unknown or suspended school) is returned as is. */
+  resolveDb?: (req: Request) => { db: Database; tenant: string } | Response;
 };
 
 export function audit(
@@ -512,14 +515,15 @@ function guard(
     const path = new URL(req.url).pathname;
     const method = routeMethod === "*" ? req.method : routeMethod;
     let db = fallbackDb;
+    let tenant: string | undefined;
     if (options.resolveDb) {
       const resolved = options.resolveDb(req);
       if (resolved instanceof Response) return resolved;
-      db = resolved;
+      ({ db, tenant } = resolved);
     }
     const store = requestContext.getStore() ?? {};
     const run = (user?: SessionUser) =>
-      requestContext.run({ ...store, db, user }, () => handler(req, server));
+      requestContext.run({ ...store, db, tenant, user }, () => handler(req, server));
 
     if (isPublic(method, path)) return run();
 

@@ -2,85 +2,94 @@ import { serve } from "bun";
 import { mkdirSync } from "node:fs";
 import index from "./index.html";
 
-import { openDb } from "./server/db";
-import { seedTransactions } from "./server/seed";
-import { ensureTheoryGroupTables } from "./server/theory-groups";
-import { ensureAttestationTables } from "./server/ausbildungsnachweis";
 import { buildApiRoutes } from "./server/app-routes";
-import { ensureMailTables, startMailScheduler } from "./server/mail";
-import { createSmtpTransport, smtpConfigFromEnv } from "./server/smtp";
-import { localIsoDate, queueLessonReminders } from "./server/notifications";
-import { ensurePortalTables } from "./server/portal";
-import { countUsers, createUser } from "./server/auth";
-import { applySetup } from "./server/setup";
+import { backupConfigFromEnv } from "./server/backups";
+import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap";
+import { openDb } from "./server/db";
 import { createFileStoreFromEnv } from "./server/file-store";
-import { migrateInlineDocuments } from "./server/student-files";
-import { backupConfigFromEnv, startBackupScheduler } from "./server/backups";
+import { applySetup } from "./server/setup";
+import { smtpConfigFromEnv } from "./server/smtp";
+import {
+  buildTenantApiRoutes,
+  platformRoutes,
+  Registry,
+  TenantFileStore,
+  TenantManager,
+  tenancyConfigFromEnv,
+  tenantBackupConfig,
+} from "./server/tenancy";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
 // and changes are discarded on restart instead of being written to disk.
 const demoMode = process.env.DEMO_MODE === "1" || process.env.DEMO_MODE === "true";
+// A real school starts empty (first-run wizard); SEED_DEMO=1 fills a file
+// database with the demo school for trying things out locally.
+const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "true";
+// MULTI_TENANT=1: one portal per school at <slug>.<BASE_DOMAIN>.
+const tenancy = demoMode ? null : tenancyConfigFromEnv();
 
 if (!demoMode) {
   // SQLite needs the directory to exist before it can create the file.
   mkdirSync("data", { recursive: true });
 }
-// A real school starts empty (first-run wizard); SEED_DEMO=1 fills a file
-// database with the demo school for trying things out locally.
-const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "true";
-const db = openDb(demoMode ? ":memory:" : (process.env.DB_PATH ?? undefined), {
-  demoData: demoMode || seedDemo,
-});
-seedTransactions(db);
-// Runs after the students/instructors seeds so seed groups pick up real names.
-ensureTheoryGroupTables(db);
-ensureAttestationTables(db);
-ensureMailTables(db);
-ensurePortalTables(db);
-
-/* Demo mode: a ready-made Inhaber login, shown on the sign-in page. */
-const DEMO_LOGIN = { email: "demo@openfs.de", password: "openfs-demo" };
-if (demoMode && countUsers(db) === 0) {
-  await createUser(db, { ...DEMO_LOGIN, name: "Demo Inhaber/in", role: "inhaber" });
-}
 
 /* Uploaded documents: S3 when configured, else data/files (memory in
-   demo mode). Older databases kept uploads as base64 inside
-   students.documents — move them out once (idempotent). */
-const { store: fileStore, kind: fileStoreKind } = createFileStoreFromEnv({ demoMode });
-const migratedFiles = await migrateInlineDocuments(db, fileStore);
-if (migratedFiles > 0) {
-  console.log(
-    `📎 ${migratedFiles} Dokument(e) in den Dateispeicher (${fileStoreKind}) verschoben.`,
-  );
-}
-
-/* Datensicherung: check at startup and hourly; back up when the newest
-   backup is older than BACKUP_INTERVAL_HOURS. Off in demo mode. */
+   demo mode). Datensicherung: off in demo mode. E-Mail: demo never sends
+   (mails are only marked 'nicht_konfiguriert' so the UI shows them). */
+const { store: baseFileStore } = createFileStoreFromEnv({ demoMode });
 const backupConfig = demoMode ? null : backupConfigFromEnv();
-const hotBackup = globalThis as { __openfsStopBackupScheduler?: () => void };
-hotBackup.__openfsStopBackupScheduler?.();
-hotBackup.__openfsStopBackupScheduler = backupConfig
-  ? startBackupScheduler(db, backupConfig)
-  : undefined;
-
-/* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
-   local time on, so nobody gets a mail at midnight) and deliver the
-   outbox. Demo mode never sends — it runs without a transport, which
-   only marks queued mails 'nicht_konfiguriert' so the UI shows them. */
-const REMINDER_HOUR = 9;
 const smtpConfig = demoMode ? null : smtpConfigFromEnv();
-// `bun --hot` re-runs this module — stop the previous interval first.
-const hot = globalThis as { __openfsStopMailScheduler?: () => void };
-hot.__openfsStopMailScheduler?.();
-hot.__openfsStopMailScheduler = startMailScheduler(db, {
-  transport: smtpConfig ? createSmtpTransport(smtpConfig) : null,
-  intervalMs: 60_000,
-  beforeDelivery: (now) => {
-    if (now.getHours() >= REMINDER_HOUR) queueLessonReminders(db, localIsoDate(now));
-  },
-});
+
+// `bun --hot` re-runs this module — stop the previous jobs first.
+const hot = globalThis as { __openfsStopJobs?: () => void };
+hot.__openfsStopJobs?.();
+
+/* The API (guarded, see server/auth.ts) plus the platform endpoints. */
+let apiRoutes: ReturnType<typeof buildApiRoutes> & ReturnType<typeof platformRoutes>;
+
+if (tenancy) {
+  const fileStore = new TenantFileStore(baseFileStore);
+  const manager = new TenantManager(
+    Registry.open(tenancy.registryPath),
+    tenancy,
+    (slug) => ({
+      smtp: smtpConfig,
+      backups: backupConfig ? tenantBackupConfig(backupConfig, slug) : null,
+    }),
+    fileStore,
+  );
+  await manager.openAll();
+  hot.__openfsStopJobs = () => manager.closeAll();
+
+  apiRoutes = buildTenantApiRoutes(manager, {
+    smtp: smtpConfig,
+    backups: backupConfig,
+    fileStore,
+    signup: tenancy.signup,
+  });
+  console.log(
+    `🏫 Mehrmandantenbetrieb: ${manager.registry.list().length} Fahrschule(n) unter *.${tenancy.baseDomain}`,
+  );
+} else {
+  const db = openDb(demoMode ? ":memory:" : (process.env.DB_PATH ?? undefined), {
+    demoData: demoMode || seedDemo,
+  });
+  await prepareSchoolDb(db, { demoLogin: demoMode, fileStore: baseFileStore });
+  hot.__openfsStopJobs = startSchoolJobs(db, { smtp: smtpConfig, backups: backupConfig });
+  apiRoutes = {
+    ...buildApiRoutes(db, {
+      mail: { config: smtpConfig },
+      auth: {
+        demo: demoMode ? DEMO_LOGIN : null,
+        onSetup: (setupDb, body) => applySetup(setupDb, body),
+      },
+      fileStore: baseFileStore,
+      backups: backupConfig,
+    }),
+    ...platformRoutes(null),
+  };
+}
 
 const server = serve({
   // Loopback by default: put a TLS-terminating reverse proxy in front (or
@@ -91,15 +100,7 @@ const server = serve({
     // Serve index.html for all unmatched routes.
     "/*": index,
 
-    ...buildApiRoutes(db, {
-      mail: { config: smtpConfig },
-      auth: {
-        demo: demoMode ? DEMO_LOGIN : null,
-        onSetup: (setupDb, body) => applySetup(setupDb, body),
-      },
-      fileStore,
-      backups: backupConfig,
-    }),
+    ...apiRoutes,
   },
 
   development: process.env.NODE_ENV !== "production" && {
