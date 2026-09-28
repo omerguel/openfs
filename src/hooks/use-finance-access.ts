@@ -26,5 +26,8 @@ export async function invalidateStudentMoney(): Promise<void> {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["students"] }),
     queryClient.invalidateQueries({ queryKey: ["student-balances"] }),
+    // Instalment plans and open items count the same payments.
+    queryClient.invalidateQueries({ queryKey: ["payment-plans"] }),
+    queryClient.invalidateQueries({ queryKey: ["invoices"] }),
   ]);
 }
