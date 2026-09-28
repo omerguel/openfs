@@ -10,6 +10,7 @@ import type { Database } from "./sqlite";
 
 import type {
   Account,
+  ChargeLine,
   CreateTransactionInput,
   JournalRow,
   LedgerResponse,
@@ -174,6 +175,31 @@ function requireStudent(student: unknown) {
   };
 }
 
+function requireChargeLines(lines: unknown): ChargeLine[] {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    throw new ValidationError("Mindestens eine Position ist erforderlich.");
+  }
+  if (lines.length > 50) {
+    throw new ValidationError("Höchstens 50 Positionen pro Buchung.");
+  }
+  return lines.map((raw) => {
+    const line = raw as Partial<ChargeLine> | null;
+    if (!line || typeof line !== "object") {
+      throw new ValidationError("Ungültige Position.");
+    }
+    const description =
+      typeof line.description === "string" ? line.description.trim() : "";
+    if (!description) {
+      throw new ValidationError("Jede Position braucht eine Beschreibung.");
+    }
+    return {
+      habenKonto: String(line.habenKonto ?? ""),
+      amountCents: requireAmount(line.amountCents),
+      description,
+    };
+  });
+}
+
 /* ----------------------- transaction creation ---------------------- */
 
 type BookingSpec = {
@@ -255,17 +281,43 @@ export function createTransaction(
     }
     case "guthaben_uebertragung": {
       const anzahlung = requireSystemAccount(db, "anzahlung", "Guthabenkonto");
+      student = requireStudent(input.student);
+      hasBeleg = false;
+      if (input.lines !== undefined) {
+        const lines = requireChargeLines(input.lines);
+        const total = lines.reduce((sum, line) => sum + line.amountCents, 0);
+        if (amountCents !== total) {
+          throw new ValidationError(
+            "Gesamtbetrag stimmt nicht mit der Summe der Positionen überein.",
+          );
+        }
+        bookings = lines.map((line) => {
+          const haben = requireAccount(
+            db,
+            line.habenKonto,
+            ["erloes", "durchlaufend"],
+            "Erlöskonto",
+          );
+          return {
+            soll: anzahlung,
+            haben,
+            amountCents: line.amountCents,
+            vatAccount: haben,
+            lineDescription: line.description,
+          };
+        });
+        if (!description.trim()) description = lines.map((l) => l.description).join(", ");
+        break;
+      }
       const haben = requireAccount(
         db,
         input.habenKonto,
         ["erloes", "durchlaufend"],
         "Erlöskonto",
       );
-      student = requireStudent(input.student);
       if (!description.trim()) {
         throw new ValidationError("Beschreibung der Leistung ist erforderlich.");
       }
-      hasBeleg = false;
       bookings = [
         {
           soll: anzahlung,

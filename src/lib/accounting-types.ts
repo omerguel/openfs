@@ -58,6 +58,12 @@ export type StudentRef = {
   classes: string;
 };
 
+export type ChargeLine = {
+  habenKonto: string;
+  amountCents: number;
+  description: string;
+};
+
 export type CreateTransactionInput =
   | {
       type: "zahlung_guthaben";
@@ -81,10 +87,16 @@ export type CreateTransactionInput =
   | {
       type: "guthaben_uebertragung";
       date: string;
+      /** Total; with `lines` it must equal their sum (or be omitted). */
       amountCents: number;
-      habenKonto: string; // 8400 | 8300 | 8100 | 1590
+      /** Required unless `lines` is given. */
+      habenKonto?: string; // 4400 | 4300 | 4100 | 1370
       student: StudentRef;
       description: string;
+      /** Multi-line charge (e.g. exam: Vorstellungsentgelt + TÜV-Gebühr as
+          durchlaufender Posten) — one transaction, one booking per line,
+          VAT per line from its own Haben account. Replaces habenKonto. */
+      lines?: ChargeLine[];
     }
   | {
       type: "transfer";

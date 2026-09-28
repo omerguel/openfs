@@ -104,6 +104,74 @@ describe("createTransaction", () => {
     expect(listJournal(db, {})[0]!.vatRate).toBeNull();
   });
 
+  test("multi-line Guthabenübertragung: one transaction, VAT per line, one Storno", () => {
+    const created = createTransaction(db, {
+      type: "guthaben_uebertragung",
+      date: "2026-06-09",
+      amountCents: 28000 + 12983,
+      student: STUDENT,
+      description: "",
+      lines: [
+        {
+          habenKonto: "4400",
+          amountCents: 28000,
+          description: "Praktische Prüfung (55)",
+        },
+        {
+          habenKonto: "1370",
+          amountCents: 12983,
+          description: "TÜV Prüfungsgebühr (durchlaufender Posten)",
+        },
+      ],
+    });
+    expect(created.belegNr).toBeNull();
+    expect(created.bookings.map((b) => [b.soll, b.haben, b.amountCents])).toEqual([
+      ["3272", "4400", 28000],
+      ["3272", "1370", 12983],
+    ]);
+    const journal = listJournal(db, {}).filter((r) => r.transactionId === created.id);
+    expect(journal.map((r) => r.vatRate).sort()).toEqual([19, null].sort());
+    expect(listLedger(db, {}).rows.find((r) => r.id === created.id)?.description).toBe(
+      "Praktische Prüfung (55), TÜV Prüfungsgebühr (durchlaufender Posten)",
+    );
+
+    const storno = stornoTransaction(db, created.id, "Prüfung abgesagt", "2026-06-10");
+    expect(storno.bookings.map((b) => [b.soll, b.haben])).toEqual([
+      ["4400", "3272"],
+      ["1370", "3272"],
+    ]);
+  });
+
+  test("multi-line total must match the lines, and every line needs text", () => {
+    const base = {
+      type: "guthaben_uebertragung" as const,
+      date: "2026-06-09",
+      student: STUDENT,
+      description: "",
+    };
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 100,
+        lines: [{ habenKonto: "4400", amountCents: 200, description: "A" }],
+      }),
+    ).toThrow("Summe der Positionen");
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 200,
+        lines: [{ habenKonto: "4400", amountCents: 200, description: " " }],
+      }),
+    ).toThrow("Beschreibung");
+    expect(() =>
+      createTransaction(db, {
+        ...base,
+        amountCents: 200,
+        lines: [{ habenKonto: "1600", amountCents: 200, description: "A" }],
+      }),
+    ).toThrow("nicht zulässig");
+  });
+
   test("Transfer goes through 1460 Geldtransit with two bookings", () => {
     const created = createTransaction(db, {
       type: "transfer",
