@@ -9,6 +9,7 @@
 /* ------------------------------------------------------------------ */
 
 import { openSqlite, type Database } from "./sqlite";
+import { ensureAbsenceTables } from "./absences";
 import { instructorIdByName, migrateNameColumn, vehicleIdByName } from "./refs";
 
 import type { AccountKind, CompanyProfile } from "../lib/accounting-types";
@@ -406,6 +407,8 @@ export function openDb(path = "data/fahrschule.db"): Database {
   initStudents(db);
   initPricePlans(db);
   initCalendarEvents(db);
+  // Calendar create/update checks absences, so the table must always exist.
+  ensureAbsenceTables(db);
   repairSoftReferences(db);
   return db;
 }

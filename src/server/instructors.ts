@@ -213,6 +213,10 @@ export function deleteInstructor(db: Database, id: number): void {
         ).run(id);
       }
     }
+    // Absences only describe this instructor's calendar — they go with them.
+    if (tableExists(db, "instructor_absences")) {
+      db.prepare("DELETE FROM instructor_absences WHERE instructor_id = ?").run(id);
+    }
     // lesson_attestations keep the instructor name on purpose: they record
     // who actually gave the lesson — rewriting would falsify a compliance record.
     db.prepare("DELETE FROM instructors WHERE id = ?").run(id);
