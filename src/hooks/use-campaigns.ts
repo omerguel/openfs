@@ -39,14 +39,23 @@ export type Campaign = {
   startDate: string;
   /** Empty string = open-ended (laufend). */
   endDate: string;
+  /** Effective status — "beendet" once the end date has passed. */
   status: CampaignStatus;
+  /** True when the campaign reads "beendet" only because it ran out. */
+  endedByDate: boolean;
   notes: string;
   createdAt: string;
 };
 
 export type CampaignInput = Omit<
   Campaign,
-  "id" | "createdAt" | "leads" | "signups" | "trackedLeads" | "trackedSignups"
+  | "id"
+  | "createdAt"
+  | "leads"
+  | "signups"
+  | "trackedLeads"
+  | "trackedSignups"
+  | "endedByDate"
 >;
 
 /** Public tracking link of a campaign (the /anfrage form reads it). */
