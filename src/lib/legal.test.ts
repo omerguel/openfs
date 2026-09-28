@@ -62,9 +62,9 @@ describe("missingImpressumFields", () => {
   });
 
   test("register data is optional but must come as a pair", () => {
-    expect(missingImpressumFields({ ...COMPLETE, registergericht: "AG Darmstadt" })).toEqual(
-      ["registernummer"],
-    );
+    expect(
+      missingImpressumFields({ ...COMPLETE, registergericht: "AG Darmstadt" }),
+    ).toEqual(["registernummer"]);
     expect(missingImpressumFields({ ...COMPLETE, registernummer: "HRB 1234" })).toEqual([
       "registergericht",
     ]);
@@ -78,9 +78,9 @@ describe("missingImpressumFields", () => {
   });
 
   test("USt-IdNr and Steuernummer are never required", () => {
-    expect(missingImpressumFields({ ...COMPLETE, ustIdNr: "", steuernummer: "" })).toEqual(
-      [],
-    );
+    expect(
+      missingImpressumFields({ ...COMPLETE, ustIdNr: "", steuernummer: "" }),
+    ).toEqual([]);
   });
 });
 
@@ -100,7 +100,10 @@ describe("privacyContactEmail", () => {
   test("prefers the dedicated address and falls back to the general one", () => {
     expect(privacyContactEmail(COMPLETE)).toBe("info@mueller.example");
     expect(
-      privacyContactEmail({ ...COMPLETE, datenschutzEmail: "datenschutz@mueller.example" }),
+      privacyContactEmail({
+        ...COMPLETE,
+        datenschutzEmail: "datenschutz@mueller.example",
+      }),
     ).toBe("datenschutz@mueller.example");
     expect(privacyContactEmail(EMPTY_LEGAL_INFO)).toBe("");
   });

@@ -42,7 +42,14 @@ describe("GET /api/public/legal", () => {
     expect(data.name).toBe("Fahrschule Müller");
     expect(data.inhaber).toBe("Anna Müller");
     expect(data.aufsichtsbehoerde).toBe("Stadt Darmstadt");
-    for (const key of ["iban", "bic", "bankName", "glaeubigerId", "beraterNr", "mandantNr"]) {
+    for (const key of [
+      "iban",
+      "bic",
+      "bankName",
+      "glaeubigerId",
+      "beraterNr",
+      "mandantNr",
+    ]) {
       expect(data).not.toHaveProperty(key);
     }
   });
