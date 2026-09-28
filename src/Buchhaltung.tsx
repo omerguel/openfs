@@ -80,6 +80,7 @@ const KIND_LABELS: Record<AccountKind, string> = {
   transit: "Neutrale Anwendung",
   durchlaufend: "Durchlaufende Posten",
   anzahlung: "Fahrschüler-Guthaben",
+  vortrag: "Saldenvortrag",
   steuer: "Steuerkonto",
   erloes: "Einnahmen",
   privat: "Privat",

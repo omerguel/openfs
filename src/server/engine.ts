@@ -94,7 +94,7 @@ function requireAccount(
   return account;
 }
 
-const SYSTEM_ACCOUNTS = { anzahlung: "3272", transit: "1460" } as const;
+const SYSTEM_ACCOUNTS = { anzahlung: "3272", transit: "1460", vortrag: "9000" } as const;
 
 function requireSystemAccount(
   db: Database,
@@ -199,6 +199,24 @@ function requireChargeLines(lines: unknown): ChargeLine[] {
       description,
     };
   });
+}
+
+/** Only one opening balance per student — unless the first was storniert. */
+function requireNoActiveSaldovortrag(db: Database, customerNo: string, name: string) {
+  const existing = db
+    .query<{ beleg_nr: string | null }, [string]>(
+      `SELECT beleg_nr FROM transactions
+       WHERE type = 'saldovortrag' AND student_customer_no = ?
+         AND storno_of IS NULL AND storniert_by IS NULL`,
+    )
+    .get(customerNo);
+  if (existing) {
+    throw new ValidationError(
+      `Für ${name} (Kunde ${customerNo}) ist bereits ein Saldovortrag gebucht${
+        existing.beleg_nr ? ` (Beleg ${existing.beleg_nr})` : ""
+      } — bitte zuerst stornieren.`,
+    );
+  }
 }
 
 /* ----------------------- transaction creation ---------------------- */
@@ -346,6 +364,46 @@ export function createTransaction(
           lineDescription: "",
         },
         { soll: to, haben: transit, amountCents, vatAccount: null, lineDescription: "" },
+      ];
+      break;
+    }
+    case "saldovortrag": {
+      const vortrag = requireSystemAccount(db, "vortrag", "Saldenvortragskonto");
+      const anzahlung = requireSystemAccount(db, "anzahlung", "Guthabenkonto");
+      student = requireStudent(input.student);
+      if (!student.customerNo) {
+        throw new ValidationError("Saldovortrag: Kundennummer des Fahrschülers fehlt.");
+      }
+      if (input.direction !== "guthaben" && input.direction !== "forderung") {
+        throw new ValidationError(
+          "Saldovortrag: Richtung muss 'guthaben' oder 'forderung' sein.",
+        );
+      }
+      requireNoActiveSaldovortrag(db, student.customerNo, student.name);
+      if (!description.trim()) {
+        description = `Saldovortrag ${student.name} (${
+          input.direction === "guthaben" ? "Guthaben" : "offener Betrag"
+        })`;
+      }
+      // Guthaben: 9000 an 3272 (credit on the Ausbildungskonto);
+      // Forderung: 3272 an 9000 (the student owes). No VAT split — the
+      // VAT on old Anzahlungen was declared by the previous software.
+      bookings = [
+        input.direction === "guthaben"
+          ? {
+              soll: vortrag,
+              haben: anzahlung,
+              amountCents,
+              vatAccount: null,
+              lineDescription: "Saldovortrag Guthaben",
+            }
+          : {
+              soll: anzahlung,
+              haben: vortrag,
+              amountCents,
+              vatAccount: null,
+              lineDescription: "Saldovortrag offener Betrag",
+            },
       ];
       break;
     }
@@ -639,7 +697,7 @@ function transactionVatLabel(
   accounts: Map<string, Account>,
 ): string {
   const withVat = bookings.find((b) => b.vat_rate != null);
-  if (tx.type === "transfer") return "Nicht zutreffend";
+  if (tx.type === "transfer" || tx.type === "saldovortrag") return "Nicht zutreffend";
   if (!withVat) {
     const haben = accounts.get(bookings[0]?.haben_account ?? "");
     return haben?.vatLabel ?? "Nicht zutreffend";
