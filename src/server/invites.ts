@@ -4,7 +4,10 @@
 /* invent and pass on passwords. Only the SHA-256 of the token is      */
 /* stored (like sessions); a link is valid for 7 days and once. With   */
 /* SMTP configured the link is also mailed via the outbox, otherwise   */
-/* the Inhaber copies it. Table: user_invites (auth.ts DDL).           */
+/* the Inhaber copies it. The mail gets its own token, minted only at  */
+/* delivery (the outbox never holds a working link, see mail.ts).      */
+/* Accepting claims the link atomically — two racing requests cannot   */
+/* both set a password. Table: user_invites (auth.ts DDL).             */
 /*                                                                     */
 /*   POST /api/users/:id/invite       Inhaber (OWNER_ONLY via /api/users) */
 /*   GET  /api/auth/invite/:token     public — who is invited          */
@@ -18,14 +21,21 @@ import type { Database } from "./sqlite";
 import {
   audit,
   createSession,
+  hashPassword,
+  requirePassword,
   sessionCookie,
-  updateUser,
+  setPasswordHash,
   type UserRecord,
   listUsers,
 } from "./auth";
 import { ValidationError } from "./errors";
 import { clientIp, err, handle, json, type RequestIPSource } from "./http";
-import { mailSchool, queueMail } from "./mail";
+import {
+  mailSchool,
+  OUTBOX_SECRET_PLACEHOLDER,
+  queueMail,
+  registerOutboxSecret,
+} from "./mail";
 import { requestContext } from "./request-context";
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -39,20 +49,24 @@ function newToken(): string {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 }
 
-/** New one-time token for `userId`; earlier unused links stop working. */
+/** New one-time token for `userId`; earlier unused links stop working
+ *  unless `keepOthers` (the mailed copy of a link just shown). */
 export function createInvite(
   db: Database,
   userId: number,
   now = Date.now(),
+  options: { keepOthers?: boolean } = {},
 ): { token: string; expiresAt: string } {
   const user = listUsers(db).find((u) => u.id === userId);
   if (!user) throw new ValidationError("Benutzer nicht gefunden.");
   if (!user.active) throw new ValidationError("Der Zugang ist gesperrt.");
   const token = newToken();
   db.transaction(() => {
-    db.prepare("DELETE FROM user_invites WHERE user_id = ? AND used_at IS NULL").run(
-      userId,
-    );
+    if (!options.keepOthers) {
+      db.prepare("DELETE FROM user_invites WHERE user_id = ? AND used_at IS NULL").run(
+        userId,
+      );
+    }
     db.prepare(
       "INSERT INTO user_invites (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
     ).run(sha256(token), userId, now + INVITE_TTL_MS);
@@ -78,25 +92,59 @@ export function inviteInfo(db: Database, token: string, now = Date.now()) {
   return user ? { name: user.name, email: user.email } : null;
 }
 
-/** Sets the password (rules as everywhere) and uses up the link. */
+const INVALID_INVITE =
+  "Dieser Einladungslink ist ungültig, abgelaufen oder wurde schon benutzt.";
+
+/** Sets the password (rules as everywhere) and uses up the link. The
+ *  cheap validity check comes first (no argon2 for random tokens), then
+ *  the hash, then ONE transaction that claims the link — only if it is
+ *  still unused and unexpired (changes === 1) — and sets the password.
+ *  The user's other open links die with it. */
 export async function acceptInvite(
   db: Database,
   token: string,
   password: unknown,
   now = Date.now(),
 ): Promise<UserRecord> {
-  const user = validInvite(db, token, now);
-  if (!user) {
-    throw new ValidationError(
-      "Dieser Einladungslink ist ungültig, abgelaufen oder wurde schon benutzt.",
+  if (!validInvite(db, token, now)) throw new ValidationError(INVALID_INVITE);
+  const hash = await hashPassword(requirePassword(password));
+  const tokenHash = sha256(token);
+  return db.transaction(() => {
+    const claimed = db
+      .prepare(
+        `UPDATE user_invites SET used_at = datetime('now')
+         WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+      )
+      .run(tokenHash, now).changes;
+    if (claimed !== 1) throw new ValidationError(INVALID_INVITE);
+    const { user_id: userId } = db
+      .query<{ user_id: number }, [string]>(
+        "SELECT user_id FROM user_invites WHERE token_hash = ?",
+      )
+      .get(tokenHash)!;
+    // Deactivated meanwhile: the throw rolls the claim back.
+    if (!listUsers(db).find((u) => u.id === userId)?.active) {
+      throw new ValidationError(INVALID_INVITE);
+    }
+    db.prepare("DELETE FROM user_invites WHERE user_id = ? AND used_at IS NULL").run(
+      userId,
     );
-  }
-  const updated = await updateUser(db, user.id, { password });
-  db.prepare(
-    "UPDATE user_invites SET used_at = datetime('now') WHERE token_hash = ?",
-  ).run(sha256(token));
-  return updated;
+    return setPasswordHash(db, userId, hash);
+  })();
 }
+
+/* The mailed invite carries its own token, minted at delivery. */
+registerOutboxSecret("user_invite", (db, entry) => {
+  if (entry.relatedType !== "user" || entry.relatedId == null) {
+    throw new Error("Einladungs-Mail ohne Benutzer.");
+  }
+  const { token } = createInvite(db, entry.relatedId, Date.now(), { keepOthers: true });
+  return {
+    value: token,
+    discard: () =>
+      db.prepare("DELETE FROM user_invites WHERE token_hash = ?").run(sha256(token)),
+  };
+});
 
 function inviteMailBody(name: string, school: string, url: string) {
   return [
@@ -136,11 +184,17 @@ export function inviteRoutes(fallbackDb: Database, options: InviteRouteOptions =
           let mailed = false;
           if (body.send !== false && options.mailConfigured) {
             const school = mailSchool(db).name;
+            // Never the token itself: the outbox is readable in Nachrichten.
             queueMail(db, {
               recipient: user.email,
               subject: `Einladung zu OpenFS${school ? ` – ${school}` : ""}`,
-              bodyText: inviteMailBody(user.name, school, url),
-              kind: "generic",
+              bodyText: inviteMailBody(
+                user.name,
+                school,
+                `${origin}/einladung/${OUTBOX_SECRET_PLACEHOLDER}`,
+              ),
+              kind: "user_invite",
+
               relatedType: "user",
               relatedId: id,
             });

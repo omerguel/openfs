@@ -168,7 +168,7 @@ function requireEmail(value: unknown): string {
   return email;
 }
 
-function requirePassword(value: unknown): string {
+export function requirePassword(value: unknown): string {
   if (typeof value !== "string" || value.length < MIN_PASSWORD_LENGTH) {
     throw new ValidationError(
       `Das Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen lang sein.`,
