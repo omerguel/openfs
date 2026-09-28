@@ -481,6 +481,7 @@ export const ARCHIVE_REASONS: Record<string, string> = {
   abgebrochen: "Ausbildung abgebrochen",
   wechsel: "Wechsel zu anderer Fahrschule",
   sonstiges: "Sonstiges",
+  loeschung: "Löschung auf Antrag (Art. 17 DSGVO)",
 };
 
 export function deleteStudent(
@@ -512,13 +513,27 @@ export function deleteStudent(
           .all(id)
           .map((row) => row.id)
       : [];
+    // Termine too: restore re-links them, and the retention job
+    // (retention.ts) finds them to pseudonymise the name later.
+    const calendarEvents = tableExists(db, "calendar_events")
+      ? db
+          .query<{ id: number }, [number]>(
+            "SELECT id FROM calendar_events WHERE student_id = ?",
+          )
+          .all(id)
+          .map((row) => row.id)
+      : [];
     archiveRow(
       db,
       "student",
       id,
       `${student.firstName} ${student.lastName}`.trim() ||
         `Vertrag ${student.contractNumber}`,
-      { theoryGroups: theoryGroups.map((group) => group.id), conversations },
+      {
+        theoryGroups: theoryGroups.map((group) => group.id),
+        conversations,
+        calendarEvents,
+      },
       reason ? ARCHIVE_REASONS[reason] : undefined,
     );
     // Drop the id from member lists — a ghost id would keep counting
