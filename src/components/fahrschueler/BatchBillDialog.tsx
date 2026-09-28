@@ -98,7 +98,10 @@ export function BatchBillDialog({
               })}
             </div>
             <div className="flex items-center justify-between gap-3 border-t bg-muted/40 px-3 py-2 text-xs font-medium">
-              <span>Summe ({lessons.length} Fahrstunden)</span>
+              <span>
+                Summe ({lessons.length}{" "}
+                {lessons.length === 1 ? "Fahrstunde" : "Fahrstunden"})
+              </span>
               <span className="tabular-nums">
                 {sumCents != null ? `${formatCents(sumCents)} €` : "–"}
               </span>
@@ -119,7 +122,9 @@ export function BatchBillDialog({
           </Button>
           <Button onClick={() => void handleConfirm()} disabled={!canConfirm}>
             <Receipt className="mr-1 size-3.5" />
-            {submitting ? "Wird abgerechnet…" : `${lessons.length} Fahrstunden abrechnen`}
+            {submitting
+              ? "Wird abgerechnet…"
+              : `${lessons.length} ${lessons.length === 1 ? "Fahrstunde" : "Fahrstunden"} abrechnen`}
           </Button>
         </DialogFooter>
       </DialogContent>
