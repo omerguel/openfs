@@ -46,6 +46,8 @@ export type AppointmentRequest = {
   studentName: string | null;
   /* Present on list responses; create/update responses omit it. */
   conflicts?: AppointmentRequestConflict[];
+  /** Ids of requests probably from the same person (list responses). */
+  duplicateOf?: number[];
 };
 
 export type AppointmentRequestInput = Omit<
@@ -53,6 +55,7 @@ export type AppointmentRequestInput = Omit<
   | "id"
   | "createdAt"
   | "conflicts"
+  | "duplicateOf"
   | "campaignId"
   | "campaignName"
   | "studentId"

@@ -25,6 +25,7 @@ import {
   getTheoryGroup,
   updateTheoryGroup,
 } from "./theory-groups";
+import { requestContext } from "./request-context";
 import { createVehicle, deleteVehicle } from "./vehicles";
 
 let db: Database;
@@ -56,6 +57,33 @@ const EVENT = {
   instructor: "Martin Weber",
   type: "Praktisch" as const,
 };
+
+describe("archive details", () => {
+  test("entries carry who deleted them and a short summary", () => {
+    const student = createStudent(db, { ...makeStudent(), classes: "B" });
+    requestContext.run(
+      {
+        user: {
+          id: 1,
+          email: "s@example.de",
+          name: "Sabine Krämer",
+          role: "inhaber",
+          instructorId: null,
+        },
+      },
+      () => deleteStudent(db, student.id),
+    );
+    const entry = listArchive(db)[0]!;
+    expect(entry.deletedBy).toBe("Sabine Krämer");
+    expect(entry.detail).toBe(`Kd.-Nr. ${student.customerNumber} · Klasse B`);
+
+    const event = createCalendarEvent(db, { ...EVENT, allowConflicts: true } as never);
+    deleteCalendarEvent(db, Number(event.id));
+    const eventEntry = listArchive(db)[0]!;
+    expect(eventEntry.deletedBy).toBe("");
+    expect(eventEntry.detail).toBe("Praktisch · 15.06.2026, 10:00–11:00 Uhr");
+  });
+});
 
 describe("archive", () => {
   test("deleting a student archives it; restore brings it back with the same id", () => {

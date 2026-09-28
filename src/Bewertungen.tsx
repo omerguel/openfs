@@ -396,7 +396,7 @@ function ReviewRow({
       </span>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="truncate text-sm font-medium">{review.author}</span>
@@ -406,7 +406,7 @@ function ReviewRow({
               {review.source} · {formatDate(review.date)}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="-ml-2 flex shrink-0 items-center justify-between gap-2 sm:ml-0">
             <ReviewActions
               review={review}
               saving={saving}

@@ -19,6 +19,7 @@ import type { BunRequest } from "bun";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
 import { demoDataEnabled } from "./db";
+import { schoolToday } from "./school-time";
 
 export type CampaignChannel =
   | "Google Ads"
@@ -65,14 +66,24 @@ export type Campaign = {
   startDate: string;
   /** Empty string = open-ended (laufend). */
   endDate: string;
+  /** Effective status: a campaign whose end date has passed reads as
+      "beendet" even if it was never switched off by hand. */
   status: CampaignStatus;
+  /** True when `status` is "beendet" only because the end date passed. */
+  endedByDate: boolean;
   notes: string;
   createdAt: string;
 };
 
 export type CampaignInput = Omit<
   Campaign,
-  "id" | "createdAt" | "leads" | "signups" | "trackedLeads" | "trackedSignups"
+  | "id"
+  | "createdAt"
+  | "leads"
+  | "signups"
+  | "trackedLeads"
+  | "trackedSignups"
+  | "endedByDate"
 >;
 
 type CampaignRow = {
@@ -91,9 +102,19 @@ type CampaignRow = {
   created_at: string;
 };
 
+/** Stored status, or "beendet" once the end date lies before `today`. */
+export function effectiveCampaignStatus(
+  status: CampaignStatus,
+  endDate: string,
+  today: string,
+): CampaignStatus {
+  return status !== "beendet" && endDate !== "" && endDate < today ? "beendet" : status;
+}
+
 const toCampaign = (
   row: CampaignRow,
   tracked: { leads: number; signups: number } = { leads: 0, signups: 0 },
+  today = schoolToday(),
 ): Campaign => ({
   id: row.id,
   name: row.name,
@@ -109,7 +130,8 @@ const toCampaign = (
   trackedSignups: tracked.signups,
   startDate: row.start_date,
   endDate: row.end_date,
-  status: row.status,
+  status: effectiveCampaignStatus(row.status, row.end_date, today),
+  endedByDate: effectiveCampaignStatus(row.status, row.end_date, today) !== row.status,
   notes: row.notes,
   createdAt: row.created_at,
 });
@@ -118,17 +140,30 @@ const toCampaign = (
 /* Schema + seed                                                       */
 /* ------------------------------------------------------------------ */
 
-const SEED_CAMPAIGNS: CampaignInput[] = [
+/* ISO date `months` (and `days`) away from today — keeps the demo
+   campaigns current: running ones run now, finished ones ended. */
+function monthsFromToday(months: number, day = 1): string {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth() + months, day);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/* Last day of the month `months` away. */
+const monthEnd = (months: number) => monthsFromToday(months + 1, 0);
+
+const seedCampaigns = (): CampaignInput[] => [
   {
-    name: "Frühjahrsoffensive Suchanzeigen",
+    name: "Suchanzeigen Führerschein B",
     channel: "Google Ads",
-    trackingCode: "fruehjahr-suche",
+    trackingCode: "suche-fuehrerschein-b",
     budgetCents: 120000,
     spentCents: 78450,
     manualLeads: 96,
     manualSignups: 14,
-    startDate: "2026-03-01",
-    endDate: "2026-05-31",
+    startDate: monthsFromToday(-2),
+    endDate: monthEnd(1),
     status: "aktiv",
     notes: "Keywords: Führerschein, Fahrschule + Stadtteil. Anzeigen B/BF17.",
   },
@@ -140,36 +175,36 @@ const SEED_CAMPAIGNS: CampaignInput[] = [
     spentCents: 41200,
     manualLeads: 73,
     manualSignups: 9,
-    startDate: "2026-02-15",
+    startDate: monthsFromToday(-7, 15),
     endDate: "",
     status: "aktiv",
     notes: "Reels mit Fahrlehrer-Tipps, Zielgruppe 16–24 im Umkreis 25 km.",
   },
   {
-    name: "TikTok Challenge #Führerschein2026",
+    name: "TikTok Challenge #Führerschein",
     channel: "TikTok",
     trackingCode: "tiktok-fuehrerschein",
     budgetCents: 45000,
     spentCents: 45000,
     manualLeads: 152,
     manualSignups: 11,
-    startDate: "2026-01-10",
-    endDate: "2026-03-10",
+    startDate: monthsFromToday(-8, 10),
+    endDate: monthsFromToday(-6, 10),
     status: "beendet",
     notes: "Viral gelaufen, aber viele unqualifizierte Leads.",
   },
   {
     name: "Flyer Abiturjahrgang Gymnasien",
     channel: "Flyer",
-    trackingCode: "flyer-abi26",
+    trackingCode: "flyer-abi",
     budgetCents: 25000,
     spentCents: 18900,
     manualLeads: 21,
     manualSignups: 6,
-    startDate: "2026-04-01",
-    endDate: "2026-04-30",
+    startDate: monthsFromToday(-5),
+    endDate: monthEnd(-5),
     status: "beendet",
-    notes: "Verteilung an 4 Gymnasien, Gutschein-Code ABI26.",
+    notes: "Verteilung an 4 Gymnasien, Gutschein-Code ABI.",
   },
   {
     name: "Empfehlungsprogramm „Freunde werben“",
@@ -179,7 +214,7 @@ const SEED_CAMPAIGNS: CampaignInput[] = [
     spentCents: 12500,
     manualLeads: 18,
     manualSignups: 8,
-    startDate: "2026-01-01",
+    startDate: monthsFromToday(-9),
     endDate: "",
     status: "aktiv",
     notes: "25 EUR Fahrstunden-Gutschrift pro erfolgreicher Empfehlung.",
@@ -192,8 +227,8 @@ const SEED_CAMPAIGNS: CampaignInput[] = [
     spentCents: 22300,
     manualLeads: 34,
     manualSignups: 5,
-    startDate: "2026-03-15",
-    endDate: "2026-06-15",
+    startDate: monthsFromToday(-3, 15),
+    endDate: monthsFromToday(2, 15),
     status: "pausiert",
     notes: "Pausiert bis neue Kreative fertig sind.",
   },
@@ -234,7 +269,7 @@ export function ensureCampaignTables(db: Database): void {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const seedAll = db.transaction(() => {
-    for (const c of SEED_CAMPAIGNS) {
+    for (const c of seedCampaigns()) {
       insert.run(
         c.name,
         c.channel,

@@ -146,6 +146,49 @@ describe("getPortalOverview", () => {
     expect(getPortalOverview(db, 1, NOW).balanceCents).toBe(40983);
     expect(getPortalOverview(db, newStudent(db).id, NOW).balanceCents).toBe(0);
   });
+
+  test("progress counts held lessons, Sonderfahrten and Theorie units", () => {
+    const paula = newStudent(db);
+    lesson(db, paula.id, "2031-03-01");
+    createCalendarEvent(db, {
+      date: "2031-03-02",
+      start: "20:00",
+      end: "21:30",
+      title: "Nachtfahrt",
+      instructor: "Nicht zugeteilt",
+      type: "Praktisch",
+      lessonKind: "Nachtfahrt",
+      studentId: paula.id,
+    });
+    lesson(db, paula.id, "2031-03-20"); // future — not held yet
+    const { progress } = getPortalOverview(db, paula.id, NOW);
+    expect(progress.practicalLessons).toBe(2);
+    expect(progress.practicalMinutes).toBe(150);
+    expect(progress.specialDrives.find((d) => d.kind === "Nachtfahrt")).toEqual({
+      kind: "Nachtfahrt",
+      completedMinutes: 90,
+      requiredMinutes: 135,
+    });
+    expect(progress.theory).toEqual({ attended: 0, required: 14 });
+  });
+
+  test("documents list names only; open invoices appear when present", () => {
+    const paula = newStudent(db);
+    db.exec(`CREATE TABLE IF NOT EXISTS student_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL,
+      name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL, storage_key TEXT NOT NULL UNIQUE, uploaded_at TEXT NOT NULL)`);
+    db.prepare(
+      `INSERT INTO student_files (student_id, name, mime_type, size, sha256, storage_key, uploaded_at)
+       VALUES (?, 'Sehtest.pdf', 'application/pdf', 10, 'x', 'k1', '2031-03-01 10:00:00')`,
+    ).run(paula.id);
+    const overview = getPortalOverview(db, paula.id, NOW);
+    expect(overview.documents).toEqual([
+      { name: "Sehtest.pdf", uploadedAt: "2031-03-01 10:00:00" },
+    ]);
+    expect(JSON.stringify(overview.documents)).not.toContain("k1");
+    expect(overview.openInvoices).toEqual([]);
+  });
 });
 
 describe("portal chat", () => {

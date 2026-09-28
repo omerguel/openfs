@@ -2,13 +2,15 @@
 /* Schülerportal — /portal/$token                                       */
 /* Public, token-gated page for one student; rendered outside the staff */
 /* app shell (like /anfrage). Mobile-first: school header, next and    */
-/* past lessons, Guthaben/offener Betrag and a chat thread with the    */
-/* school (polls every 15 s). Data: use-portal.ts.                     */
+/* past lessons, Ausbildungsstand, Guthaben/offene Rechnungen, the     */
+/* uploaded documents (names only) and a chat thread with the school   */
+/* (polls every 15 s). Data: use-portal.ts. Tone: students are         */
+/* addressed with "du", like the public /anfrage form.                 */
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
-import { CalendarDays, Link2Off, Mail, Phone, Send } from "lucide-react";
+import { CalendarDays, FileText, Link2Off, Mail, Phone, Send } from "lucide-react";
 
 import {
   PortalError,
@@ -29,6 +31,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -208,6 +211,14 @@ function Chat({ token, schoolName }: { token: string; schoolName: string }) {
                       : "rounded-bl-sm bg-muted",
                   )}
                 >
+                  <span
+                    className={cn(
+                      "text-[11px] font-medium",
+                      own ? "text-primary-foreground/80" : "text-muted-foreground",
+                    )}
+                  >
+                    {own ? "Du" : schoolName}
+                  </span>
                   <p className="text-sm break-words whitespace-pre-wrap">
                     {message.text}
                   </p>
@@ -264,6 +275,134 @@ function Chat({ token, schoolName }: { token: string; schoolName: string }) {
 }
 
 const PAST_PREVIEW = 5;
+
+const formatMinutes = (minutes: number) =>
+  minutes % 60 === 0
+    ? `${minutes / 60} Std.`
+    : `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")} Std.`;
+
+function ProgressRow({
+  label,
+  value,
+  done,
+  total,
+}: {
+  label: string;
+  value: string;
+  done: number;
+  total: number;
+}) {
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  return (
+    <li className="flex flex-col gap-1.5 px-3 py-2.5">
+      <div className="flex items-baseline justify-between gap-2 text-sm">
+        <span className="min-w-0 truncate">{label}</span>
+        <span
+          className={cn(
+            "shrink-0 text-xs tabular-nums",
+            done >= total
+              ? "text-green-700 dark:text-green-400"
+              : "text-muted-foreground",
+          )}
+        >
+          {value}
+        </span>
+      </div>
+      <Progress value={percent} aria-label={`${label}: ${value}`} className="h-1.5" />
+    </li>
+  );
+}
+
+function TrainingProgress({ progress }: { progress: PortalOverview["progress"] }) {
+  return (
+    <Section title="Dein Ausbildungsstand">
+      <ul className="divide-y divide-border/70">
+        <li className="flex items-baseline justify-between gap-2 px-3 py-2.5 text-sm">
+          <span>Fahrstunden bisher</span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {progress.practicalLessons}{" "}
+            {progress.practicalLessons === 1 ? "Termin" : "Termine"} ·{" "}
+            {formatMinutes(progress.practicalMinutes)}
+          </span>
+        </li>
+        {progress.specialDrives.map((drive) => (
+          <ProgressRow
+            key={drive.kind}
+            label={drive.kind}
+            value={`${drive.completedMinutes} von ${drive.requiredMinutes} Min. (Pflicht)`}
+            done={drive.completedMinutes}
+            total={drive.requiredMinutes}
+          />
+        ))}
+        <ProgressRow
+          label="Theorieunterricht"
+          value={`${progress.theory.attended} von ${progress.theory.required} Doppelstunden`}
+          done={progress.theory.attended}
+          total={progress.theory.required}
+        />
+      </ul>
+    </Section>
+  );
+}
+
+function OpenInvoices({ invoices }: { invoices: PortalOverview["openInvoices"] }) {
+  if (invoices.length === 0) return null;
+  return (
+    <Section title="Offene Rechnungen">
+      <ul className="divide-y divide-border/70">
+        {invoices.map((invoice) => (
+          <li key={invoice.invoiceNr} className="flex items-center gap-3 px-3 py-2.5">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate font-mono text-[13px]">{invoice.invoiceNr}</span>
+              <span
+                className={cn(
+                  "text-xs tabular-nums",
+                  invoice.overdue
+                    ? "text-red-700 dark:text-red-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {invoice.overdue ? "Überfällig seit" : "Fällig am"}{" "}
+                {formatDay(invoice.dueDate)}
+              </span>
+            </div>
+            <span className="shrink-0 text-sm font-medium tabular-nums">
+              {formatEuro(invoice.openCents)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+function Documents({ documents }: { documents: PortalOverview["documents"] }) {
+  return (
+    <Section title="Deine Dokumente">
+      {documents.length === 0 ? (
+        <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+          Noch keine Dokumente hinterlegt. Sehtest, Erste-Hilfe-Nachweis und Passbild
+          gibst du direkt in der Fahrschule ab.
+        </p>
+      ) : (
+        <ul className="divide-y divide-border/70">
+          {documents.map((document, index) => (
+            <li
+              key={`${document.name}-${index}`}
+              className="flex items-center gap-3 px-3 py-2.5 text-sm"
+            >
+              <FileText aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{document.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {formatDay(document.uploadedAt.slice(0, 10))}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
 
 function PortalContent({ token, data }: { token: string; data: PortalOverview }) {
   const [showAllPast, setShowAllPast] = useState(false);
@@ -337,7 +476,13 @@ function PortalContent({ token, data }: { token: string; data: PortalOverview })
         )}
       </Section>
 
+      {data.progress && <TrainingProgress progress={data.progress} />}
+
       <Chat token={token} schoolName={data.school.name} />
+
+      {data.openInvoices && <OpenInvoices invoices={data.openInvoices} />}
+
+      {data.documents && <Documents documents={data.documents} />}
 
       <Section
         title="Vergangene Termine"

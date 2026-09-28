@@ -17,6 +17,10 @@ export type ArchiveItem = {
   entity: ArchiveEntity;
   label: string;
   deletedAt: string;
+  /** Who deleted it ("" for older entries or system deletes). */
+  deletedBy: string;
+  /** Short summary (Kundennummer, Termin-Datum, Kennzeichen …). */
+  detail: string;
 };
 
 export async function fetchArchive(): Promise<ArchiveItem[]> {

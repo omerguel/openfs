@@ -389,10 +389,10 @@ const ChannelChart = memo(function ChannelChart({
                         value={Math.round((channel.leads / maxLeads) * 100)}
                         className="h-1"
                       />
-                      <span className="w-20 text-right text-xs tabular-nums text-muted-foreground">
+                      <span className="w-28 text-right text-xs tabular-nums text-muted-foreground">
                         {channel.costPerLead === null
                           ? "–"
-                          : formatEuro(channel.costPerLead)}
+                          : `${formatEuro(channel.costPerLead)} / Lead`}
                       </span>
                     </div>
                   </div>
@@ -863,8 +863,14 @@ function CampaignsTable({
         <CardTitle className="text-sm font-medium">Kampagnen</CardTitle>
         <CardDescription>
           <span className="tabular-nums">{campaigns.length}</span>{" "}
-          {campaigns.length === 1 ? "Eintrag" : "Einträge"}
+          {campaigns.length === 1 ? "Kampagne" : "Kampagnen"}
         </CardDescription>
+        <p className="text-xs text-pretty text-muted-foreground">
+          Leads = Terminanfragen über den Tracking-Link der Kampagne plus von Hand
+          erfasste Offline-Leads (Flyer, Telefon, Empfehlung). Anmeldungen = daraus als
+          Fahrschüler angelegte Personen plus von Hand erfasste Anmeldungen. Kampagnen mit
+          überschrittenem Enddatum gelten automatisch als beendet.
+        </p>
       </CardHeader>
       <CardContent className="p-0">
         {loading ? (
@@ -975,7 +981,14 @@ function CampaignsTable({
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <StatusBadge status={campaign.status} />
+                      <div className="flex flex-col items-start gap-0.5">
+                        <StatusBadge status={campaign.status} />
+                        {campaign.endedByDate && (
+                          <span className="text-[11px] text-muted-foreground">
+                            Enddatum erreicht
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">
                       {period}
@@ -994,15 +1007,21 @@ function CampaignsTable({
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-col items-end gap-0.5 text-right tabular-nums">
-                        <span className="text-sm">{campaign.leads} Leads</span>
+                      <div
+                        className="flex flex-col items-end gap-0.5 text-right tabular-nums"
+                        title={`Leads: ${campaign.trackedLeads} Terminanfragen über den Tracking-Link + ${campaign.manualLeads} von Hand erfasst. Anmeldungen: ${campaign.trackedSignups} daraus angelegte Fahrschüler + ${campaign.manualSignups} von Hand erfasst.`}
+                      >
+                        <span className="text-sm">
+                          {campaign.leads} {campaign.leads === 1 ? "Lead" : "Leads"}
+                        </span>
                         <span className="text-xs text-muted-foreground">
-                          {campaign.signups} Anmeldungen
+                          {campaign.signups}{" "}
+                          {campaign.signups === 1 ? "Anmeldung" : "Anmeldungen"}
                         </span>
                         {campaign.trackedLeads > 0 && (
                           <span className="text-[11px] text-muted-foreground">
-                            davon {campaign.trackedLeads} / {campaign.trackedSignups} über
-                            Link
+                            {campaign.trackedLeads} per Link · {campaign.manualLeads}{" "}
+                            manuell
                           </span>
                         )}
                       </div>

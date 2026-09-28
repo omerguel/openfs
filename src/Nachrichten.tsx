@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  ChevronDown,
   Copy,
   Mail,
   MessageSquareText,
@@ -34,6 +35,7 @@ import {
   type OutboxStatus,
 } from "@/hooks/use-mail";
 import { MAX_SMS_SEGMENTS, normalizePhoneNumber, smsSegments } from "@/lib/sms-text";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useStudents } from "@/hooks/use-students";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -128,10 +130,71 @@ function formatCreatedAt(value: string): string {
 function StatusBadge({ status }: { status: OutboxStatus }) {
   const meta = STATUS_META[status];
   return (
-    <Badge variant="outline" className="gap-1.5 font-normal">
-      <span aria-hidden className={cn("size-1.5 rounded-full", meta.dot)} />
-      {meta.label}
-    </Badge>
+    <>
+      {/* Phones: the dot alone keeps the recipient column readable. */}
+      <span
+        className="flex size-6 items-center justify-center sm:hidden"
+        title={meta.label}
+      >
+        <span aria-hidden className={cn("size-2 rounded-full", meta.dot)} />
+        <span className="sr-only">{meta.label}</span>
+      </span>
+      <Badge variant="outline" className="hidden gap-1.5 font-normal sm:inline-flex">
+        <span aria-hidden className={cn("size-1.5 rounded-full", meta.dot)} />
+        {meta.label}
+      </Badge>
+    </>
+  );
+}
+
+/* Owner-facing notice when mail/SMS delivery is not set up. Plain German
+   up front; the environment variables only under "Technische Details"
+   for whoever administers the server. */
+function DeliverySetupNotice({ email, sms }: { email: boolean; sms: boolean }) {
+  if (email && sms) return null;
+  const what =
+    !email && !sms
+      ? "E-Mail- und SMS-Versand sind"
+      : !email
+        ? "E-Mail-Versand ist"
+        : "SMS-Versand ist";
+  const channels = !email && !sms ? "E-Mails und SMS" : !email ? "E-Mails" : "SMS";
+  return (
+    <div className="border-b border-border/70 p-3">
+      <Alert>
+        <TriangleAlert />
+        <AlertTitle>{what} nicht eingerichtet</AlertTitle>
+        <AlertDescription className="text-pretty">
+          <p>
+            {channels} werden nicht automatisch verschickt, sondern bleiben hier im
+            Postausgang — Sie können sie öffnen und von Hand kopieren. Ihr Administrator
+            muss die Zugangsdaten hinterlegen.
+          </p>
+          <details className="mt-1 text-xs">
+            <summary className="cursor-pointer select-none text-foreground/80 hover:text-foreground">
+              Technische Details
+            </summary>
+            <div className="mt-1.5 flex flex-col gap-1.5 break-words">
+              {!email && (
+                <p>
+                  E-Mail: Umgebungsvariablen <code>SMTP_HOST</code>,{" "}
+                  <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code>{" "}
+                  und <code>SMTP_FROM</code> setzen.
+                </p>
+              )}
+              {!sms && (
+                <p>
+                  SMS: <code>SMS_PROVIDER=seven</code> mit <code>SMS_API_KEY</code>{" "}
+                  (seven.io) oder <code>SMS_PROVIDER=webhook</code> mit{" "}
+                  <code>SMS_WEBHOOK_URL</code>; optional <code>SMS_FROM</code> als
+                  Absender (max. 11 Zeichen).
+                </p>
+              )}
+            </div>
+          </details>
+        </AlertDescription>
+      </Alert>
+    </div>
   );
 }
 
@@ -179,6 +242,10 @@ const TOGGLES: { key: keyof NotificationSettings; label: string; hint: string }[
 
 function NotificationToggles() {
   const { settings, refresh } = useNotificationSettings();
+  // On phones the switches fold away so the message list stays in view.
+  const isMobile = useIsMobile();
+  const [open, setOpen] = useState(!isMobile);
+  const activeCount = settings ? TOGGLES.filter(({ key }) => settings[key]).length : 0;
 
   const toggle = async (key: keyof NotificationSettings, value: boolean) => {
     try {
@@ -191,14 +258,29 @@ function NotificationToggles() {
 
   return (
     <div className="flex flex-wrap gap-x-6 gap-y-3 border-b border-border/70 px-3 py-3">
-      <span className="w-full text-sm font-medium sm:w-auto sm:self-center">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium sm:pointer-events-none sm:w-auto sm:self-center"
+      >
         Automatische Nachrichten
-      </span>
+        <span className="flex items-center gap-1 text-xs font-normal text-muted-foreground tabular-nums sm:hidden">
+          {activeCount} von {TOGGLES.length} aktiv
+          <ChevronDown
+            aria-hidden
+            className={cn("size-4 transition-transform", open && "rotate-180")}
+          />
+        </span>
+      </button>
       {TOGGLES.map(({ key, label, hint }) => (
         <label
           key={key}
           htmlFor={`notify-${key}`}
-          className="flex cursor-pointer items-center gap-2.5"
+          className={cn(
+            "cursor-pointer items-center gap-2.5 sm:flex",
+            open ? "flex" : "hidden",
+          )}
         >
           <Switch
             id={`notify-${key}`}
@@ -667,50 +749,38 @@ export function Nachrichten() {
               <MessageSquareText data-icon="inline-start" />
               <span className="hidden sm:inline">Neue SMS</span>
             </Button>
-            <Button type="button" size="sm" onClick={() => setIsNewOpen(true)}>
+            <Button
+              type="button"
+              size="sm"
+              aria-label="Neue E-Mail"
+              onClick={() => setIsNewOpen(true)}
+            >
               <Plus data-icon="inline-start" />
-              Neue E-Mail
+              <span className="hidden sm:inline">Neue E-Mail</span>
+              <span aria-hidden className="sm:hidden">
+                E-Mail
+              </span>
             </Button>
           </>
         }
       >
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
+          <h1 className="shrink-0 text-[15px] font-semibold tracking-[-0.01em]">
             Nachrichten
           </h1>
-          <span className="hidden text-[11px] text-muted-foreground tabular-nums sm:inline">
-            {items.length} Nachrichten · {unsent} nicht gesendet
+          <span className="hidden truncate text-[11px] text-muted-foreground tabular-nums xl:inline">
+            {items.length} {items.length === 1 ? "Nachricht" : "Nachrichten"} · {unsent}{" "}
+            nicht gesendet
           </span>
         </div>
       </PageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background">
-        {mailStatus && (!mailStatus.configured || !mailStatus.sms?.configured) && (
-          <div className="flex flex-col gap-2 border-b border-border/70 p-3">
-            {!mailStatus.configured && (
-              <Alert>
-                <TriangleAlert />
-                <AlertTitle>E-Mail-Versand ist nicht eingerichtet</AlertTitle>
-                <AlertDescription>
-                  Es sind keine SMTP-Zugangsdaten hinterlegt (SMTP_HOST, SMTP_PORT,
-                  SMTP_USER, SMTP_PASS, SMTP_FROM). E-Mails bleiben im Postausgang und
-                  können geöffnet und von Hand kopiert werden.
-                </AlertDescription>
-              </Alert>
-            )}
-            {!mailStatus.sms?.configured && (
-              <Alert>
-                <Smartphone />
-                <AlertTitle>SMS-Versand ist nicht eingerichtet</AlertTitle>
-                <AlertDescription>
-                  Kein SMS-Anbieter hinterlegt: SMS_PROVIDER=seven mit SMS_API_KEY
-                  (seven.io) oder SMS_PROVIDER=webhook mit SMS_WEBHOOK_URL, optional
-                  SMS_FROM als Absender (max. 11 Zeichen). SMS bleiben im Postausgang und
-                  können kopiert werden.
-                </AlertDescription>
-              </Alert>
-            )}
-          </div>
+        {mailStatus && (
+          <DeliverySetupNotice
+            email={mailStatus.configured}
+            sms={mailStatus.sms?.configured ?? false}
+          />
         )}
 
         <NotificationToggles />
@@ -742,10 +812,12 @@ export function Nachrichten() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-40">Status</TableHead>
+                  <TableHead className="w-8 sm:w-40">
+                    <span className="sr-only sm:not-sr-only">Status</span>
+                  </TableHead>
                   <TableHead className="hidden w-24 sm:table-cell">Kanal</TableHead>
                   <TableHead>Empfänger</TableHead>
-                  <TableHead>Betreff / Text</TableHead>
+                  <TableHead className="hidden sm:table-cell">Betreff / Text</TableHead>
                   <TableHead className="hidden lg:table-cell">Art</TableHead>
                   <TableHead className="hidden md:table-cell">Erstellt</TableHead>
                   <TableHead className="w-24 text-right">
@@ -776,8 +848,11 @@ export function Nachrichten() {
                     </TableCell>
                     <TableCell className="max-w-48 truncate tabular-nums">
                       {entry.recipient}
+                      <span className="block truncate text-xs text-muted-foreground sm:hidden">
+                        {entryTitle(entry)}
+                      </span>
                     </TableCell>
-                    <TableCell className="max-w-80 truncate">
+                    <TableCell className="hidden max-w-80 truncate sm:table-cell">
                       {entryTitle(entry)}
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground lg:table-cell">

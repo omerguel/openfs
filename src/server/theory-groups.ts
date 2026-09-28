@@ -184,23 +184,69 @@ function seedTheoryGroups(db: Database) {
        (name, klass, weekday, time, room, instructor_id, capacity, student_ids, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
+  const insertAttendance = db.prepare(
+    `INSERT OR IGNORE INTO theory_attendance (group_id, student_id, session_date, attended)
+     VALUES (?, ?, ?, ?)`,
+  );
   const seedAll = db.transaction(() => {
     seeds.forEach((seed, index) => {
       const memberIds = studentIds.filter((_, i) => i % seeds.length === index);
-      insert.run(
-        seed.name,
-        seed.klass,
-        seed.weekday,
-        seed.time,
-        seed.room,
-        instructorIds[index % instructorIds.length] ?? null,
-        seed.capacity,
-        JSON.stringify(memberIds),
-        seed.status,
+      const groupId = Number(
+        insert.run(
+          seed.name,
+          seed.klass,
+          seed.weekday,
+          seed.time,
+          seed.room,
+          instructorIds[index % instructorIds.length] ?? null,
+          seed.capacity,
+          JSON.stringify(memberIds),
+          seed.status,
+        ).lastInsertRowid,
       );
+      // Plausible attendance so demo students show real theory progress:
+      // weekly past sessions on the group's weekday, each student at a
+      // different point of the course, with the odd missed session.
+      const dates = pastWeekdays(WEEKDAY_INDEX[seed.weekday] ?? 1, 14);
+      memberIds.forEach((studentId, position) => {
+        const sessions = SEED_SESSIONS[(studentId + position) % SEED_SESSIONS.length]!;
+        dates.slice(0, sessions).forEach((date, n) => {
+          insertAttendance.run(groupId, studentId, date, n === 2 ? 0 : 1);
+        });
+      });
     });
   });
   seedAll();
+}
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sonntag: 0,
+  Montag: 1,
+  Dienstag: 2,
+  Mittwoch: 3,
+  Donnerstag: 4,
+  Freitag: 5,
+  Samstag: 6,
+};
+
+/* How many sessions each seeded member has been to (cycled). */
+const SEED_SESSIONS = [5, 11, 8, 15, 3];
+
+/** The last `count` dates (newest first) falling on `weekday`, before today. */
+function pastWeekdays(weekday: number, count: number): string[] {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  while (date.getDay() !== weekday) date.setDate(date.getDate() - 1);
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+        date.getDate(),
+      ).padStart(2, "0")}`,
+    );
+    date.setDate(date.getDate() - 7);
+  }
+  return out;
 }
 
 export function ensureTheoryGroupTables(db: Database) {

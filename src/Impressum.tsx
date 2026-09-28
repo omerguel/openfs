@@ -1,20 +1,23 @@
 /* ------------------------------------------------------------------ */
 /* Impressum — /impressum                                              */
 /* Public, outside the staff app shell. Rendered from the company     */
-/* profile (Profil → Stammdaten); missing fields show a notice and a   */
-/* visible placeholder — nothing is invented.                          */
+/* profile (Profil → Stammdaten). Missing fields are left out for     */
+/* visitors; signed-in staff see a notice and [Platzhalter] instead.   */
 /* ------------------------------------------------------------------ */
 
 import { missingImpressumFields, type LegalInfo } from "@/lib/legal";
 import {
   Address,
+  LabeledLine,
   LegalPage,
   LegalSection,
   MissingFieldsNotice,
   Value,
+  useIsStaffViewer,
 } from "@/components/legal/LegalPage";
 
 function ImpressumContent({ info }: { info: LegalInfo }) {
+  const staff = useIsStaffViewer();
   const hasRegister = Boolean(info.registergericht || info.registernummer);
   const hasTaxIds = Boolean(info.ustIdNr || info.steuernummer);
   return (
@@ -26,29 +29,28 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
           <span className="block font-medium">
             <Value value={info.name} label="Name der Fahrschule" />
           </span>
-          <span className="block">
-            Inhaber:in bzw. vertretungsberechtigt:{" "}
-            <Value value={info.inhaber} label="Inhaber:in" />
-          </span>
+          <LabeledLine
+            label="Inhaber:in bzw. vertretungsberechtigt"
+            value={info.inhaber}
+            placeholder="Inhaber:in"
+          />
           <Address address={info.address} />
         </p>
       </LegalSection>
 
       <LegalSection title="Kontakt">
         <p>
-          <span className="block tabular-nums">
-            Telefon: <Value value={info.phone} label="Telefon" />
-          </span>
-          <span className="block">
-            E-Mail:{" "}
-            {info.email ? (
+          <LabeledLine label="Telefon" value={info.phone} className="tabular-nums" />
+          {info.email ? (
+            <span className="block">
+              E-Mail:{" "}
               <a href={`mailto:${info.email}`} className="text-primary hover:underline">
                 {info.email}
               </a>
-            ) : (
-              <Value value="" label="E-Mail" />
-            )}
-          </span>
+            </span>
+          ) : (
+            <LabeledLine label="E-Mail" value="" />
+          )}
           {info.website && <span className="block">Webseite: {info.website}</span>}
         </p>
       </LegalSection>
@@ -56,16 +58,15 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
       {hasRegister && (
         <LegalSection title="Registereintrag">
           <p>
-            <span className="block">
-              Registergericht:{" "}
-              <Value value={info.registergericht} label="Registergericht" />
-            </span>
-            <span className="block">
-              Registernummer:{" "}
-              <span className="font-mono text-[13px]">
-                <Value value={info.registernummer} label="Registernummer" />
+            <LabeledLine label="Registergericht" value={info.registergericht} />
+            {info.registernummer ? (
+              <span className="block">
+                Registernummer:{" "}
+                <span className="font-mono text-[13px]">{info.registernummer}</span>
               </span>
-            </span>
+            ) : (
+              <LabeledLine label="Registernummer" value="" />
+            )}
           </p>
         </LegalSection>
       )}
@@ -90,8 +91,14 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
       <LegalSection title="Aufsichtsbehörde">
         <p>
           Die Fahrschule wird mit einer Fahrschulerlaubnis nach dem Fahrlehrergesetz
-          (FahrlG) betrieben. Zuständige Aufsichtsbehörde:{" "}
-          <Value value={info.aufsichtsbehoerde} label="Aufsichtsbehörde" />
+          (FahrlG) betrieben.
+          {(info.aufsichtsbehoerde || staff) && (
+            <>
+              {" "}
+              Zuständige Aufsichtsbehörde:{" "}
+              <Value value={info.aufsichtsbehoerde} label="Aufsichtsbehörde" />
+            </>
+          )}
         </p>
         <p>
           Maßgebliche berufsrechtliche Regelungen: Fahrlehrergesetz (FahrlG) und
@@ -103,7 +110,7 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
       <LegalSection title="Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV">
         <p>
           <span className="block">
-            <Value value={info.inhaber} label="Inhaber:in" />
+            <Value value={info.inhaber || (staff ? "" : info.name)} label="Inhaber:in" />
           </span>
           <Address address={info.address} />
         </p>

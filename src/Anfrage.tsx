@@ -7,11 +7,14 @@
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 
+import { useLegalInfo } from "@/hooks/use-legal-info";
 import { useSchoolProfile } from "@/hooks/use-school-profile";
 import { LegalLinks } from "@/components/legal/LegalPage";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -45,6 +48,19 @@ const TERMINARTEN: TerminartType[] = [
   "Andere",
 ];
 
+/* Plausible lesson window — mirrors PUBLIC_EARLIEST/LATEST_TIME in
+   src/server/appointment-requests.ts (the server checks it again). */
+const EARLIEST_TIME = "06:00";
+const LATEST_TIME = "21:00";
+
+/** Local "YYYY-MM-DD" of today — the earliest selectable Wunschdatum. */
+function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+    now.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 type FormState = {
   name: string;
   phone: string;
@@ -76,10 +92,13 @@ const EMPTY_FORM: FormState = {
 
 export function Anfrage() {
   const { profile } = useSchoolProfile();
+  const legal = useLegalInfo();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [campaign] = useState(campaignFromUrl);
+  const [consent, setConsent] = useState(false);
+  const minDate = todayIso();
 
   const set = (field: keyof FormState, value: string) =>
     setForm((f) => ({ ...f, [field]: value }));
@@ -92,12 +111,32 @@ export function Anfrage() {
       toast.error("Name ist ein Pflichtfeld.");
       return;
     }
+    if (!form.phone.trim() && !form.email.trim()) {
+      toast.error("Bitte gib eine Telefonnummer oder E-Mail-Adresse an.", {
+        description: "Sonst können wir dich nicht erreichen.",
+      });
+      return;
+    }
     if (!form.requestedDate) {
       toast.error("Bitte ein Wunschdatum angeben.");
       return;
     }
+    if (form.requestedDate < minDate) {
+      toast.error("Das Wunschdatum darf nicht in der Vergangenheit liegen.");
+      return;
+    }
     if (!form.requestedTime) {
       toast.error("Bitte eine Wunschzeit angeben.");
+      return;
+    }
+    if (form.requestedTime < EARLIEST_TIME || form.requestedTime > LATEST_TIME) {
+      toast.error(
+        `Bitte eine Uhrzeit zwischen ${EARLIEST_TIME} und ${LATEST_TIME} Uhr wählen.`,
+      );
+      return;
+    }
+    if (!consent) {
+      toast.error("Bitte stimme der Verarbeitung deiner Angaben zu.");
       return;
     }
 
@@ -114,6 +153,7 @@ export function Anfrage() {
           requestedDate: form.requestedDate,
           requestedTime: form.requestedTime,
           message: form.message,
+          consent,
           ...(campaign ? { campaign } : {}),
         }),
       });
@@ -143,7 +183,7 @@ export function Anfrage() {
             {profile.slogan || "Terminanfrage"}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Fahrschule — Terminanfrage stellen
+            {legal.data?.name || "Fahrschule"} — Terminanfrage stellen
           </p>
         </div>
 
@@ -162,6 +202,7 @@ export function Anfrage() {
                 className="mt-6"
                 onClick={() => {
                   setForm(EMPTY_FORM);
+                  setConsent(false);
                   setSubmitted(false);
                 }}
               >
@@ -195,6 +236,10 @@ export function Anfrage() {
                   />
                 </div>
 
+                <p id="contact-hint" className="text-xs text-muted-foreground">
+                  Telefon oder E-Mail — mindestens eine Angabe, damit wir dich erreichen.
+                </p>
+
                 {/* Telefon */}
                 <div className="space-y-1.5">
                   <Label htmlFor="phone">Telefon</Label>
@@ -205,6 +250,7 @@ export function Anfrage() {
                     value={form.phone}
                     onChange={(e) => set("phone", e.target.value)}
                     autoComplete="tel"
+                    aria-describedby="contact-hint"
                   />
                 </div>
 
@@ -218,6 +264,7 @@ export function Anfrage() {
                     value={form.email}
                     onChange={(e) => set("email", e.target.value)}
                     autoComplete="email"
+                    aria-describedby="contact-hint"
                   />
                 </div>
 
@@ -248,6 +295,7 @@ export function Anfrage() {
                       id="requestedDate"
                       type="date"
                       value={form.requestedDate}
+                      min={minDate}
                       onChange={(e) => set("requestedDate", e.target.value)}
                       required
                     />
@@ -260,11 +308,19 @@ export function Anfrage() {
                       id="requestedTime"
                       type="time"
                       value={form.requestedTime}
+                      min={EARLIEST_TIME}
+                      max={LATEST_TIME}
+                      step={900}
                       onChange={(e) => set("requestedTime", e.target.value)}
                       required
+                      aria-describedby="time-hint"
                     />
                   </div>
                 </div>
+
+                <p id="time-hint" className="-mt-2 text-xs text-muted-foreground">
+                  Termine sind zwischen {EARLIEST_TIME} und {LATEST_TIME} Uhr möglich.
+                </p>
 
                 {/* Nachricht */}
                 <div className="space-y-1.5">
@@ -276,6 +332,33 @@ export function Anfrage() {
                     value={form.message}
                     onChange={(e) => set("message", e.target.value)}
                   />
+                </div>
+
+                {/* Datenschutz */}
+                <div className="flex items-start gap-3 rounded-md border border-border/70 bg-muted/40 p-3">
+                  <Checkbox
+                    id="consent"
+                    checked={consent}
+                    onCheckedChange={(value) => setConsent(value === true)}
+                    className="mt-0.5"
+                    aria-required
+                  />
+                  <Label
+                    htmlFor="consent"
+                    className="block text-xs leading-relaxed font-normal text-muted-foreground"
+                  >
+                    Ich bin einverstanden, dass die Fahrschule meine Angaben zur
+                    Bearbeitung dieser Anfrage verarbeitet und mich dazu kontaktiert.
+                    Details in der{" "}
+                    <Link
+                      to="/datenschutz"
+                      target="_blank"
+                      className="font-medium text-foreground underline underline-offset-2"
+                    >
+                      Datenschutzerklärung
+                    </Link>
+                    . <span aria-hidden>*</span>
+                  </Label>
                 </div>
 
                 <Button type="submit" className="w-full" disabled={submitting}>

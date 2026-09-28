@@ -12,6 +12,7 @@ import type { Database } from "./sqlite";
 import { ValidationError } from "./engine";
 import type { FileStore } from "./file-store";
 import { instructorIdByName, vehicleIdByName } from "./refs";
+import { currentUser } from "./request-context";
 import { deleteStoredFiles, removeStudentFileRows } from "./student-files";
 
 export type ArchiveEntity =
@@ -65,6 +66,11 @@ export type ArchiveRecord = {
   entity: ArchiveEntity;
   label: string;
   deletedAt: string;
+  /** Name of the signed-in user who deleted it ("" = unknown/older entry). */
+  deletedBy: string;
+  /** Short summary of the snapshot (Kundennummer, Datum, Kennzeichen …)
+      so similar entries can be told apart before restoring. */
+  detail: string;
 };
 
 type ArchiveRow = {
@@ -73,7 +79,63 @@ type ArchiveRow = {
   label: string;
   payload: string;
   deleted_at: string;
+  deleted_by: string | null;
 };
+
+/* Added after the table shipped: who deleted the entry. Cheap and
+   idempotent, so it runs before every read/write of the archive. */
+function ensureArchiveColumns(db: Database): void {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(archive)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("deleted_by")) {
+    db.exec("ALTER TABLE archive ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''");
+  }
+}
+
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+const germanDate = (iso: string) => {
+  const [y, m, d] = iso.split("-");
+  return y && m && d ? `${d}.${m}.${y}` : iso;
+};
+
+/* One muted line per entity, built from the raw row snapshot. */
+export function archiveDetail(entity: ArchiveEntity, payload: string): string {
+  let row: Record<string, unknown>;
+  try {
+    row = (JSON.parse(payload) as ArchivePayload).row ?? {};
+  } catch {
+    return "";
+  }
+  const parts: string[] = [];
+  switch (entity) {
+    case "student":
+      if (text(row.customer_number)) parts.push(`Kd.-Nr. ${text(row.customer_number)}`);
+      if (text(row.classes)) parts.push(`Klasse ${text(row.classes)}`);
+      if (text(row.phone)) parts.push(text(row.phone));
+      break;
+    case "calendar_event":
+      if (text(row.type)) parts.push(text(row.type));
+      if (text(row.date)) {
+        parts.push(
+          `${germanDate(text(row.date))}${text(row.start) ? `, ${text(row.start)}–${text(row.end)} Uhr` : ""}`,
+        );
+      }
+      break;
+    case "instructor":
+      if (text(row.classes)) parts.push(`Klassen ${text(row.classes)}`);
+      if (text(row.phone)) parts.push(text(row.phone));
+      break;
+    case "vehicle":
+      if (text(row.klass)) parts.push(`Klasse ${text(row.klass)}`);
+      break;
+    case "price_plan":
+      break;
+  }
+  return parts.join(" · ");
+}
 
 const toRecord = (row: ArchiveRow): ArchiveRecord => ({
   id: row.id,
@@ -81,6 +143,8 @@ const toRecord = (row: ArchiveRow): ArchiveRecord => ({
   label: row.label,
   // datetime('now') stores UTC without zone marker — make it ISO.
   deletedAt: `${row.deleted_at.replace(" ", "T")}Z`,
+  deletedBy: row.deleted_by ?? "",
+  detail: archiveDetail(row.entity, row.payload),
 });
 
 /* Snapshot a row into the archive. Call this inside the same
@@ -102,17 +166,17 @@ export function archiveRow(
   if (links && Object.values(links).some((ids) => ids?.length)) {
     payload.links = links;
   }
-  db.prepare("INSERT INTO archive (entity, label, payload) VALUES (?, ?, ?)").run(
-    entity,
-    label,
-    JSON.stringify(payload),
-  );
+  ensureArchiveColumns(db);
+  db.prepare(
+    "INSERT INTO archive (entity, label, payload, deleted_by) VALUES (?, ?, ?, ?)",
+  ).run(entity, label, JSON.stringify(payload), currentUser()?.name ?? "");
 }
 
 export function listArchive(db: Database): ArchiveRecord[] {
+  ensureArchiveColumns(db);
   return db
     .query<ArchiveRow, []>(
-      "SELECT id, entity, label, payload, deleted_at FROM archive ORDER BY deleted_at DESC, id DESC",
+      "SELECT id, entity, label, payload, deleted_at, deleted_by FROM archive ORDER BY deleted_at DESC, id DESC",
     )
     .all()
     .map(toRecord);
@@ -121,7 +185,7 @@ export function listArchive(db: Database): ArchiveRecord[] {
 function getArchiveRow(db: Database, id: number): ArchiveRow {
   const row = db
     .query<ArchiveRow, [number]>(
-      "SELECT id, entity, label, payload, deleted_at FROM archive WHERE id = ?",
+      "SELECT id, entity, label, payload, deleted_at, NULL AS deleted_by FROM archive WHERE id = ?",
     )
     .get(id);
   if (!row) throw new ValidationError("Archiveintrag nicht gefunden.");

@@ -68,19 +68,19 @@ CREATE TABLE IF NOT EXISTS branches (
   );
   const seed = db.transaction(() => {
     insert.run(
-      "Hauptstelle Mitte",
-      "Hauptstraße 12, 10115 Berlin",
-      "030 1234560",
-      "mitte@fahrschule-demo.example",
+      "Hauptstelle Innenstadt",
+      "Musterstraße 12, 64283 Darmstadt",
+      "+49 6151 123456",
+      "info@fahrschule-demo.example",
       "Mo–Fr 14–18 Uhr, Sa 10–13 Uhr",
       1,
       "offen",
     );
     insert.run(
-      "Filiale Neukölln",
-      "Sonnenallee 87, 12045 Berlin",
-      "030 9876540",
-      "neukoelln@fahrschule-demo.example",
+      "Filiale Bessungen",
+      "Heidelberger Straße 87, 64285 Darmstadt",
+      "+49 6151 987654",
+      "bessungen@fahrschule-demo.example",
       "Di–Fr 15–18 Uhr",
       0,
       "offen",

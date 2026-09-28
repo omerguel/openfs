@@ -120,7 +120,32 @@ export function registrationMonth(raw: string): string | null {
   return null;
 }
 
-export function studentStatistics(db: Database): StudentStatistics {
+/* "YYYY-MM" → next "YYYY-MM". */
+function nextMonth(month: string): string {
+  const [y = 0, m = 0] = month.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+/* Every month from the first registration up to `until` (or the last
+   registration, if later), with 0 for months without signups — so the
+   chart has no silent gaps and the Ø per month is honest. */
+export function fillMonths(perMonth: Map<string, number>, until: string): MonthCount[] {
+  const months = [...perMonth.keys()].sort();
+  const first = months[0];
+  if (!first) return [];
+  const last = months.at(-1)! > until ? months.at(-1)! : until;
+  const out: MonthCount[] = [];
+  // Hard cap guards against absurd dates (e.g. year 1900) blowing up the list.
+  for (let month = first; month <= last && out.length < 600; month = nextMonth(month)) {
+    out.push({ month, count: perMonth.get(month) ?? 0 });
+  }
+  return out;
+}
+
+const isoMonth = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+export function studentStatistics(db: Database, now = new Date()): StudentStatistics {
   const rows = db
     .query<{ status: string; registration_date: string }, []>(
       "SELECT status, registration_date FROM students",
@@ -139,9 +164,7 @@ export function studentStatistics(db: Database): StudentStatistics {
     total: rows.length,
     aktiv,
     inaktiv: rows.length - aktiv,
-    registrationsPerMonth: [...perMonth.entries()]
-      .map(([month, count]) => ({ month, count }))
-      .sort((a, b) => (a.month < b.month ? -1 : 1)),
+    registrationsPerMonth: fillMonths(perMonth, isoMonth(now)),
   };
 }
 

@@ -271,7 +271,7 @@ describe("studentStatistics", () => {
     insertStudent("inaktiv", "09.03.2026");
     insertStudent("aktiv", ""); // no date — counted in totals, not per month
 
-    const stats = studentStatistics(db);
+    const stats = studentStatistics(db, new Date(2026, 4, 20));
     expect(stats.total).toBe(5);
     expect(stats.aktiv).toBe(4);
     expect(stats.inaktiv).toBe(1);
@@ -280,6 +280,36 @@ describe("studentStatistics", () => {
       { month: "2026-04", count: 1 },
       { month: "2026-05", count: 2 },
     ]);
+  });
+
+  test("months without signups count as 0 up to the current month", () => {
+    insertStudent("aktiv", "12.05.2026");
+    insertStudent("aktiv", "03.09.2026");
+    const stats = studentStatistics(db, new Date(2026, 10, 2));
+    expect(stats.registrationsPerMonth).toEqual([
+      { month: "2026-05", count: 1 },
+      { month: "2026-06", count: 0 },
+      { month: "2026-07", count: 0 },
+      { month: "2026-08", count: 0 },
+      { month: "2026-09", count: 1 },
+      { month: "2026-10", count: 0 },
+      { month: "2026-11", count: 0 },
+    ]);
+  });
+
+  test("year boundaries roll over", () => {
+    insertStudent("aktiv", "15.11.2025");
+    const stats = studentStatistics(db, new Date(2026, 1, 1));
+    expect(stats.registrationsPerMonth.map((r) => r.month)).toEqual([
+      "2025-11",
+      "2025-12",
+      "2026-01",
+      "2026-02",
+    ]);
+  });
+
+  test("no registrations → empty list", () => {
+    expect(studentStatistics(db).registrationsPerMonth).toEqual([]);
   });
 });
 

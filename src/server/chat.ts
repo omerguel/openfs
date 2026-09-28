@@ -97,7 +97,7 @@ const CONVERSATION_SEED: SeedConversation[] = [
       },
       {
         sender: "schule",
-        text: "Hallo! Der nächste TÜV-Termin ist am 24.06. um 09:00 Uhr. Soll ich dich anmelden?",
+        text: "Hallo! Der nächste freie Prüfungstermin ist Mittwoch nächster Woche um 09:00 Uhr. Soll ich dich anmelden?",
         age: "-5720 minutes",
       },
       {

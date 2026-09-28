@@ -36,7 +36,11 @@ import {
 import { isValidEmail, mailSchool, queueMail, type OutboxEntry } from "./mail";
 import { portalLinkMail } from "./mail-templates";
 import { localIsoDate } from "./notifications";
+import { computeSpecialDriveProgress } from "../lib/special-drives";
+import { requiredTheoryUnits } from "../lib/theory";
+import { listInvoices } from "./invoices";
 import { instructorNameSql } from "./refs";
+import { schoolNow } from "./school-time";
 
 /* ----------------------------- schema ----------------------------- */
 
@@ -161,6 +165,30 @@ export type PortalOverview = {
    *  the ledger could not be read. */
   balanceCents: number | null;
   attestationCount: number;
+  /** Ausbildungsstand: practical lessons held so far, the Sonderfahrten
+   *  minimums (class B family only) and the Theorie units. */
+  progress: PortalProgress;
+  /** Uploaded documents — names and dates only, never the files. */
+  documents: PortalDocument[];
+  /** Invoices with an open amount (not storniert). */
+  openInvoices: PortalInvoice[];
+};
+
+export type PortalProgress = {
+  practicalLessons: number;
+  practicalMinutes: number;
+  specialDrives: { kind: string; completedMinutes: number; requiredMinutes: number }[];
+  theory: { attended: number; required: number };
+};
+
+export type PortalDocument = { name: string; uploadedAt: string };
+
+export type PortalInvoice = {
+  invoiceNr: string;
+  date: string;
+  dueDate: string;
+  openCents: number;
+  overdue: boolean;
 };
 
 const UPCOMING_LIMIT = 20;
@@ -204,10 +232,104 @@ function studentBalanceCents(db: Database, customerNumber: string): number | nul
   }
 }
 
+const minutesOf = (value: string) => {
+  const [h = 0, m = 0] = value.split(":").map(Number);
+  return h * 60 + m;
+};
+
+function studentProgress(
+  db: Database,
+  studentId: number,
+  classes: string,
+  now: Date,
+): PortalProgress {
+  const today = localIsoDate(now);
+  const time = `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}`;
+  const events = db
+    .query<
+      {
+        type: string;
+        date: string;
+        start: string;
+        end: string;
+        lessonKind: string | null;
+      },
+      [number]
+    >(
+      `SELECT type, date, start, "end" AS "end", lesson_kind AS lessonKind
+       FROM calendar_events
+       WHERE student_id = ? AND tentative = 0 AND cancelled_at IS NULL`,
+    )
+    .all(studentId);
+  const held = events.filter(
+    (e) =>
+      e.type === "Praktisch" && (e.date < today || (e.date === today && e.end <= time)),
+  );
+  const attended = tableExists(db, "theory_attendance")
+    ? db
+        .query<{ n: number }, [number]>(
+          "SELECT count(*) AS n FROM theory_attendance WHERE student_id = ? AND attended = 1",
+        )
+        .get(studentId)!.n
+    : 0;
+  // The Sonderfahrten minimums (Anlage 4 FahrSchAusbO) shown here are the
+  // class-B ones; other classes only see their lesson count.
+  const classB = /(^|[\s,])B/.test(classes);
+  return {
+    practicalLessons: held.length,
+    practicalMinutes: held.reduce(
+      (sum, e) => sum + Math.max(0, minutesOf(e.end) - minutesOf(e.start)),
+      0,
+    ),
+    specialDrives: classB
+      ? computeSpecialDriveProgress(held, today).map((drive) => ({
+          kind: drive.kind,
+          completedMinutes: drive.completedMinutes,
+          requiredMinutes: drive.requiredMinutes,
+        }))
+      : [],
+    theory: { attended, required: requiredTheoryUnits(classes) },
+  };
+}
+
+function studentDocuments(db: Database, studentId: number): PortalDocument[] {
+  if (!tableExists(db, "student_files")) return [];
+  return db
+    .query<PortalDocument, [number]>(
+      `SELECT name, uploaded_at AS uploadedAt FROM student_files
+       WHERE student_id = ? ORDER BY uploaded_at DESC, id DESC`,
+    )
+    .all(studentId);
+}
+
+function studentOpenInvoices(db: Database, studentId: number, today: string) {
+  if (!tableExists(db, "invoices")) return [];
+  try {
+    return listInvoices(db, { studentId }, today)
+      .filter(
+        (invoice) =>
+          invoice.openCents > 0 &&
+          invoice.status !== "storniert" &&
+          invoice.status !== "storno",
+      )
+      .map((invoice) => ({
+        invoiceNr: invoice.invoiceNr,
+        date: invoice.date,
+        dueDate: invoice.dueDate,
+        openCents: invoice.openCents,
+        overdue: invoice.overdueDays > 0,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export function getPortalOverview(
   db: Database,
   studentId: number,
-  now = new Date(),
+  now = schoolNow(),
 ): PortalOverview {
   const student = requireStudent(db, studentId);
   const company = getCompany(db);
@@ -230,6 +352,9 @@ export function getPortalOverview(
     pastLessons: past,
     balanceCents: studentBalanceCents(db, student.customer_number),
     attestationCount,
+    progress: studentProgress(db, studentId, student.classes, now),
+    documents: studentDocuments(db, studentId),
+    openInvoices: studentOpenInvoices(db, studentId, localIsoDate(now)),
   };
 }
 

@@ -9,7 +9,9 @@ import {
   Phone,
   Trash2,
   TriangleAlert,
+  Copy,
   UserPlus,
+  ArrowDownUp,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -39,7 +41,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -77,14 +78,24 @@ const statusLabels: Record<AppointmentRequestStatus, string> = {
   abgelehnt: "Abgelehnt",
 };
 
-const statusBadgeVariant: Record<
-  AppointmentRequestStatus,
-  "secondary" | "default" | "destructive"
-> = {
-  offen: "secondary",
-  bestätigt: "default",
-  abgelehnt: "destructive",
+const statusDot: Record<AppointmentRequestStatus, string> = {
+  offen: "bg-amber-500",
+  bestätigt: "bg-green-500",
+  abgelehnt: "bg-red-500",
 };
+
+type SortOrder = "eingang" | "wunschtermin";
+
+/* created_at is SQLite UTC ("YYYY-MM-DD HH:MM:SS") → local German date. */
+function formatReceived(createdAt: string): string {
+  const date = new Date(`${createdAt.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return createdAt;
+  return `${date.toLocaleDateString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  })}, ${date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr`;
+}
 
 const typeAccents: Record<string, string> = {
   Praktisch: "bg-sky-500/10 text-sky-600",
@@ -247,6 +258,7 @@ function AcceptDialog({
 
 function RequestCard({
   request,
+  duplicates,
   saving,
   onAccept,
   onDecline,
@@ -254,6 +266,7 @@ function RequestCard({
   onCreateStudent,
 }: {
   request: AppointmentRequest;
+  duplicates: AppointmentRequest[];
   saving: boolean;
   onAccept: () => void;
   onDecline: () => void;
@@ -268,35 +281,43 @@ function RequestCard({
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-start gap-3">
+        <div className="flex min-w-0 items-start gap-3">
           <div
             className={cn(
-              "flex size-11 shrink-0 items-center justify-center rounded-lg",
+              "hidden size-11 shrink-0 items-center justify-center rounded-lg sm:flex",
               typeAccents[request.type] ?? typeAccents.Andere,
             )}
           >
             <Inbox className="size-6" />
           </div>
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <CardTitle className="text-base">{request.name}</CardTitle>
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <CardTitle className="text-base">{request.name}</CardTitle>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline">{request.type}</Badge>
+                <Badge variant="outline" className="gap-1.5 font-normal">
+                  <span
+                    aria-hidden
+                    className={cn("size-1.5 rounded-full", statusDot[request.status])}
+                  />
+                  {statusLabels[request.status]}
+                </Badge>
+              </div>
+            </div>
             <CardDescription className="flex flex-wrap items-center gap-x-4 gap-y-1">
               {contact.map(({ Icon, value }) => (
-                <span key={value} className="flex items-center gap-1.5">
-                  <Icon className="size-3.5" />
-                  {value}
+                <span key={value} className="flex min-w-0 items-center gap-1.5">
+                  <Icon className="size-3.5 shrink-0" />
+                  <span className="truncate">{value}</span>
                 </span>
               ))}
+              {contact.length === 0 && <span>Keine Kontaktdaten angegeben</span>}
             </CardDescription>
+            <p className="text-xs text-muted-foreground tabular-nums">
+              Eingegangen am {formatReceived(request.createdAt)}
+            </p>
           </div>
         </div>
-        <CardAction>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline">{request.type}</Badge>
-            <Badge variant={statusBadgeVariant[request.status]}>
-              {statusLabels[request.status]}
-            </Badge>
-          </div>
-        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {request.message && (
@@ -327,6 +348,18 @@ function RequestCard({
             )}
           </div>
         )}
+        {duplicates.length > 0 && (
+          <div className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+            <Copy className="mt-0.5 size-4 shrink-0" />
+            <span>
+              Mögliches Duplikat — innerhalb von 14 Tagen kam bereits eine Anfrage mit
+              gleichem Namen, gleicher Telefonnummer oder E-Mail-Adresse:{" "}
+              {duplicates
+                .map((d) => `${d.name} (eingegangen ${formatReceived(d.createdAt)})`)
+                .join(", ")}
+            </span>
+          </div>
+        )}
         {request.conflicts && request.conflicts.length > 0 && (
           <div className="flex flex-col gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
             <span className="flex items-center gap-1.5 font-medium">
@@ -348,6 +381,7 @@ function RequestCard({
           <div className="flex flex-wrap items-center gap-4 text-sm font-medium">
             <span className="flex items-center gap-1.5">
               <CalendarDays className="size-4 text-muted-foreground" />
+              <span className="sr-only">Wunschtermin:</span>
               {formatDate(request.requestedDate)}
             </span>
             <span className="flex items-center gap-1.5">
@@ -425,6 +459,7 @@ export function Terminanfragen() {
   const navigate = useNavigate();
   const { assignableNames: instructorOptions } = useInstructors();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("alle");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("eingang");
   const [acceptingId, setAcceptingId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -438,13 +473,23 @@ export function Terminanfragen() {
     return next;
   }, [requests]);
 
-  const visibleRequests = useMemo(
-    () =>
+  const visibleRequests = useMemo(() => {
+    const filtered =
       statusFilter === "alle"
         ? requests
-        : requests.filter((request) => request.status === statusFilter),
-    [requests, statusFilter],
-  );
+        : requests.filter((request) => request.status === statusFilter);
+    // The server lists newest received first; "Wunschtermin" re-sorts
+    // by the requested slot (soonest first).
+    if (sortOrder === "eingang") return filtered;
+    return filtered.toSorted(
+      (a, b) =>
+        a.requestedDate.localeCompare(b.requestedDate) ||
+        a.requestedTime.localeCompare(b.requestedTime) ||
+        a.id - b.id,
+    );
+  }, [requests, statusFilter, sortOrder]);
+
+  const byId = useMemo(() => new Map(requests.map((r) => [r.id, r])), [requests]);
 
   const acceptingRequest = requests.find((request) => request.id === acceptingId) ?? null;
 
@@ -463,8 +508,28 @@ export function Terminanfragen() {
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
-      <PageHeader className="h-auto min-h-11 flex-wrap py-2 2xl:min-h-12">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <PageHeader
+        end={
+          <Select
+            value={sortOrder}
+            onValueChange={(value) => setSortOrder(value as SortOrder)}
+          >
+            <SelectTrigger
+              size="sm"
+              aria-label="Sortierung"
+              className="hidden w-auto gap-1.5 md:flex"
+            >
+              <ArrowDownUp className="size-3.5 text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="eingang">Neueste zuerst</SelectItem>
+              <SelectItem value="wunschtermin">Nach Wunschtermin</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+      >
+        <div className="-my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 [scrollbar-width:none]">
           <ToggleGroup
             type="single"
             value={statusFilter}
@@ -482,6 +547,7 @@ export function Terminanfragen() {
             size="sm"
             spacing={0}
             aria-label="Terminanfragen Status"
+            className="shrink-0"
           >
             <ToggleGroupItem value="alle" aria-label="Alle Anfragen">
               Alle
@@ -524,10 +590,36 @@ export function Terminanfragen() {
           </div>
         ) : (
           <div className="stagger-in flex flex-col gap-4 2xl:gap-5">
+            <div className="flex items-center justify-between gap-2 md:hidden">
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {visibleRequests.length}{" "}
+                {visibleRequests.length === 1 ? "Anfrage" : "Anfragen"}
+              </span>
+              <Select
+                value={sortOrder}
+                onValueChange={(value) => setSortOrder(value as SortOrder)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-label="Sortierung"
+                  className="w-auto gap-1.5"
+                >
+                  <ArrowDownUp className="size-3.5 text-muted-foreground" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="eingang">Neueste zuerst</SelectItem>
+                  <SelectItem value="wunschtermin">Nach Wunschtermin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             {visibleRequests.map((request) => (
               <RequestCard
                 key={request.id}
                 request={request}
+                duplicates={(request.duplicateOf ?? [])
+                  .map((id) => byId.get(id))
+                  .filter((r): r is AppointmentRequest => r !== undefined)}
                 saving={saving}
                 onAccept={() => setAcceptingId(request.id)}
                 onDecline={() =>

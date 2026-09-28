@@ -1167,11 +1167,19 @@ function initSequences(db: Database, demo: boolean) {
   insert.run("buchung", demo ? 218 : 0);
 }
 
+/* The demo school: DEFAULT_COMPANY plus the owner (the demo login in
+   bootstrap.ts) and authority, so Impressum and Datenschutz are complete. */
+export const DEMO_COMPANY: CompanyProfile = {
+  ...DEFAULT_COMPANY,
+  inhaber: "Sabine Krämer",
+  aufsichtsbehoerde: "Wissenschaftsstadt Darmstadt, Fahrerlaubnisbehörde",
+};
+
 function initSettings(db: Database, demo: boolean) {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('company', ?)").run(
     JSON.stringify(
       demo
-        ? DEFAULT_COMPANY
+        ? DEMO_COMPANY
         : {
             ...DEFAULT_COMPANY,
             name: "",

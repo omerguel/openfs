@@ -63,4 +63,22 @@ describe("GET /api/public/legal", () => {
     expect(data.registergericht).toBe("");
     expect(data.datenschutzEmail).toBe("");
   });
+
+  test("lists missing required fields for the owner warning", async () => {
+    const empty = (await fetchLegal()) as unknown as { missing: string[] };
+    expect(empty.missing).toEqual(
+      expect.arrayContaining(["inhaber", "aufsichtsbehoerde"]),
+    );
+    setCompany(db, {
+      ...getCompany(db),
+      name: "Fahrschule Müller",
+      address: "Hauptstr. 1, 64283 Darmstadt",
+      phone: "06151 1",
+      email: "info@example.de",
+      inhaber: "Anna Müller",
+      aufsichtsbehoerde: "Stadt Darmstadt",
+    });
+    const complete = (await fetchLegal()) as unknown as { missing: string[] };
+    expect(complete.missing).toEqual([]);
+  });
 });
