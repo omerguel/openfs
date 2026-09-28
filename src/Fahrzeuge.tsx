@@ -397,11 +397,9 @@ function VehicleDialog({
                   ))}
               </NativeSelect>
             </FormField>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-sm font-medium" id="vehicle-hu-label">
-                Nächste HU
-              </span>
-              <div className="flex gap-2" role="group" aria-labelledby="vehicle-hu-label">
+            <fieldset className="flex min-w-0 flex-col gap-1.5">
+              <legend className="mb-1.5 text-sm font-medium">Nächste HU</legend>
+              <div className="flex gap-2">
                 <NativeSelect
                   aria-label="HU Monat"
                   className="flex-1"
@@ -440,7 +438,7 @@ function VehicleDialog({
                   Laut Prüfplakette — wir erinnern 60 Tage vorher.
                 </span>
               )}
-            </div>
+            </fieldset>
             <FormField id="vehicle-insurance" label="Versicherung">
               <Input
                 placeholder="z. B. Allianz · gültig bis 12/2026"
