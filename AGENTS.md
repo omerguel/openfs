@@ -21,6 +21,7 @@ OpenFS is a Fahrschule (driving school) management web app: student records, cal
 |------------|---------------------|----------------|
 | Test       | `bun test`          | 1050+ pass, 0 fail |
 | Browser smoke | `bun run test:e2e` | every route ✓ (needs Chromium: `bunx playwright install chromium`) |
+| Restore drill | `bun run drill` | "Drill bestanden" (backup → disaster → restore via real servers; runbook: `docs/operations.md`) |
 | Typecheck  | `bun run typecheck` | exit 0         |
 | Build      | `bun run build`     | exit 0         |
 | Audit      | `bun audit`         | no vulnerabilities |
