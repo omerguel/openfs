@@ -218,7 +218,7 @@ export function Archiv() {
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Archiv durchsuchen"
+            placeholder="Suchen"
             aria-label="Archiv durchsuchen"
             className="h-8 w-full pl-8"
           />

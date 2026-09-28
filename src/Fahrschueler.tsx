@@ -217,10 +217,10 @@ export function Fahrschueler() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={isMobile ? "Suchen …" : "Name, Telefon, E-Mail oder Nr."}
+              placeholder={isMobile ? "Suchen" : "Name, Telefon, E-Mail oder Nr."}
               aria-label="Fahrschüler suchen nach Name, Telefon, E-Mail, Kunden- oder Vertragsnummer"
               title="Name, Telefon, E-Mail, Klasse, Kunden- oder Vertragsnummer"
-              className="h-8 w-32 pl-8 sm:w-64 lg:w-72"
+              className="h-8 w-36 pl-8 sm:w-64 lg:w-72"
             />
           </div>
           <ToggleGroup
