@@ -24,7 +24,8 @@ import { TRANSACTION_TYPE_LABELS } from "../lib/accounting-types";
 import { splitVat } from "../lib/money";
 import { getCompany, nextBelegNr, nextBuchungNr, nextQuittungNr } from "./db";
 
-export class ValidationError extends Error {}
+export { ValidationError } from "./errors";
+import { ValidationError } from "./errors";
 
 /* ---------------------------- accounts ---------------------------- */
 

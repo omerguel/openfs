@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
+import { CalendarOff, GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
+import { AbsencesDialog } from "./components/fahrlehrer/AbsencesDialog.tsx";
+import { WorkingTimeReport } from "./components/fahrlehrer/WorkingTimeReport.tsx";
 import { panelActionsClass, panelInteractiveClass } from "./components/Panel.tsx";
 import {
   createInstructor,
@@ -46,6 +48,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOTS: Record<InstructorInput["status"], string> = {
@@ -270,9 +273,11 @@ function InstructorDialog({
 function InstructorCard({
   instructor,
   onEdit,
+  onAbsences,
 }: {
   instructor: Instructor;
   onEdit: () => void;
+  onAbsences: () => void;
 }) {
   const fullName = instructorName(instructor);
   const details = [
@@ -295,6 +300,16 @@ function InstructorCard({
           <div className={cn("flex items-center gap-1.5", panelActionsClass)}>
             <StatusBadge status={instructor.status} />
             <div className="flex items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Abwesenheiten von ${fullName}`}
+                title="Abwesenheiten"
+                onClick={onAbsences}
+              >
+                <CalendarOff />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -334,6 +349,8 @@ export function Fahrlehrer() {
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<InstructorInput>(emptyDraft);
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<"uebersicht" | "arbeitszeiten">("uebersicht");
+  const [absencesFor, setAbsencesFor] = useState<Instructor | null>(null);
 
   const startCreating = () => {
     setDraft(emptyDraft);
@@ -364,7 +381,7 @@ export function Fahrlehrer() {
     if (editingId === null) return;
     const name = `${draft.firstName} ${draft.lastName}`.trim();
     const confirmed = window.confirm(
-      `${name || "Diese/n Fahrlehrer/in"} wirklich löschen? Zugeordnete Fahrschüler werden auf „Nicht zugeteilt“ gesetzt.`,
+      `${name || "Diese/n Fahrlehrer/in"} wirklich löschen? Zugeordnete Fahrschüler werden auf „Nicht zugeteilt“ gesetzt, eingetragene Abwesenheiten werden gelöscht.`,
     );
     if (!confirmed) return;
 
@@ -378,15 +395,34 @@ export function Fahrlehrer() {
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <Button type="button" size="sm" onClick={startCreating}>
-            <Plus data-icon="inline-start" />
-            Fahrlehrer/in hinzufügen
-          </Button>
+          view === "uebersicht" ? (
+            <Button type="button" size="sm" onClick={startCreating}>
+              <Plus data-icon="inline-start" />
+              Fahrlehrer/in hinzufügen
+            </Button>
+          ) : undefined
         }
-      />
+      >
+        <ToggleGroup
+          type="single"
+          value={view}
+          onValueChange={(value) => {
+            if (value) setView(value as typeof view);
+          }}
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label="Ansicht"
+        >
+          <ToggleGroupItem value="uebersicht">Übersicht</ToggleGroupItem>
+          <ToggleGroupItem value="arbeitszeiten">Arbeitszeiten</ToggleGroupItem>
+        </ToggleGroup>
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
-        {loading ? (
+        {view === "arbeitszeiten" ? (
+          <WorkingTimeReport />
+        ) : loading ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:gap-5">
             {Array.from({ length: 3 }, (_, index) => (
               <Skeleton key={index} className="h-40 rounded-lg" />
@@ -404,6 +440,7 @@ export function Fahrlehrer() {
                 key={instructor.id}
                 instructor={instructor}
                 onEdit={() => startEditing(instructor)}
+                onAbsences={() => setAbsencesFor(instructor)}
               />
             ))}
           </div>
@@ -434,6 +471,15 @@ export function Fahrlehrer() {
         }
         onDelete={removeEditingInstructor}
       />
+
+      {absencesFor && (
+        <AbsencesDialog
+          instructor={absencesFor}
+          onOpenChange={(open) => {
+            if (!open) setAbsencesFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }

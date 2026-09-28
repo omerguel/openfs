@@ -128,14 +128,29 @@ export function createAttestation(
 ): Attestation {
   /* ── event must exist ─────────────────────────────────────────── */
   const event = db
-    .query<{ id: number; type: string; student_id: number | null }, [number]>(
-      `SELECT ce.id, ce.type, ce.student_id
+    .query<
+      {
+        id: number;
+        type: string;
+        student_id: number | null;
+        cancelled_at: string | null;
+      },
+      [number]
+    >(
+      `SELECT ce.id, ce.type, ce.student_id, ce.cancelled_at
        FROM calendar_events ce WHERE ce.id = ?`,
     )
     .get(input.eventId);
 
   if (!event) {
     throw new ValidationError(`Termin mit ID ${input.eventId} existiert nicht.`);
+  }
+
+  /* ── a cancelled lesson did not take place ─────────────────────── */
+  if (event.cancelled_at) {
+    throw new ValidationError(
+      "Für abgesagte Termine kann kein Ausbildungsnachweis erstellt werden.",
+    );
   }
 
   /* ── event must be type "Praktisch" ───────────────────────────── */

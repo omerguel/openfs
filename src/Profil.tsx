@@ -11,9 +11,16 @@ import {
   Phone,
   X,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import type { CompanyProfile } from "@/lib/accounting-types";
+import {
+  fetchCancellationPolicy,
+  saveCancellationPolicy,
+} from "@/hooks/use-calendar-events";
+import { DEFAULT_CANCELLATION_POLICY } from "@/lib/cancellation";
+import { formatCents, parseEuroToCents } from "@/lib/money";
 import {
   saveSchoolProfile,
   useSchoolProfile,
@@ -251,6 +258,7 @@ const sections = [
   { id: "merkmale", label: "Merkmale" },
   { id: "fahrzeuge", label: "Fahrzeuge" },
   { id: "zahlung", label: "Zahlung" },
+  { id: "absagen", label: "Terminabsagen" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -367,7 +375,32 @@ export function Profil() {
   const updateCompany = (patch: Partial<CompanyProfile>) =>
     setCompany((current) => ({ ...current, ...patch }));
 
+  // Late-cancellation policy — edited as text, validated on save.
+  const queryClient = useQueryClient();
+  const [policyHours, setPolicyHours] = useState(
+    String(DEFAULT_CANCELLATION_POLICY.hoursBefore),
+  );
+  const [policyFee, setPolicyFee] = useState("");
+  useEffect(() => {
+    fetchCancellationPolicy()
+      .then((policy) => {
+        setPolicyHours(String(policy.hoursBefore));
+        setPolicyFee(policy.feeCents > 0 ? formatCents(policy.feeCents) : "");
+      })
+      .catch(() => toast.error("Absage-Regeln konnten nicht geladen werden."));
+  }, [formVersion]);
+
   const save = async () => {
+    const hoursBefore = Number(policyHours);
+    const feeCents = policyFee.trim() ? parseEuroToCents(policyFee) : 0;
+    if (!Number.isInteger(hoursBefore) || hoursBefore < 0 || hoursBefore > 720) {
+      toast.error("Absagefrist muss eine ganze Zahl zwischen 0 und 720 Stunden sein.");
+      return;
+    }
+    if (feeCents == null) {
+      toast.error("Ausfallgebühr ist kein gültiger Betrag.");
+      return;
+    }
     try {
       const res = await fetch("/api/profile", {
         method: "PUT",
@@ -380,6 +413,8 @@ export function Profil() {
       setSchoolProfile(
         await saveSchoolProfile({ ...schoolProfile, website: savedCompany.website }),
       );
+      await saveCancellationPolicy({ hoursBefore, feeCents });
+      await queryClient.invalidateQueries({ queryKey: ["cancellation-policy"] });
       setDirty(false);
       toast.success("Profil gespeichert.");
     } catch {
@@ -840,6 +875,45 @@ export function Profil() {
                     </button>
                   );
                 })}
+              </div>
+            </Section>
+
+            {/* Terminabsagen */}
+            <Section
+              id="absagen"
+              title="Terminabsagen"
+              description="Regeln für kurzfristige Absagen und Nichterscheinen — steuern die Vorauswahl der Ausfallgebühr beim Absagen eines Termins."
+            >
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Field
+                  label="Absagefrist (Stunden vor Beginn)"
+                  htmlFor="policy-hours"
+                  hint="Spätere Absagen gelten als kurzfristig. Nichterscheinen ist immer gebührenpflichtig."
+                >
+                  <Input
+                    id="policy-hours"
+                    type="number"
+                    min={0}
+                    max={720}
+                    className="tabular-nums"
+                    value={policyHours}
+                    onChange={(e) => setPolicyHours(e.target.value)}
+                  />
+                </Field>
+                <Field
+                  label="Ausfallgebühr (EUR)"
+                  htmlFor="policy-fee"
+                  hint="Leer lassen, um den Preis einer Fahrübungsstunde aus dem Preisplan des Fahrschülers zu verwenden."
+                >
+                  <Input
+                    id="policy-fee"
+                    inputMode="decimal"
+                    className="tabular-nums"
+                    placeholder="Preis der Fahrstunde"
+                    value={policyFee}
+                    onChange={(e) => setPolicyFee(e.target.value)}
+                  />
+                </Field>
               </div>
             </Section>
 

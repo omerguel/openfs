@@ -5,18 +5,23 @@
 /* ------------------------------------------------------------------ */
 
 import { useMemo, useRef, useState, useEffect, useCallback } from "react";
-import { ClipboardCheck, ClipboardList, Printer, Receipt } from "lucide-react";
+import { Ban, ClipboardCheck, ClipboardList, Printer, Receipt } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   eventTypeOptions,
   eventTypeShortLabel,
+  isCancelled,
   isExamEvent,
   isFahrstunde,
+  toISODate,
   toMinutes,
   type CalEvent,
   type EventType,
 } from "@/lib/calendar-data";
+import { CANCELLATION_KIND_LABELS } from "@/lib/cancellation";
+import { computeSpecialDriveProgress } from "@/lib/special-drives";
+import { CancelEventDialog } from "@/components/CancelEventDialog";
 import {
   type BillableEventType,
   resolveEventCharges,
@@ -92,11 +97,19 @@ function formatDuration(start: string, end: string): string {
 
 type TypeFilter = "alle" | EventType;
 
-/** Derive billing state for a practical event. */
-function billingState(event: CalEvent): "billed" | "open" {
+/** Derive billing state for a practical event. Cancelled lessons are
+    never billable (a fee is booked separately at cancellation). */
+function billingState(event: CalEvent): "billed" | "open" | "cancelled" {
   if (event.billedTransactionId != null && event.billedActive) return "billed";
+  if (isCancelled(event)) return "cancelled";
   return "open";
 }
+
+const SPECIAL_DRIVE_SHORT: Record<string, string> = {
+  Überlandfahrt: "Überland",
+  Autobahnfahrt: "Autobahn",
+  Nachtfahrt: "Nacht",
+};
 
 /* ------------------------------------------------------------------ */
 /* Nachweis capture dialog                                             */
@@ -284,6 +297,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
   const [billTarget, setBillTarget] = useState<CalEvent | null>(null);
   /* Exams bill through the multi-line ChargeDialog (service + Prüfgebühr). */
   const [examBillTarget, setExamBillTarget] = useState<CalEvent | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CalEvent | null>(null);
   const [batchBillOpen, setBatchBillOpen] = useState(false);
   const [nachweisPrintOpen, setNachweisPrintOpen] = useState(false);
   const [nachweisTarget, setNachweisTarget] = useState<CalEvent | null>(null);
@@ -335,6 +349,13 @@ export function StundenTab({ student }: { student: StudentRecord }) {
           billingState(event) === "open" &&
           event.studentId != null,
       ),
+    [studentEvents],
+  );
+
+  /* Sonderfahrten (class B minimums) — completed, non-cancelled lessons. */
+  const showSpecialDrives = /\bB/.test(student.classes);
+  const specialDrives = useMemo(
+    () => computeSpecialDriveProgress(studentEvents, toISODate(new Date())),
     [studentEvents],
   );
 
@@ -509,6 +530,31 @@ export function StundenTab({ student }: { student: StudentRecord }) {
           </div>
         </div>
 
+        {showSpecialDrives && (
+          <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border px-4 py-2.5">
+            <dt className="text-[11px] font-medium text-muted-foreground">
+              Sonderfahrten Klasse B
+            </dt>
+            {specialDrives.map((row) => (
+              <div key={row.kind} className="flex items-baseline gap-1.5 text-sm">
+                <dt className="text-muted-foreground">{SPECIAL_DRIVE_SHORT[row.kind]}</dt>
+                <dd className="flex items-center gap-1.5 font-medium tabular-nums">
+                  {row.completedMinutes}/{row.requiredMinutes} Min.
+                  <span
+                    aria-hidden
+                    className={
+                      row.done
+                        ? "size-1.5 rounded-full bg-green-500"
+                        : "size-1.5 rounded-full bg-amber-500"
+                    }
+                  />
+                  <span className="sr-only">{row.done ? "erfüllt" : "offen"}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+
         {events.length === 0 ? (
           <Empty className="min-h-64 border-0">
             <EmptyHeader>
@@ -540,7 +586,22 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                   const isPraktisch = isFahrstunde(event);
                   const isExam = isExamEvent(event);
                   const isBillable = isPraktisch || isExam;
+                  const cancelled = isCancelled(event);
                   const state = isBillable ? billingState(event) : null;
+                  const canCancel =
+                    !cancelled &&
+                    !(event.billedTransactionId != null && event.billedActive);
+                  const cancelButton = canCancel ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs text-muted-foreground"
+                      onClick={() => setCancelTarget(event)}
+                    >
+                      <Ban className="mr-1 size-3" />
+                      Absagen
+                    </Button>
+                  ) : null;
                   const hasStudent = event.studentId != null;
                   const billDisabledReason =
                     isBillable && !hasStudent ? "Kein Fahrschüler verknüpft" : null;
@@ -550,7 +611,10 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                   const nachweisAttested = attestation != null;
 
                   return (
-                    <TableRow key={event.id}>
+                    <TableRow
+                      key={event.id}
+                      className={cancelled ? "text-muted-foreground" : undefined}
+                    >
                       <TableCell className="pl-4">
                         <div className="flex flex-col">
                           <span className="font-medium">{formatDate(event.date)}</span>
@@ -563,7 +627,20 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                         {formatDuration(event.start, event.end)}
                       </TableCell>
                       <TableCell>{student.classes}</TableCell>
-                      <TableCell className="whitespace-normal">{event.title}</TableCell>
+                      <TableCell
+                        className={
+                          cancelled
+                            ? "whitespace-normal line-through"
+                            : "whitespace-normal"
+                        }
+                      >
+                        {event.title}
+                        {event.lessonKind && event.lessonKind !== "Übungsfahrt" && (
+                          <span className="ml-1.5 text-muted-foreground">
+                            · {event.lessonKind}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="secondary">
                           {eventTypeShortLabel[event.type]}
@@ -581,7 +658,19 @@ export function StundenTab({ student }: { student: StudentRecord }) {
 
                       {/* Abrechnung column */}
                       <TableCell>
-                        {!isBillable ? null : state === "billed" ? (
+                        {cancelled ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <span className="size-1.5 rounded-full bg-destructive" />
+                            {
+                              CANCELLATION_KIND_LABELS[
+                                event.cancellationKind ?? "abgesagt"
+                              ]
+                            }
+                            {event.cancellationFeeActive && " · Gebühr gebucht"}
+                          </span>
+                        ) : !isBillable ? (
+                          cancelButton
+                        ) : state === "billed" ? (
                           <span className="text-muted-foreground text-xs">
                             Abgerechnet
                           </span>
@@ -612,13 +701,14 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                               <Receipt className="mr-1 size-3" />
                               Abrechnen
                             </Button>
+                            {cancelButton}
                           </div>
                         )}
                       </TableCell>
 
                       {/* Nachweis column */}
                       <TableCell className="pr-4">
-                        {!isPraktisch ? null : nachweisAttested ? (
+                        {!isPraktisch || cancelled ? null : nachweisAttested ? (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -697,6 +787,15 @@ export function StundenTab({ student }: { student: StudentRecord }) {
             onConfirm={handleBatchBillConfirm}
           />
         )}
+
+        {/* Absage / Nichterscheinen dialog */}
+        <CancelEventDialog
+          event={cancelTarget}
+          onOpenChange={(open) => {
+            if (!open) setCancelTarget(null);
+          }}
+          onCancelled={() => void refreshEvents()}
+        />
 
         {/* Nachweis capture dialog */}
         {nachweisTarget && (

@@ -19,7 +19,9 @@ import {
   listAppointmentRequests,
   updateAppointmentRequest,
 } from "./appointment-requests";
+import { ensureAbsenceTables } from "./absences";
 import { createCalendarEvent, listCalendarEvents } from "./calendar-events";
+import { migrateCalendarEventScheduling } from "./db";
 import { ValidationError } from "./engine";
 
 /* Same DDL as in src/server/db.ts — keeps the test DB minimal.
@@ -72,6 +74,8 @@ let db: Database;
 beforeEach(() => {
   db = openSqlite(":memory:");
   db.exec(CALENDAR_EVENTS_DDL);
+  migrateCalendarEventScheduling(db);
+  ensureAbsenceTables(db);
   const addInstructor = db.prepare(
     "INSERT INTO instructors (first_name, last_name) VALUES (?, ?)",
   );

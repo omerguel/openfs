@@ -25,7 +25,7 @@ import {
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
-import { EventEditDialog } from "./components/EventEditDialog.tsx";
+import { EventEditDialog, type EventSaveOptions } from "./components/EventEditDialog.tsx";
 import {
   createCalendarEvent,
   deleteCalendarEvent,
@@ -461,29 +461,22 @@ export function Pruefungsplaner() {
     );
   };
 
-  const handleEventSave = (id: string, updates: CalEvent) => {
-    const { id: _id, ...payload } = updates;
-    if (id === NEW_EXAM_ID) {
-      void createCalendarEvent(payload)
-        .then(() => {
-          toast.success("Prüfung geplant.");
-          void refresh();
-        })
-        .catch(() => {
-          toast.error("Prüfung konnte nicht erstellt werden.");
-        });
-      return;
-    }
-
-    void updateCalendarEvent(Number(id), payload)
-      .then(() => {
-        toast.success("Prüfung aktualisiert.");
-        void refresh();
-      })
-      .catch(() => {
-        toast.error("Prüfung konnte nicht gespeichert werden.");
-        void refresh();
-      });
+  /* Rejections propagate to the dialog, which shows the message and —
+     for overlaps / absences — offers "Trotzdem speichern". */
+  const handleEventSave = async (
+    id: string,
+    updates: CalEvent,
+    options: EventSaveOptions,
+  ) => {
+    const { id: _id, ...rest } = updates;
+    const payload = { ...rest, allowConflicts: options.allowConflicts === true };
+    const saved =
+      id === NEW_EXAM_ID
+        ? await createCalendarEvent(payload)
+        : await updateCalendarEvent(Number(id), payload);
+    toast.success(id === NEW_EXAM_ID ? "Prüfung geplant." : "Prüfung aktualisiert.");
+    for (const warning of saved.warnings ?? []) toast.warning(warning);
+    void refresh();
   };
 
   const handleEventDelete = (exam: CalEvent) => {

@@ -10,7 +10,7 @@
 
 import type { Database } from "./sqlite";
 
-import { ValidationError } from "./engine";
+import { ValidationError } from "./errors";
 
 export const UNASSIGNED = "Nicht zugeteilt";
 

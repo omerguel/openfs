@@ -5,12 +5,17 @@
 
 import type { Database } from "./sqlite";
 
+import { absenceRoutes } from "./absences";
 import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
+import { calendarConflictRoutes } from "./calendar-conflicts";
+import { calendarSeriesRoutes } from "./calendar-series";
+import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { instalmentRoutes } from "./instalments";
+import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
@@ -40,6 +45,11 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     ...accountingRoutes(db),
     ...archiveRoutes(db),
     ...calendarEventRoutes(db),
+    ...calendarSeriesRoutes(db),
+    ...cancellationRoutes(db),
+    ...calendarConflictRoutes(db),
+    ...absenceRoutes(db),
+    ...reportRoutes(db),
     ...instructorRoutes(db),
     ...pricePlanRoutes(db),
     ...studentRoutes(db),

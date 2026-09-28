@@ -174,8 +174,9 @@ function listStudentLessons(db: Database, studentId: number, now: Date) {
   const select = `SELECT ce.date, ce.start, ce."end" AS "end", ce.type, ce.title,
       ${instructorNameSql("ce")} AS instructor
     FROM calendar_events ce
-    WHERE ce.student_id = ? AND ce.tentative = 0`;
-  // Tentative (vorläufige) slots are not shown until they are confirmed.
+    WHERE ce.student_id = ? AND ce.tentative = 0 AND ce.cancelled_at IS NULL`;
+  // Tentative (vorläufige) slots are not shown until they are confirmed;
+  // cancelled ones not at all.
   const upcoming = db
     .query<PortalLesson, [number, string, string, string, number]>(
       `${select} AND (ce.date > ? OR (ce.date = ? AND ce."end" > ?))

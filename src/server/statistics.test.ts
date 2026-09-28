@@ -131,7 +131,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   student_id INTEGER,
   billed_transaction_id INTEGER,
-  exam_result TEXT
+  exam_result TEXT,
+  cancelled_at TEXT
 );
 `;
 
@@ -530,5 +531,20 @@ describe("examStatistics", () => {
     expect(theorie.bestanden).toBe(1);
     expect(praktisch.total).toBe(1);
     expect(praktisch.nicht_bestanden).toBe(1);
+  });
+});
+
+describe("cancelled Termine", () => {
+  test("are left out of lesson counts and instructor utilization", () => {
+    insertEvent("2026-06-01", "09:00", "09:45", "Praktisch");
+    insertEvent("2026-06-02", "09:00", "09:45", "Praktisch");
+    db.prepare(
+      "UPDATE calendar_events SET cancelled_at = '2026-05-30' WHERE date = ?",
+    ).run("2026-06-02");
+    expect(lessonStatistics(db).total).toBe(1);
+    expect(instructorStatistics(db).utilization[0]).toMatchObject({
+      events: 1,
+      minutes: 45,
+    });
   });
 });

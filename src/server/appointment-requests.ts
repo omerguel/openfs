@@ -72,6 +72,8 @@ export type AcceptOverrides = {
   instructor?: string;
   vehicle?: string;
   location?: string;
+  /** Accept even when the slot overlaps or the instructor is absent. */
+  allowConflicts?: boolean;
 };
 
 type AppointmentRequestRow = {
@@ -275,7 +277,9 @@ function findConflictingEvents(
   return listCalendarEvents(db, { from: date, to: date })
     .filter(
       (event) =>
-        toMinutes(event.start) < requestEnd && toMinutes(event.end) > requestStart,
+        !event.cancelledAt &&
+        toMinutes(event.start) < requestEnd &&
+        toMinutes(event.end) > requestStart,
     )
     .map((event) => ({
       id: event.id,
@@ -518,6 +522,7 @@ export function acceptAppointmentRequest(
       instructor: overrides.instructor ?? "Nicht zugeteilt",
       vehicle: overrides.vehicle ?? "",
       type: request.type,
+      allowConflicts: overrides.allowConflicts === true,
     });
     db.prepare("UPDATE appointment_requests SET status = 'bestätigt' WHERE id = ?").run(
       id,

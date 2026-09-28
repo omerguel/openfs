@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { CalendarClock, CalendarDays, Check, Clock, X } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  CalendarDays,
+  Check,
+  Clock,
+  X,
+} from "lucide-react";
 
 import {
   type CalEvent,
@@ -11,6 +18,8 @@ import {
   toISODate,
   toMinutes,
 } from "@/lib/calendar-data";
+import { isOverridableConflict, type SeriesRepeat } from "@/hooks/use-calendar-events";
+import { LESSON_KINDS, type LessonKind } from "@/lib/special-drives";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent } from "@/components/ui/card";
@@ -44,6 +53,16 @@ import {
 import { cn } from "@/lib/utils";
 
 const NO_VEHICLE = "__none__";
+const NO_LESSON_KIND = "__none__";
+
+type RepeatChoice = "none" | "weekly" | "biweekly";
+
+export type EventSaveOptions = {
+  /** Only for new events: create a weekly / biweekly series. */
+  repeat?: SeriesRepeat;
+  /** The user confirmed saving despite an overlap / absence. */
+  allowConflicts?: boolean;
+};
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) =>
   String(hour).padStart(2, "0"),
 );
@@ -286,11 +305,18 @@ export function EventEditDialog({
   studentOptions,
   studentIdByName,
   vehicleOptions,
+  allowRepeat = false,
 }: {
   event: CalEvent | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (id: string, updates: CalEvent) => void;
+  /** Resolve to close the dialog; reject to show the error in place
+      (with "Trotzdem speichern" for overlaps / absences). */
+  onSave: (
+    id: string,
+    updates: CalEvent,
+    options: EventSaveOptions,
+  ) => Promise<void> | void;
   instructorOptions: string[];
   studentOptions: string[];
   /** Display name → students.id. When provided, saving resolves the
@@ -299,12 +325,21 @@ export function EventEditDialog({
       exactly as it was on the event. */
   studentIdByName?: Map<string, number>;
   vehicleOptions: string[];
+  /** Offer "Wiederholen" (new events only). */
+  allowRepeat?: boolean;
 }) {
   const [draft, setDraft] = useState<CalEvent | null>(event);
+  const [repeat, setRepeat] = useState<RepeatChoice>("none");
+  const [repeatCount, setRepeatCount] = useState(4);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Reset the working copy whenever a different event is opened for editing.
   useEffect(() => {
     setDraft(event);
+    setRepeat("none");
+    setRepeatCount(4);
+    setSaveError(null);
   }, [event]);
 
   if (!event || !draft) return null;
@@ -358,7 +393,7 @@ export function EventEditDialog({
     onOpenChange(false);
   };
 
-  const save = () => {
+  const save = async (allowConflicts = false) => {
     const updates = studentIdByName
       ? {
           ...draft,
@@ -369,9 +404,22 @@ export function EventEditDialog({
           studentId: studentIdByName.get(draft.subtitle?.trim() ?? ""),
         }
       : draft;
-    onSave(event.id, updates);
-    onOpenChange(false);
+    const options: EventSaveOptions = { allowConflicts };
+    if (allowRepeat && repeat !== "none") {
+      options.repeat = { interval: repeat, count: repeatCount };
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(event.id, updates, options);
+      onOpenChange(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Speichern fehlgeschlagen.");
+    } finally {
+      setSaving(false);
+    }
   };
+  const canOverride = saveError !== null && isOverridableConflict(saveError);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -395,7 +443,12 @@ export function EventEditDialog({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" size="sm" onClick={save}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={saving}
+                onClick={() => void save()}
+              >
                 <Check data-icon="inline-start" />
                 Speichern
               </Button>
@@ -406,6 +459,30 @@ export function EventEditDialog({
             </div>
           </div>
         </DialogHeader>
+
+        {saveError && (
+          <div
+            role="alert"
+            className="flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <span className="flex items-start gap-2 text-destructive">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              {saveError}
+            </span>
+            {canOverride && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                disabled={saving}
+                onClick={() => void save(true)}
+              >
+                Trotzdem speichern
+              </Button>
+            )}
+          </div>
+        )}
 
         <Card size="sm">
           <CardContent>
@@ -441,7 +518,19 @@ export function EventEditDialog({
                 <FieldLabel htmlFor="event-type">Ereignistyp</FieldLabel>
                 <Select
                   value={draft.type}
-                  onValueChange={(value) => update("type", value as EventType)}
+                  onValueChange={(value) =>
+                    setDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            type: value as EventType,
+                            // Only practical lessons carry a Fahrtart.
+                            lessonKind:
+                              value === "Praktisch" ? current.lessonKind : undefined,
+                          }
+                        : current,
+                    )
+                  }
                 >
                   <SelectTrigger id="event-type">
                     <SelectValue />
@@ -457,6 +546,35 @@ export function EventEditDialog({
                   </SelectContent>
                 </Select>
               </Field>
+
+              {draft.type === "Praktisch" && (
+                <Field>
+                  <FieldLabel htmlFor="event-lesson-kind">Fahrtart</FieldLabel>
+                  <Select
+                    value={draft.lessonKind ?? NO_LESSON_KIND}
+                    onValueChange={(value) =>
+                      update(
+                        "lessonKind",
+                        value === NO_LESSON_KIND ? undefined : (value as LessonKind),
+                      )
+                    }
+                  >
+                    <SelectTrigger id="event-lesson-kind">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value={NO_LESSON_KIND}>Keine Angabe</SelectItem>
+                        {LESSON_KINDS.map((kind) => (
+                          <SelectItem key={kind} value={kind}>
+                            {kind}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
 
               <Field>
                 <FieldLabel htmlFor="event-date">Datum</FieldLabel>
@@ -583,6 +701,50 @@ export function EventEditDialog({
                   onChange={(e) => update("location", e.target.value || undefined)}
                 />
               </Field>
+
+              {allowRepeat && (
+                <>
+                  <Field>
+                    <FieldLabel htmlFor="event-repeat">Wiederholen</FieldLabel>
+                    <Select
+                      value={repeat}
+                      onValueChange={(value) => setRepeat(value as RepeatChoice)}
+                    >
+                      <SelectTrigger id="event-repeat">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="none">Nie</SelectItem>
+                          <SelectItem value="weekly">Wöchentlich</SelectItem>
+                          <SelectItem value="biweekly">Alle 2 Wochen</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {repeat !== "none" && (
+                    <Field>
+                      <FieldLabel htmlFor="event-repeat-count">Anzahl</FieldLabel>
+                      <Input
+                        id="event-repeat-count"
+                        type="number"
+                        min={2}
+                        max={52}
+                        className="tabular-nums"
+                        value={repeatCount}
+                        onChange={(e) =>
+                          setRepeatCount(
+                            Math.min(
+                              52,
+                              Math.max(2, Math.round(Number(e.target.value) || 2)),
+                            ),
+                          )
+                        }
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
 
               <label className="flex cursor-pointer items-center gap-2.5 text-sm sm:col-span-2">
                 <Checkbox

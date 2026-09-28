@@ -275,6 +275,11 @@ export function calendarEventRoutes(db: Database) {
               "Termin ist bereits abgerechnet. Zuerst stornieren um neu abzurechnen.",
             );
           }
+          if (event.cancelledAt) {
+            throw new ValidationError(
+              "Abgesagte Termine können nicht abgerechnet werden.",
+            );
+          }
 
           const body = await req.json();
 

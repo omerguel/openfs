@@ -154,7 +154,8 @@ export function queueLessonReminders(db: Database, today: string): number {
     .query<{ id: number }, string[]>(
       `SELECT ce.id FROM calendar_events ce
        JOIN students s ON s.id = ce.student_id
-       WHERE ce.date = ? AND ce.tentative = 0 AND trim(s.email) != ''
+       WHERE ce.date = ? AND ce.tentative = 0 AND ce.cancelled_at IS NULL
+         AND trim(s.email) != ''
          AND ce.type IN (${placeholders})
          AND NOT EXISTS (
            SELECT 1 FROM outbox o

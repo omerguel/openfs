@@ -162,6 +162,7 @@ export function lessonStatistics(db: Database): LessonStatistics {
     .query<{ month: string; type: string; count: number }, []>(
       `SELECT substr(date, 1, 7) AS month, type, count(*) AS count
        FROM calendar_events
+       WHERE cancelled_at IS NULL
        GROUP BY month, type
        ORDER BY month`,
     )
@@ -222,6 +223,7 @@ export function instructorStatistics(db: Database): InstructorStatistics {
                 - (CAST(substr(ce.start, 1, 2) AS INTEGER) * 60 + CAST(substr(ce.start, 4, 2) AS INTEGER))
               ) AS minutes
        FROM calendar_events ce
+       WHERE ce.cancelled_at IS NULL
        GROUP BY ce.instructor_id
        ORDER BY minutes DESC, instructor`,
     )
@@ -289,7 +291,7 @@ export function examStatistics(db: Database): ExamStatistics {
            coalesce(sum(CASE WHEN exam_result = 'bestanden' THEN 1 ELSE 0 END), 0) AS bestanden,
            coalesce(sum(CASE WHEN exam_result = 'nicht_bestanden' THEN 1 ELSE 0 END), 0) AS nicht_bestanden
          FROM calendar_events
-         WHERE type = ?`,
+         WHERE type = ? AND cancelled_at IS NULL`,
       )
       .get(type)!;
 

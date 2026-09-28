@@ -7,6 +7,9 @@
 /* the dashboard, calendar, and Stunden tab share.                      */
 /* ------------------------------------------------------------------ */
 
+import type { CancellationKind } from "./cancellation";
+import type { LessonKind } from "./special-drives";
+
 export type EventType =
   | "Praktisch"
   | "Theorie"
@@ -41,7 +44,25 @@ export type CalEvent = {
   billedActive?: boolean;
   /** Exam result — only present on exam-type events that have been graded. */
   examResult?: "bestanden" | "nicht_bestanden";
+  /** Kind of practical drive (Sonderfahrt) — only on "Praktisch". */
+  lessonKind?: LessonKind;
+  /** Shared by all occurrences of one recurring series. */
+  seriesId?: string;
+  /** Set when the lesson was cancelled / the student did not show up.
+      The event stays in the calendar as struck-through history. */
+  cancelledAt?: string;
+  cancellationKind?: CancellationKind;
+  /** FK → transactions.id of the Ausfallentschädigung, if charged. */
+  cancellationFeeTransactionId?: number;
+  /** Derived: fee booked and not storniert. */
+  cancellationFeeActive?: boolean;
+  /** Non-blocking hints returned by create/update (never stored). */
+  warnings?: string[];
 };
+
+/* Cancelled lessons stay visible but no longer count anywhere. */
+export const isCancelled = (event: { cancelledAt?: string }) =>
+  Boolean(event.cancelledAt);
 
 /* The app's notion of "today" — drives week anchoring/highlighting.
    Events themselves are persisted in the DB (see use-calendar-events). */
