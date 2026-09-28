@@ -7,8 +7,9 @@
 /*                                                                     */
 /* Row mapping/validation lives in src/lib/student-import.ts (shared   */
 /* with the /import page); this module adds the DB checks: duplicates, */
-/* instructor/vehicle lookup and number generation. Balances are NOT   */
-/* imported — opening balances belong in Buchhaltung (GoBD).           */
+/* instructor/vehicle lookup and number generation. An optional Saldo  */
+/* column is booked per student as engine Saldovortrag (9000 ↔ 3272)  */
+/* on the chosen date, inside the same all-or-nothing transaction.     */
 /* ------------------------------------------------------------------ */
 
 import type { BunRequest } from "bun";
@@ -19,6 +20,7 @@ import {
   parseImportMapping,
   type ImportCommitResult,
   type ImportMapping,
+  type ImportOpeningBalances,
   type ImportPreview,
   type ImportRowResult,
   type ImportSummary,
@@ -26,7 +28,7 @@ import {
 import { studentNumberSequence } from "../lib/student-numbers";
 import { tableExists } from "./archive";
 import { getCompany } from "./db";
-import { ValidationError } from "./engine";
+import { createTransaction, ValidationError } from "./engine";
 import { handle, json } from "./http";
 import { instructorIdByName, UNASSIGNED, vehicleIdByName } from "./refs";
 import { createStudent, listStudents } from "./students";
@@ -38,6 +40,8 @@ type ParsedRequest = {
   mapping: ImportMapping;
   /** File row number of rows[0] (1-based, header counted). */
   firstRowNumber: number;
+  /** ISO booking date for Saldovorträge, null when not given. */
+  openingBalanceDate: string | null;
 };
 
 function parseRequest(body: unknown): ParsedRequest {
@@ -47,7 +51,7 @@ function parseRequest(body: unknown): ParsedRequest {
   const { rows, mapping, options } = body as {
     rows?: unknown;
     mapping?: unknown;
-    options?: { hasHeader?: unknown };
+    options?: { hasHeader?: unknown; openingBalanceDate?: unknown };
   };
   if (!Array.isArray(rows) || !rows.every(Array.isArray)) {
     throw new ValidationError("Feld 'rows' muss eine Liste von Zeilen sein.");
@@ -63,6 +67,18 @@ function parseRequest(body: unknown): ParsedRequest {
     throw new ValidationError("Bitte die Spalten für Vorname und Nachname zuordnen.");
   }
   const hasHeader = options?.hasHeader !== false;
+  const rawDate = options?.openingBalanceDate;
+  let openingBalanceDate: string | null = null;
+  if (rawDate !== undefined && rawDate !== null && rawDate !== "") {
+    if (
+      typeof rawDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(rawDate) ||
+      Number.isNaN(Date.parse(`${rawDate}T00:00:00Z`))
+    ) {
+      throw new ValidationError("Buchungsdatum der Saldenvorträge ist ungültig.");
+    }
+    openingBalanceDate = rawDate;
+  }
   const data = (hasHeader ? rows.slice(1) : rows) as unknown[][];
   if (data.length === 0) {
     throw new ValidationError("Die Datei enthält keine Datenzeilen.");
@@ -80,6 +96,7 @@ function parseRequest(body: unknown): ParsedRequest {
     ),
     mapping: parsedMapping,
     firstRowNumber: hasHeader ? 2 : 1,
+    openingBalanceDate,
   };
 }
 
@@ -108,7 +125,11 @@ function lookupName(
   return id;
 }
 
-function planImport(db: Database, body: unknown, now: Date): PlannedRow[] {
+function planImport(
+  db: Database,
+  body: unknown,
+  now: Date,
+): { planned: PlannedRow[]; openingBalanceDate: string | null } {
   const request = parseRequest(body);
   const existing = listStudents(db);
   const existingByCustomer = new Map(existing.map((s) => [s.customerNumber, s]));
@@ -238,7 +259,20 @@ function planImport(db: Database, body: unknown, now: Date): PlannedRow[] {
     }
   }
 
-  return planned;
+  return { planned, openingBalanceDate: request.openingBalanceDate };
+}
+
+function openingBalances(rows: ImportRowResult[]): ImportOpeningBalances {
+  const withBalance = rows.filter((r) => r.ok && r.student.balanceCents !== 0);
+  return {
+    count: withBalance.length,
+    creditCents: withBalance
+      .filter((r) => r.student.balanceCents > 0)
+      .reduce((sum, r) => sum + r.student.balanceCents, 0),
+    debitCents: withBalance
+      .filter((r) => r.student.balanceCents < 0)
+      .reduce((sum, r) => sum - r.student.balanceCents, 0),
+  };
 }
 
 function summarize(rows: ImportRowResult[]): ImportSummary {
@@ -255,8 +289,8 @@ export function previewStudentImport(
   body: unknown,
   now = new Date(),
 ): ImportPreview {
-  const rows = planImport(db, body, now).map((p) => p.result);
-  return { rows, summary: summarize(rows) };
+  const rows = planImport(db, body, now).planned.map((p) => p.result);
+  return { rows, summary: summarize(rows), openingBalances: openingBalances(rows) };
 }
 
 /* Re-plans inside the transaction (the preview may be stale), then
@@ -268,18 +302,44 @@ export function commitStudentImport(
   now = new Date(),
 ): ImportCommitResult {
   const run = db.transaction((): ImportCommitResult => {
-    const planned = planImport(db, body, now);
+    const { planned, openingBalanceDate } = planImport(db, body, now);
+    const balances = openingBalances(planned.map((p) => p.result));
+    if (balances.count > 0 && !openingBalanceDate) {
+      throw new ValidationError(
+        "Bitte ein Buchungsdatum für die Saldenvorträge angeben.",
+      );
+    }
     let imported = 0;
+    let booked = 0;
     for (const { result, instructorId, vehicleId } of planned) {
       if (!result.ok) continue;
-      const { instructor: _i, vehicle: _v, ...student } = result.student;
+      const { instructor: _i, vehicle: _v, balanceCents, ...student } = result.student;
       try {
-        createStudent(db, {
+        const created = createStudent(db, {
           ...student,
           instructorId,
           vehicleId,
           progress: 0,
         });
+        if (balanceCents !== 0 && openingBalanceDate) {
+          // Engine write path (GoBD): Beleg number, 9000 ↔ 3272.
+          createTransaction(db, {
+            type: "saldovortrag",
+            date: openingBalanceDate,
+            amountCents: Math.abs(balanceCents),
+            direction: balanceCents > 0 ? "guthaben" : "forderung",
+            student: {
+              customerNo: created.customerNumber,
+              name: `${created.firstName} ${created.lastName}`.trim(),
+              address: created.address,
+              contractNo: created.contractNumber,
+              classes: created.classes,
+            },
+            description:
+              `Saldovortrag Datenübernahme ${created.firstName} ${created.lastName}`.trim(),
+          });
+          booked++;
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new ValidationError(
@@ -288,7 +348,11 @@ export function commitStudentImport(
       }
       imported++;
     }
-    return { ...summarize(planned.map((p) => p.result)), imported };
+    return {
+      ...summarize(planned.map((p) => p.result)),
+      imported,
+      openingBalances: booked,
+    };
   });
   return run();
 }

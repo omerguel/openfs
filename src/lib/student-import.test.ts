@@ -96,7 +96,7 @@ describe("parseImportMapping", () => {
   });
 
   test("rejects unknown fields, bad columns and duplicate fields", () => {
-    expect(() => parseImportMapping({ "0": "balance" })).toThrow("Unbekanntes Feld");
+    expect(() => parseImportMapping({ "0": "iban" })).toThrow("Unbekanntes Feld");
     expect(() => parseImportMapping({ x: "firstName" })).toThrow("Ungültige Spalte");
     expect(() => parseImportMapping({ "0": "firstName", "1": "firstName" })).toThrow(
       "mehreren Spalten",
