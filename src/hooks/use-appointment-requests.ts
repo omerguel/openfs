@@ -38,13 +38,25 @@ export type AppointmentRequest = {
   type: AppointmentRequestType;
   status: AppointmentRequestStatus;
   createdAt: string;
+  /** Campaign whose tracking link brought the request. */
+  campaignId: number | null;
+  campaignName: string | null;
+  /** Student created from the request ("Als Fahrschüler anlegen"). */
+  studentId: number | null;
+  studentName: string | null;
   /* Present on list responses; create/update responses omit it. */
   conflicts?: AppointmentRequestConflict[];
 };
 
 export type AppointmentRequestInput = Omit<
   AppointmentRequest,
-  "id" | "createdAt" | "conflicts"
+  | "id"
+  | "createdAt"
+  | "conflicts"
+  | "campaignId"
+  | "campaignName"
+  | "studentId"
+  | "studentName"
 >;
 
 /* Slot/assignment adjustments sent along when accepting a request. */
@@ -109,6 +121,19 @@ export async function acceptAppointmentRequest(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(overrides),
+    }),
+  );
+}
+
+export async function linkAppointmentRequestStudent(
+  id: number,
+  studentId: number | null,
+): Promise<AppointmentRequest> {
+  return parseOrThrow<AppointmentRequest>(
+    await fetch(`/api/appointment-requests/${id}/student`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studentId }),
     }),
   );
 }
