@@ -9,12 +9,23 @@ import { useQuery, type QueryKey } from "@tanstack/react-query";
 
 const EMPTY_LIST: never[] = [];
 
+/** Error carrying the HTTP status, so callers (and the query client's
+ *  retry policy) can tell "signed out" (401/403) from a real failure. */
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export async function parseOrThrow<T>(response: Response): Promise<T> {
   const data = (await response.json().catch(() => null)) as
     | (T & { error?: string })
     | null;
   if (!response.ok || !data) {
-    throw new Error(data?.error ?? "Anfrage fehlgeschlagen.");
+    throw new HttpError(data?.error ?? "Anfrage fehlgeschlagen.", response.status);
   }
   return data;
 }

@@ -29,9 +29,14 @@ import {
   UserPlus,
   Users,
   FileSpreadsheet,
+  KeyRound,
+  UserCog,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { AuthGate } from "@/components/auth/AuthGate";
+import { ChangePasswordDialog } from "@/components/auth/ChangePasswordDialog";
+import { canSeeRoute, logout, ROLE_LABELS, useAuthStatus } from "@/hooks/use-auth";
 import { Toaster } from "@/components/ui/sonner";
 import {
   Collapsible,
@@ -217,6 +222,10 @@ function scrollSidebarNavigationDown() {
 }
 
 function AppSidebar({ path }: { path: string }) {
+  const auth = useAuthStatus();
+  const user = auth.data?.user ?? null;
+  const role = user?.role;
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const sidebarCanScrollDownRef = useRef(false);
   const [sidebarCanScrollDown, setSidebarCanScrollDown] = useState(false);
@@ -281,9 +290,12 @@ function AppSidebar({ path }: { path: string }) {
           </SidebarMenu>
         </SidebarGroup>
 
-        {navGroups.map((group) => (
-          <SidebarNavGroup key={group.label} group={group} path={path} />
-        ))}
+        {navGroups.map((group) => {
+          const items = group.items.filter((item) => canSeeRoute(role, item.route));
+          return items.length > 0 ? (
+            <SidebarNavGroup key={group.label} group={{ ...group, items }} path={path} />
+          ) : null;
+        })}
 
         {/* Archiv — Papierkorb für versehentlich gelöschte Einträge */}
         <SidebarGroup className="z-10 px-1 py-2 group-data-[collapsible=icon]:p-2">
@@ -345,8 +357,15 @@ function AppSidebar({ path }: { path: string }) {
                   size="lg"
                   className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
                 >
-                  <span className="flex-1 font-heading text-base font-medium tracking-tight">
-                    Fahrschule
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-heading text-base font-medium tracking-tight">
+                      {user?.name ?? "Fahrschule"}
+                    </span>
+                    {user && (
+                      <span className="truncate text-xs text-muted-foreground">
+                        {ROLE_LABELS[user.role]}
+                      </span>
+                    )}
                   </span>
                   <ChevronsUpDown className="ml-auto size-4 text-muted-foreground" />
                 </SidebarMenuButton>
@@ -356,7 +375,24 @@ function AppSidebar({ path }: { path: string }) {
                 align="start"
                 className="w-(--radix-popper-anchor-width) min-w-56"
               >
-                <DropdownMenuItem variant="destructive">
+                {role === "inhaber" && (
+                  <DropdownMenuItem asChild>
+                    <Link to="/benutzer">
+                      <UserCog />
+                      Benutzer &amp; Protokoll
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => setPasswordOpen(true)}>
+                  <KeyRound />
+                  Passwort ändern
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => {
+                    void logout();
+                  }}
+                >
                   <LogOut />
                   Abmelden
                 </DropdownMenuItem>
@@ -365,11 +401,20 @@ function AppSidebar({ path }: { path: string }) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </Sidebar>
   );
 }
 
 export function App() {
+  return (
+    <AuthGate>
+      <AppShell />
+    </AuthGate>
+  );
+}
+
+function AppShell() {
   const path = useRouterState({ select: (state) => state.location.pathname });
 
   return (

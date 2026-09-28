@@ -9,6 +9,7 @@ import {
 import { Anfrage } from "./Anfrage";
 import { App } from "./App";
 import { Archiv } from "./Archiv";
+import { Benutzer } from "./Benutzer";
 import { Bewertungen } from "./Bewertungen";
 import { Buchhaltung } from "./Buchhaltung";
 import { Dashboard } from "./Dashboard";
@@ -109,7 +110,9 @@ const calendarRoute = createRoute({
 const vehiclesRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/fahrzeuge",
-  loader: ({ context }) => context.queryClient.ensureQueryData(vehiclesQueryOptions),
+  // Preload is best effort: signed out (401) the AuthGate takes over.
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(vehiclesQueryOptions).catch(() => undefined),
   component: Fahrzeuge,
 });
 
@@ -209,6 +212,12 @@ const invoicesRoute = createRoute({
   component: Rechnungen,
 });
 
+const usersRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/benutzer",
+  component: Benutzer,
+});
+
 const importRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/import",
@@ -254,6 +263,7 @@ const portalRouteTree = portalRoute.addChildren([
   archiveRoute,
   invoicesRoute,
   importRoute,
+  usersRoute,
 ]);
 
 const routeTree = rootRoute.addChildren([
