@@ -19,7 +19,7 @@ OpenFS is a Fahrschule (driving school) management web app: student records, cal
 
 | Purpose    | Command             | Expected       |
 |------------|---------------------|----------------|
-| Test       | `bun test`          | 850+ pass, 0 fail |
+| Test       | `bun test`          | 1050+ pass, 0 fail |
 | Browser smoke | `bun run test:e2e` | every route ✓ (needs Chromium: `bunx playwright install chromium`) |
 | Typecheck  | `bun run typecheck` | exit 0         |
 | Build      | `bun run build`     | exit 0         |
@@ -45,7 +45,13 @@ The accounting module enforces GoBD: immutable bookings, Storno-only corrections
 Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
 
 ### Instructor / vehicle references
-`students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record).
+`students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record). A vehicle's "Fahrlehrer/in" is not stored on the vehicle: it is derived from `instructors.vehicle_id` (Stammfahrzeug); setting it on a vehicle moves that instructor's Stammfahrzeug (`src/server/vehicles.ts`).
+
+### Navigation & page access
+`src/lib/navigation.ts` is the single config for the grouped sidebar, the route guard in `App.tsx` ("Kein Zugriff" page) and the global search. A new page = one entry in `NAV_GROUPS` with `access` (`all` | `office` = Inhaber+Büro | `owner`); pages without a menu entry go into `EXTRA_ROUTES`. Keep it in line with the API rules in `src/server/auth.ts`. Menu items whose route is not registered in `src/router.tsx` are hidden automatically. Old URLs redirect (`/profil`, `/schulprofil` → `/fahrschule?tab=…`, `/kalendar` → `/kalender`).
+
+### Forms
+Dirty state is derived by comparing the draft with the server data (see `src/lib/settings-form.ts`) — never set state from `onInputCapture`/`onClickCapture`: React flushes capture-phase updates and restores controlled inputs before `onChange` runs, which drops the first keystroke. Use `FormField` (`src/components/FormField.tsx`) for label, required marker (`*` + `aria-required`) and inline error.
 
 ### Auth
 All `/api` routes are wrapped by `protectApiRoutes` (`src/server/auth.ts`): session required, role checked, writes audited. A new endpoint is protected automatically; making one public means adding it to `PUBLIC_ROUTES` deliberately. Route-level tests mount factories directly (unprotected); `src/server/auth.test.ts` covers the guard. The current user is available via `currentUser()` (`request-context.ts`).
@@ -61,7 +67,7 @@ In `MULTI_TENANT=1` mode the route table is built **once** over a context databa
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.
 - Test files are co-located as `*.test.ts` alongside the module they test.
 - Never read from or write to `data/fahrschule.db` in tests.
-- No DOM unit-test framework (by decision). UI coverage comes from `scripts/e2e-smoke.ts`: it boots the app in `DEMO_MODE` (in-memory DB), opens every route parsed from `src/router.tsx` in Chromium and fails on page/console errors or 5xx API responses. New pages are covered automatically; add tab labels to `CLICK_THROUGH` for tab-heavy pages. Keep pure UI logic in `src/lib/` with unit tests.
+- No DOM unit-test framework (by decision). UI coverage comes from `scripts/e2e-smoke.ts`: it boots the app in `DEMO_MODE` (in-memory DB), opens every route parsed from `src/router.tsx` in Chromium and fails on page/console errors or 5xx API responses. New pages are covered automatically; add tab labels to `CLICK_THROUGH` for tab-heavy pages and interaction regressions to `FORM_CHECKS`. Route params are resolved in `resolveParams` (`$studentId`, `$token`, `$inviteToken`). Keep pure UI logic in `src/lib/` with unit tests.
 
 ### UI
 - All user-visible strings are German.

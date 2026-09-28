@@ -52,21 +52,29 @@ DEMO_MODE=1 bun run start
 
 ## Security & deployment
 
-**Sign-in and roles.** Every `/api` endpoint requires a signed-in user unless it is explicitly public (see below). On first start a real school sees the setup wizard: school master data, optional opening balances of Kasse/Bank, and the first **Inhaber/in** account. Further accounts are created under *Benutzer & Protokoll* with one of three roles:
+**Sign-in and roles.** Every `/api` endpoint requires a signed-in user unless it is explicitly public (see below). On first start a real school sees the setup wizard: school master data, optional opening balances of Kasse/Bank, and the first **Inhaber/in** account. Further accounts are created under *Verwaltung → Benutzer* with one of three roles — preferably with an **Einladungslink** (one-time, 7 days, only its hash is stored; mailed via the outbox when SMTP is configured, otherwise copied by the Inhaber) with which the person sets their own password at `/einladung/:token`:
 
 | Rolle | Darf |
 |-------|------|
-| Inhaber/in | alles, inkl. Benutzerverwaltung, Protokoll, Datensicherung, Datenbank-Export |
-| Büro | alles außer Benutzerverwaltung, Protokoll, Datensicherung, Datenbank-Export |
-| Fahrlehrer/in | Kalender (inkl. Absagen), Ausbildungsnachweise, Theorie-Anwesenheit, Chat; lesend alles außer Finanzen |
+| Inhaber/in | alles, inkl. Benutzerverwaltung, Protokoll, Datensicherung, Exporte; als Einzige/r Steuernummer, USt-IdNr. und Bankverbindung ändern |
+| Büro | alles außer Benutzerverwaltung, Protokoll, Datensicherung, Exporte; Steuer- und Bankdaten nur lesend |
+| Fahrlehrer/in | Kalender (inkl. Absagen), Ausbildungsnachweise, Theorie-Anwesenheit, Chat; keine Finanzen (auch keine Statistik/Umsatz), keine Stammdaten |
 
-Passwords are hashed with argon2id (`Bun.password`). Sessions are random tokens in an `HttpOnly; SameSite=Strict` cookie (`Secure` behind HTTPS); only their SHA-256 is stored, they slide for 7 days and end on sign-out, password change, role change or deactivation. State-changing requests from a foreign `Origin` are rejected, sign-in is rate-limited per IP and e-mail, and every write (plus every sign-in attempt) lands in the audit log (*Benutzer & Protokoll → Protokoll*). The rules live in `src/server/auth.ts`; new endpoints are protected automatically.
+The menu and a route guard follow the same split (`src/lib/navigation.ts`): pages a role may not use are not listed, and opening one by URL shows a „Kein Zugriff“ page instead of a half-loaded page.
+
+Passwords are hashed with argon2id (`Bun.password`). Sessions are random tokens in an `HttpOnly; SameSite=Strict` cookie (`Secure` behind HTTPS); only their SHA-256 is stored, they slide for 7 days and end on sign-out, password change, role change or deactivation. State-changing requests from a foreign `Origin` are rejected, failed sign-ins are rate-limited per IP and e-mail (10 per 15 minutes; a successful sign-in resets the count), and every write (plus every sign-in attempt) lands in the audit log (*Benutzer → Protokoll*, shown as plain German with the raw request as detail). Unknown `/api/*` paths answer with a JSON 404. The rules live in `src/server/auth.ts`; new endpoints are protected automatically.
 
 **Network.** The server listens on `127.0.0.1` by default (`HOST`/`PORT` to change). To use it from other devices, run it behind a TLS-terminating reverse proxy (Caddy, nginx) that forwards `X-Forwarded-Proto`; don't expose plain HTTP.
 
-**Public surfaces** (no sign-in): `/anfrage` with `POST /api/appointment-requests` (rate-limited, length-capped) and `GET /api/school-profile`; the legal pages `/impressum` and `/datenschutz` (`/api/public/…`); and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords.
+**Public surfaces** (no sign-in): `/einladung/:token` with `GET/POST /api/auth/invite/:token` (token-gated, one-time); `/anfrage` with `POST /api/appointment-requests` (rate-limited, length-capped) and `GET /api/school-profile`; the legal pages `/impressum` and `/datenschutz` (`/api/public/…`); and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords.
 
-**Data.** A real school starts empty; demo data only appears with `DEMO_MODE=1` (in-memory) or `SEED_DEMO=1`. `DB_PATH` overrides the database file (default `data/fahrschule.db`).
+**Data.** A real school starts empty — including its public profile (no sample slogan, classes, brands or highlights); demo data only appears with `DEMO_MODE=1` (in-memory) or `SEED_DEMO=1`. `DB_PATH` overrides the database file (default `data/fahrschule.db`).
+
+### Pages and navigation
+
+The sidebar is grouped and collapsible (collapsed groups are remembered per browser): **Übersicht** (Dashboard, Kalender, Mein Tag for Fahrlehrer), **Schüler** (Fahrschüler, Schüler anmelden, Terminanfragen, Verträge, Archiv), **Ausbildung** (Theorie, Theoriegruppen, Prüfungsplaner), **Finanzen** (Rechnungen, Buchhaltung, Preise, Statistik), **Kommunikation** (Chat, Nachrichten, Bewertungen, Marketing) and **Verwaltung** (Fahrschule & Einstellungen, Fahrlehrer, Fahrzeuge, Benutzer, Datenimport, Datensicherung). Add a page by adding one entry to `NAV_GROUPS` in `src/lib/navigation.ts`.
+
+*Fahrschule & Einstellungen* (`/fahrschule?tab=…`) holds all school settings in tabs — Stammdaten & Steuer, Bankverbindung, Öffentliches Profil, Öffnungszeiten, Standorte, Rechtliches, Terminabsagen. The old URLs `/profil` and `/schulprofil` redirect there, `/kalendar` redirects to `/kalender`.
 
 ### Multi-tenant mode (one portal per school)
 
@@ -108,7 +116,7 @@ With all four required `S3_*` variables set, files go to the bucket; otherwise t
 
 ### Datensicherung (backups)
 
-Outside demo mode the server backs up the database with SQLite's `VACUUM INTO` (a consistent copy while the app keeps running), checks the copy with `PRAGMA integrity_check` and keeps it as `openfs-YYYY-MM-DD-HHMMSS.db`. It checks at startup and then hourly, and creates a backup whenever the newest one is older than the interval. When S3 is configured (see above), every backup is also uploaded to `<S3_PREFIX>backups/`. The page **Verwaltung → Datensicherung** (`/datensicherung`) lists backups, creates one on demand and offers downloads plus the whole-database export.
+Outside demo mode the server backs up the database with SQLite's `VACUUM INTO` (a consistent copy while the app keeps running), checks the copy with `PRAGMA integrity_check` and keeps it as `openfs-YYYY-MM-DD-HHMMSS.db`. It checks at startup and then hourly, and creates a backup whenever the newest one is older than the interval. When S3 is configured (see above), every backup is also uploaded to `<S3_PREFIX>backups/`. The page **Verwaltung → Datensicherung** (`/datensicherung`, Inhaber only) lists backups, creates one on demand and offers two downloads: the **Datenbank-Sicherung (.db)** (`/api/export/database`, the file to restore from) and a **Datenexport (ZIP)** (`/api/export/zip`) with CSVs of students, instructors, vehicles, Termine, invoices, bookings, accounts and price plans plus all uploaded documents — for reading, archiving or the tax advisor. Its restore steps name the real database file (`DB_PATH`) and document store.
 
 | Variable | Meaning |
 |----------|---------|
@@ -121,8 +129,8 @@ Backups contain the database only; uploaded documents live in the file store (`d
 **Restore:**
 
 1. Stop the server.
-2. Move the current `data/fahrschule.db` and its `data/fahrschule.db-wal` / `-shm` files aside.
-3. Copy the backup (from `data/backups`, S3 or the download on `/datensicherung`) to `data/fahrschule.db`.
+2. Move the current database file (`DB_PATH`, default `data/fahrschule.db`) and its `-wal` / `-shm` files aside.
+3. Copy the backup (from `BACKUP_DIR`, S3 or the download on `/datensicherung`) to that same path.
 4. Start the server.
 
 ### SMS
@@ -155,6 +163,8 @@ src/server/              Domain modules: students.ts, vehicles.ts, instructors.t
 src/server/db.ts          Schema, migrations, and GoBD constraints (immutable bookings,
                           Storno-only corrections, gapless number sequences)
 src/*.tsx                 React page components (calendar, students, vehicles, …)
+src/lib/navigation.ts     The menu (grouped), page access per role, used by sidebar,
+                          route guard and global search (Strg/⌘ + K)
 src/lib/                  Shared utilities and data-shape definitions
 src/hooks/               Resource queries and mutations; migrating onto TanStack Query
 src/lib/query-client.ts  Shared TanStack Query client and cache policy
