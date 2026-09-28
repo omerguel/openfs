@@ -37,18 +37,31 @@ export function openGlobalSearch() {
 const isMac = () =>
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
-/** The header button — icon on phones, "Suchen ⌘K" from md up. */
-export function SearchButton() {
+/** The header button — icon on phones, "Suchen ⌘K" from md up.
+ *  `compact`: icon only below 2xl (headers with centered content). */
+export function SearchButton({ compact = false }: { compact?: boolean }) {
   return (
     <button
       type="button"
       onClick={openGlobalSearch}
       aria-label="Suchen (Strg+K)"
-      className="flex h-7 shrink-0 items-center gap-2 rounded-md border border-border/70 bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none md:w-44"
+      className={cn(
+        "flex h-7 shrink-0 items-center gap-2 rounded-md border border-border/70 bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none md:w-44",
+        compact && "xl:w-auto 2xl:w-44",
+      )}
     >
       <Search className="size-3.5" />
-      <span className="hidden md:inline">Suchen …</span>
-      <Kbd className="ml-auto hidden md:inline-flex">{isMac() ? "⌘K" : "Strg K"}</Kbd>
+      <span className={cn("hidden md:inline", compact && "xl:hidden 2xl:inline")}>
+        Suchen …
+      </span>
+      <Kbd
+        className={cn(
+          "ml-auto hidden md:inline-flex",
+          compact && "xl:hidden 2xl:inline-flex",
+        )}
+      >
+        {isMac() ? "⌘K" : "Strg K"}
+      </Kbd>
     </button>
   );
 }

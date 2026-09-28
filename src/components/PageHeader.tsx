@@ -23,7 +23,7 @@ export function PageHeader({ children, center, end, className }: PageHeaderProps
       {center && <div className="absolute left-1/2 -translate-x-1/2">{center}</div>}
       {/* The global search sits in every page header (also Strg/⌘ + K). */}
       <div className="ml-auto flex min-w-0 items-center gap-2">
-        <SearchButton />
+        <SearchButton compact={Boolean(center)} />
         {end}
       </div>
     </header>
