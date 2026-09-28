@@ -12,12 +12,14 @@ import { Archiv } from "./Archiv";
 import { Bewertungen } from "./Bewertungen";
 import { Buchhaltung } from "./Buchhaltung";
 import { Dashboard } from "./Dashboard";
+import { Datenschutz } from "./Datenschutz";
 import { Datenimport } from "./Datenimport";
 import { Fahrlehrer } from "./Fahrlehrer";
 import { Fahrschule } from "./Fahrschule";
 import { Fahrschueler } from "./Fahrschueler";
 import { FahrschuelerDetail } from "./FahrschuelerDetail";
 import { Fahrzeuge } from "./Fahrzeuge";
+import { Impressum } from "./Impressum";
 import { Kalendar } from "./Kalendar";
 import { Marketing } from "./Marketing";
 import { Nachrichten } from "./Nachrichten";
@@ -228,6 +230,19 @@ const studentPortalRoute = createRoute({
   component: Schuelerportal,
 });
 
+/* Legal pages — public, outside the staff app shell (like /anfrage). */
+const impressumRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/impressum",
+  component: Impressum,
+});
+
+const datenschutzRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/datenschutz",
+  component: Datenschutz,
+});
+
 const portalRouteTree = portalRoute.addChildren([
   dashboardRoute,
   profileRoute,
@@ -260,6 +275,8 @@ const routeTree = rootRoute.addChildren([
   portalRouteTree,
   appointmentRequestRoute,
   studentPortalRoute,
+  impressumRoute,
+  datenschutzRoute,
 ]);
 
 export const router = createRouter({
