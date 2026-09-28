@@ -23,6 +23,7 @@ import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { instalmentRoutes } from "./instalments";
+import { inviteRoutes } from "./invites";
 import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
 import { legalRoutes } from "./legal";
@@ -77,6 +78,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
   const fileStore = options.fileStore ?? new MemoryFileStore();
   return {
     ...authRoutes(db, options.auth),
+    ...inviteRoutes(db, { mailConfigured: Boolean(options.mail?.config) }),
     ...accountingRoutes(db),
     ...archiveRoutes(db, fileStore),
     ...calendarEventRoutes(db),
