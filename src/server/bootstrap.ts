@@ -22,6 +22,7 @@ import {
   queueLessonReminders,
 } from "./notifications";
 import { ensurePortalTables } from "./portal";
+import { ensureRetentionTables, startRetentionScheduler } from "./retention";
 import { seedTransactions } from "./seed";
 import type { SmtpConfig } from "./smtp";
 import { createSmtpTransport } from "./smtp";
@@ -51,6 +52,7 @@ export async function prepareSchoolDb(
   ensureChatTables(db);
   ensureReviewTables(db);
   ensureStudentFileTables(db);
+  ensureRetentionTables(db);
   if (options.demoLogin && countUsers(db) === 0) {
     await createUser(db, { ...DEMO_LOGIN, name: "Sabine Krämer", role: "inhaber" });
   }
@@ -72,6 +74,9 @@ export type SchoolJobOptions = {
   /** null = SMS stay 'nicht_konfiguriert'. */
   sms?: SmsConfig | null;
   backups: BackupConfig | null;
+  /** Löschkonzept job: file store for deleting documents; the tenant
+      slug scopes it in multi-tenant mode. Omitted = job not started. */
+  retention?: { fileStore: FileStore | null; tenant?: string } | null;
 };
 
 /** Starts the school's background jobs; returns a stop function. */
@@ -90,6 +95,14 @@ export function startSchoolJobs(db: Database, options: SchoolJobOptions): () => 
     }),
   );
   if (options.backups) stops.push(startBackupScheduler(db, options.backups));
+  if (options.retention) {
+    stops.push(
+      startRetentionScheduler(db, {
+        store: options.retention.fileStore,
+        tenant: options.retention.tenant,
+      }),
+    );
+  }
   return () => {
     for (const stop of stops) stop();
   };

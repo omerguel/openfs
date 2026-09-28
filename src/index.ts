@@ -59,6 +59,7 @@ if (tenancy) {
       smtp: smtpConfig,
       sms: smsConfig,
       backups: backupConfig ? tenantBackupConfig(backupConfig, slug) : null,
+      retention: { fileStore, tenant: slug },
     }),
     fileStore,
   );
@@ -84,6 +85,7 @@ if (tenancy) {
     smtp: smtpConfig,
     sms: smsConfig,
     backups: backupConfig,
+    retention: { fileStore: baseFileStore },
   });
   apiRoutes = {
     ...buildApiRoutes(db, {

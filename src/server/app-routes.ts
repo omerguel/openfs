@@ -34,6 +34,8 @@ import { MemoryFileStore, type FileStore } from "./file-store";
 import { err } from "./http";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
+import { privacyRoutes } from "./privacy";
+import { retentionRoutes } from "./retention";
 import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
@@ -115,6 +117,9 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
     ...fileRoutes(db, fileStore),
     // Admin-only: /api/admin/*.
     ...backupRoutes(db, options.backups ?? null),
+    // Löschkonzept + Betroffenenrechte (Inhaber only via /api/admin/).
+    ...retentionRoutes(db, fileStore),
+    ...privacyRoutes(db, fileStore),
     // Second deliberate public surface besides /anfrage: token-gated,
     // rate-limited Schülerportal endpoints (/api/portal/:token…).
     ...portalRoutes(db),
