@@ -17,6 +17,7 @@ import { chatRoutes } from "./chat";
 import { instalmentRoutes } from "./instalments";
 import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
+import { MemoryFileStore, type FileStore } from "./file-store";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
 import { theoryGroupRoutes } from "./theory-groups";
@@ -24,6 +25,7 @@ import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
 import { sepaRoutes } from "./sepa";
 import { statisticsRoutes } from "./statistics";
+import { fileRoutes } from "./student-files";
 import { importRoutes } from "./student-import";
 import {
   accountingRoutes,
@@ -38,12 +40,15 @@ import {
 
 export type ApiRouteOptions = {
   mail?: MailRouteOptions;
+  /** Where uploaded documents live; defaults to memory (tests). */
+  fileStore?: FileStore;
 };
 
 export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
+  const fileStore = options.fileStore ?? new MemoryFileStore();
   return {
     ...accountingRoutes(db),
-    ...archiveRoutes(db),
+    ...archiveRoutes(db, fileStore),
     ...calendarEventRoutes(db),
     ...calendarSeriesRoutes(db),
     ...cancellationRoutes(db),
@@ -69,6 +74,7 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     ...sepaRoutes(db),
     ...importRoutes(db),
     ...mailRoutes(db, options.mail),
+    ...fileRoutes(db, fileStore),
     // Second deliberate public surface besides /anfrage: token-gated,
     // rate-limited Schülerportal endpoints (/api/portal/:token…).
     ...portalRoutes(db),

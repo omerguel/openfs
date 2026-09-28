@@ -10,7 +10,9 @@
 import type { Database } from "./sqlite";
 
 import { ValidationError } from "./engine";
+import type { FileStore } from "./file-store";
 import { instructorIdByName, vehicleIdByName } from "./refs";
+import { deleteStoredFiles, removeStudentFileRows } from "./student-files";
 
 export type ArchiveEntity =
   | "student"
@@ -288,7 +290,37 @@ export function restoreArchived(db: Database, id: number): ArchiveRecord {
   return toRecord(row);
 }
 
-export function purgeArchived(db: Database, id: number): void {
-  getArchiveRow(db, id); // throws ValidationError if unknown
-  db.prepare("DELETE FROM archive WHERE id = ?").run(id);
+/* Removes the archive entry for good. For a student this is also the
+   moment its uploaded files go (student_files keeps them while the
+   student is only archived). The DB part is synchronous; the returned
+   promise settles once the stored bytes are deleted — best effort, it
+   never rejects. Without a store the file rows are left alone so no
+   bytes are orphaned without a trace. */
+export function purgeArchived(
+  db: Database,
+  id: number,
+  store?: FileStore,
+): Promise<void> {
+  const row = getArchiveRow(db, id); // throws ValidationError if unknown
+  let keys: string[] = [];
+  db.transaction(() => {
+    db.prepare("DELETE FROM archive WHERE id = ?").run(id);
+    if (row.entity === "student" && store && tableExists(db, "student_files")) {
+      const studentId = archivedRowId(row.payload);
+      if (studentId !== null) keys = removeStudentFileRows(db, studentId);
+    }
+  })();
+  return store && keys.length > 0 ? deleteStoredFiles(store, keys) : Promise.resolve();
+}
+
+function archivedRowId(payload: string): number | null {
+  try {
+    const parsed = JSON.parse(payload) as { row?: { id?: unknown }; id?: unknown };
+    const id = Number(
+      parsed.row && typeof parsed.row === "object" ? parsed.row.id : parsed.id,
+    );
+    return Number.isInteger(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
