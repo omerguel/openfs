@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Ban,
   CalendarDays,
   Car,
   CircleCheck,
@@ -9,12 +10,16 @@ import {
   MapPin,
   Pencil,
   Plus,
+  Repeat,
+  Route,
   Tag,
   Trash2,
+  Undo2,
   UserRound,
   X,
 } from "lucide-react";
 
+import { CANCELLATION_KIND_LABELS } from "@/lib/cancellation";
 import { Button } from "@/components/ui/button";
 import { parseISODate, type CalEvent } from "@/lib/calendar-data";
 import { cn } from "@/lib/utils";
@@ -25,6 +30,11 @@ type CalendarEventInspectorProps = {
   onDelete: (event: CalEvent) => void;
   onCreate: () => void;
   onClear: () => void;
+  /** Absage / Nichterscheinen — opens the cancel dialog. */
+  onCancelEvent?: (event: CalEvent) => void;
+  onUncancelEvent?: (event: CalEvent) => void;
+  /** Delete this and all later occurrences of the event's series. */
+  onDeleteFollowing?: (event: CalEvent) => void;
 };
 
 function formatDate(value: string) {
@@ -69,6 +79,9 @@ export function CalendarEventInspector({
   onDelete,
   onCreate,
   onClear,
+  onCancelEvent,
+  onUncancelEvent,
+  onDeleteFollowing,
 }: CalendarEventInspectorProps) {
   if (!event) {
     return (
@@ -97,7 +110,21 @@ export function CalendarEventInspector({
   const hasStudent = Boolean(event.subtitle?.trim());
   const hasVehicle = Boolean(event.vehicle?.trim());
   const hasLocation = Boolean(event.location?.trim());
-  const StatusIcon = event.tentative ? CircleDashed : CircleCheck;
+  const cancelled = Boolean(event.cancelledAt);
+  const StatusIcon = cancelled ? Ban : event.tentative ? CircleDashed : CircleCheck;
+  const statusLabel = cancelled
+    ? CANCELLATION_KIND_LABELS[event.cancellationKind ?? "abgesagt"]
+    : event.tentative
+      ? "Vorläufig"
+      : "Bestätigt";
+  const statusDot = cancelled
+    ? "bg-destructive"
+    : event.tentative
+      ? "bg-amber-500"
+      : "bg-emerald-500";
+  // Billed lessons must be storniert before they can be cancelled.
+  const canCancel =
+    !cancelled && !(event.billedTransactionId != null && event.billedActive);
 
   return (
     <aside
@@ -145,6 +172,42 @@ export function CalendarEventInspector({
             <Trash2 data-icon="inline-start" />
             Löschen
           </Button>
+          {cancelled && onUncancelEvent && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="col-span-2"
+              onClick={() => onUncancelEvent(event)}
+            >
+              <Undo2 data-icon="inline-start" />
+              Absage zurücknehmen
+            </Button>
+          )}
+          {canCancel && onCancelEvent && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="col-span-2"
+              onClick={() => onCancelEvent(event)}
+            >
+              <Ban data-icon="inline-start" />
+              Absagen
+            </Button>
+          )}
+          {event.seriesId && onDeleteFollowing && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="col-span-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => onDeleteFollowing(event)}
+            >
+              <Repeat data-icon="inline-start" />
+              Folgetermine der Serie löschen
+            </Button>
+          )}
         </div>
       </header>
 
@@ -172,18 +235,34 @@ export function CalendarEventInspector({
             <DetailRow icon={Tag} label="Ereignistyp">
               {event.type}
             </DetailRow>
+            {event.lessonKind && (
+              <DetailRow icon={Route} label="Fahrtart">
+                {event.lessonKind}
+              </DetailRow>
+            )}
+            {event.seriesId && (
+              <DetailRow icon={Repeat} label="Serie">
+                Serientermin
+              </DetailRow>
+            )}
             <DetailRow icon={StatusIcon} label="Status">
               <span className="inline-flex items-center gap-1.5">
                 <span
                   aria-hidden="true"
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    event.tentative ? "bg-amber-500" : "bg-emerald-500",
-                  )}
+                  className={cn("size-1.5 shrink-0 rounded-full", statusDot)}
                 />
-                {event.tentative ? "Vorläufig" : "Bestätigt"}
+                {statusLabel}
               </span>
             </DetailRow>
+            {event.cancellationFeeTransactionId != null && (
+              <DetailRow
+                icon={Tag}
+                label="Ausfallgebühr"
+                muted={!event.cancellationFeeActive}
+              >
+                {event.cancellationFeeActive ? "Gebucht" : "Storniert"}
+              </DetailRow>
+            )}
           </dl>
         </section>
       </div>

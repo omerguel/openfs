@@ -60,7 +60,7 @@ export function CalendarEventCard({
         <button
           type="button"
           aria-grabbed={isDragging}
-          aria-label={`${event.title}, ${event.start} bis ${event.end}`}
+          aria-label={`${event.title}, ${event.start} bis ${event.end}${event.cancelledAt ? ", abgesagt" : ""}`}
           draggable={false}
           onPointerDown={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
@@ -92,6 +92,9 @@ export function CalendarEventCard({
             theme.focus,
             event.tentative &&
               "border-dashed border-border bg-[color-mix(in_oklab,var(--background)_20%,var(--muted))] hover:bg-muted",
+            // Cancelled lessons stay as greyed-out history.
+            event.cancelledAt &&
+              "border-dashed border-border bg-muted/40 opacity-70 hover:bg-muted",
             isSelected &&
               "z-30 border-primary/45 bg-[color-mix(in_oklab,var(--background)_89%,var(--primary))] ring-2 ring-primary/20",
             isDragging ? "z-40 opacity-90 transition-none" : "z-20",
@@ -113,6 +116,7 @@ export function CalendarEventCard({
                 className={cn(
                   "block min-w-0 flex-1 truncate text-[11px] font-medium",
                   theme.text,
+                  event.cancelledAt && "text-muted-foreground line-through",
                 )}
               >
                 {event.title}
@@ -127,6 +131,7 @@ export function CalendarEventCard({
                 className={cn(
                   "block w-full min-w-0 shrink-0 truncate text-[12px] font-medium leading-[1.2]",
                   theme.text,
+                  event.cancelledAt && "text-muted-foreground line-through",
                 )}
               >
                 {event.title}

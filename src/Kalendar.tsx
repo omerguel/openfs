@@ -6,6 +6,7 @@ import type {
   WheelEvent as ReactWheelEvent,
 } from "react";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -20,7 +21,9 @@ import {
   type CalendarEventCardTheme,
 } from "./components/CalendarEventCard.tsx";
 import { CalendarEventInspector } from "./components/CalendarEventInspector.tsx";
-import { EventEditDialog } from "./components/EventEditDialog.tsx";
+import { CancelEventDialog } from "./components/CancelEventDialog.tsx";
+import { EventEditDialog, type EventSaveOptions } from "./components/EventEditDialog.tsx";
+import { type Absence, useAbsences } from "@/hooks/use-absences";
 import { useInstructors } from "@/hooks/use-instructors";
 import { useStudents } from "@/hooks/use-students";
 import {
@@ -39,10 +42,17 @@ import {
 } from "@/lib/calendar-data";
 import {
   createCalendarEvent,
+  createCalendarEventSeries,
   deleteCalendarEvent,
+  deleteCalendarEventSeries,
+  isOverridableConflict,
+  uncancelCalendarEvent,
   updateCalendarEvent,
+  useCalendarConflicts,
   useCalendarEvents,
 } from "@/hooks/use-calendar-events";
+import { formatGermanDate } from "@/lib/working-time";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
@@ -109,6 +119,14 @@ const nextEditableStartTime = () => {
 
   return formatMinutes(minutes);
 };
+
+/* Non-blocking server hints (e.g. daily limit exceeded) after a write. */
+const showWarnings = (warnings?: string[]) => {
+  for (const warning of warnings ?? []) toast.warning(warning);
+};
+
+const errorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 const topForMinutes = (minutes: number) =>
   ((minutes - START_HOUR * 60) / 60) * HOUR_HEIGHT;
@@ -512,6 +530,7 @@ export function Kalendar() {
   const [types] = useState<Set<string>>(() => new Set(initialTypeFilter ?? []));
   const [dragging, setDragging] = useState<DragState | null>(null);
   const [editingEvent, setEditingEvent] = useState<CalEvent | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CalEvent | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
@@ -570,6 +589,15 @@ export function Kalendar() {
   }, []);
 
   const weekStart = useMemo(() => startOfWeek(anchor), [anchor]);
+  const weekFromIso = toISODate(weekStart);
+  const weekToIso = toISODate(addDays(weekStart, DAY_COUNT - 1));
+  // Existing overlaps / Termine on absence days in the visible week, and
+  // the absences themselves for the "Ganztägig" row.
+  const { data: weekConflicts, refetch: refetchConflicts } = useCalendarConflicts(
+    weekFromIso,
+    weekToIso,
+  );
+  const { data: weekAbsences = [] } = useAbsences({ from: weekFromIso, to: weekToIso });
 
   useEffect(() => {
     if (!dragging) return;
@@ -664,10 +692,17 @@ export function Kalendar() {
       // If dragResultRef is still null the user never moved (plain click) —
       // skip the PATCH so a tap on an event doesn't dirty the DB.
       if (dragResultRef.current !== null) {
-        void updateCalendarEvent(Number(dragging.id), dragResultRef.current).catch(() => {
-          toast.error("Termin konnte nicht gespeichert werden.");
-          void refreshEvents();
-        });
+        // The server rejects overlaps / absent instructors — show why and
+        // snap the card back to its stored position.
+        void updateCalendarEvent(Number(dragging.id), dragResultRef.current)
+          .then((saved) => {
+            showWarnings(saved.warnings);
+            void refetchConflicts();
+          })
+          .catch((error: unknown) => {
+            toast.error(errorMessage(error, "Termin konnte nicht gespeichert werden."));
+            void refreshEvents();
+          });
       }
       setDragging(null);
     };
@@ -684,7 +719,7 @@ export function Kalendar() {
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);
     };
-  }, [dragging, weekStart, refreshEvents]);
+  }, [dragging, weekStart, refreshEvents, refetchConflicts]);
 
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
   const days = useMemo(
@@ -772,12 +807,14 @@ export function Kalendar() {
       setCalendarEvents((current) => current.filter((item) => item.id !== event.id));
       setSelectedEventId((current) => (current === event.id ? null : current));
       setMobileInspectorOpen(false);
-      void deleteCalendarEvent(Number(event.id)).catch(() => {
-        toast.error("Termin konnte nicht gelöscht werden.");
-        void refreshEvents();
-      });
+      void deleteCalendarEvent(Number(event.id))
+        .then(() => void refetchConflicts())
+        .catch((error: unknown) => {
+          toast.error(errorMessage(error, "Termin konnte nicht gelöscht werden."));
+          void refreshEvents();
+        });
     },
-    [refreshEvents],
+    [refreshEvents, refetchConflicts],
   );
 
   const handleEventEdit = useCallback((event: CalEvent) => {
@@ -907,35 +944,136 @@ export function Kalendar() {
     window.addEventListener("pointercancel", cancelDrag, { once: true });
   };
 
-  const handleEventSave = (id: string, updates: CalEvent) => {
+  /* Rejections propagate to the dialog, which shows the message and —
+     for overlaps / absences — offers "Trotzdem speichern". */
+  const handleEventSave = async (
+    id: string,
+    updates: CalEvent,
+    options: EventSaveOptions,
+  ) => {
     // The dialog resolves the student name to an id (or undefined). Send
     // an explicit null when unresolved: JSON drops undefined keys and the
     // server keeps the stored value when the key is absent — which would
     // silently keep a stale link after the name was cleared or changed.
+    // Same for lessonKind.
     const { id: _id, ...rest } = updates;
-    const payload = { ...rest, studentId: updates.studentId ?? null };
+    const payload = {
+      ...rest,
+      studentId: updates.studentId ?? null,
+      lessonKind: updates.lessonKind ?? null,
+      allowConflicts: options.allowConflicts === true,
+    };
 
     if (id === NEW_EVENT_ID) {
-      void createCalendarEvent(payload)
-        .then((created) => {
-          setCalendarEvents((current) => [...current, created]);
-          setSelectedEventId(created.id);
-          void refreshEvents();
-        })
-        .catch(() => {
-          toast.error("Termin konnte nicht erstellt werden.");
+      if (options.repeat) {
+        const series = await createCalendarEventSeries({
+          ...payload,
+          repeat: options.repeat,
         });
+        setCalendarEvents((current) => [...current, ...series.events]);
+        setSelectedEventId(series.events[0]?.id ?? null);
+        toast.success(`${series.events.length} Serientermine angelegt.`);
+        showWarnings(series.warnings);
+      } else {
+        const created = await createCalendarEvent(payload);
+        setCalendarEvents((current) => [...current, created]);
+        setSelectedEventId(created.id);
+        showWarnings(created.warnings);
+      }
+      void refreshEvents();
+      void refetchConflicts();
       return;
     }
 
-    setCalendarEvents((current) => {
-      return current.map((event) => (event.id === id ? updates : event));
-    });
-    void updateCalendarEvent(Number(id), payload).catch(() => {
-      toast.error("Termin konnte nicht gespeichert werden.");
-      void refreshEvents();
-    });
+    const saved = await updateCalendarEvent(Number(id), payload);
+    setCalendarEvents((current) =>
+      current.map((event) => (event.id === id ? saved : event)),
+    );
+    showWarnings(saved.warnings);
+    void refreshEvents();
+    void refetchConflicts();
   };
+
+  const replaceEvent = useCallback((updated: CalEvent) => {
+    setCalendarEvents((current) =>
+      current.map((event) => (event.id === updated.id ? updated : event)),
+    );
+  }, []);
+
+  const handleEventCancel = useCallback((event: CalEvent) => {
+    deferUntilFloatingLayerCloses(() => setCancelTarget(event));
+  }, []);
+
+  const handleEventUncancel = useCallback(
+    async (event: CalEvent) => {
+      let restored: CalEvent;
+      try {
+        restored = await uncancelCalendarEvent(event.id);
+      } catch (error) {
+        const message = errorMessage(error, "Absage konnte nicht zurückgenommen werden.");
+        if (
+          !isOverridableConflict(message) ||
+          !window.confirm(`${message}\n\nAbsage trotzdem zurücknehmen?`)
+        ) {
+          toast.error(message);
+          return;
+        }
+        try {
+          restored = await uncancelCalendarEvent(event.id, true);
+        } catch (retryError) {
+          toast.error(
+            errorMessage(retryError, "Absage konnte nicht zurückgenommen werden."),
+          );
+          return;
+        }
+      }
+      replaceEvent(restored);
+      toast.success("Absage zurückgenommen.");
+      void refreshEvents();
+      void refetchConflicts();
+    },
+    [refetchConflicts, refreshEvents, replaceEvent],
+  );
+
+  const handleDeleteFollowing = useCallback(
+    async (event: CalEvent) => {
+      if (!event.seriesId) return;
+      const confirmed = window.confirm(
+        `Diesen und alle folgenden Termine der Serie ab ${formatGermanDate(event.date)} löschen?`,
+      );
+      if (!confirmed) return;
+      try {
+        const result = await deleteCalendarEventSeries(event.seriesId, event.date);
+        toast.success(
+          result.skipped > 0
+            ? `${result.deleted} Termine gelöscht, ${result.skipped} übersprungen (abgerechnet, Nachweis oder Ausfallgebühr).`
+            : `${result.deleted} Termine gelöscht.`,
+        );
+        setSelectedEventId(null);
+        setMobileInspectorOpen(false);
+      } catch (error) {
+        toast.error(errorMessage(error, "Serie konnte nicht gelöscht werden."));
+      }
+      void refreshEvents();
+      void refetchConflicts();
+    },
+    [refetchConflicts, refreshEvents],
+  );
+
+  // Absent instructors per visible day (inclusive ranges).
+  const absencesByDay = useMemo(() => {
+    const byDay = new Map<string, Absence[]>();
+    for (let i = 0; i < DAY_COUNT; i++) {
+      const iso = toISODate(addDays(weekStart, i));
+      const list = weekAbsences.filter(
+        (absence) => absence.fromDate <= iso && absence.toDate >= iso,
+      );
+      if (list.length) byDay.set(iso, list);
+    }
+    return byDay;
+  }, [weekAbsences, weekStart]);
+
+  const conflictCount = weekConflicts?.count ?? 0;
 
   const isCurrentWeek = isSameDay(weekStart, startOfWeek(TODAY));
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
@@ -969,6 +1107,67 @@ export function Kalendar() {
       <PageHeader
         end={
           <>
+            {conflictCount > 0 && weekConflicts && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-amber-600 dark:text-amber-400"
+                    aria-label={`${conflictCount} Terminkonflikte in dieser Woche`}
+                  >
+                    <AlertTriangle />
+                    <span className="tabular-nums">{conflictCount}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-80 p-0">
+                  <div className="border-b px-3 py-2 text-sm font-medium">
+                    Konflikte in dieser Woche
+                  </div>
+                  <ul className="max-h-72 divide-y overflow-y-auto text-xs">
+                    {weekConflicts.overlaps.map((overlap) => (
+                      <li
+                        key={`${overlap.resource}-${overlap.first.id}-${overlap.second.id}`}
+                      >
+                        <button
+                          type="button"
+                          className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-muted"
+                          onClick={() => handleEventSelect(overlap.first)}
+                        >
+                          <span className="font-medium">
+                            Überschneidung · {overlap.label}
+                          </span>
+                          <span className="text-muted-foreground tabular-nums">
+                            {formatGermanDate(overlap.first.date)} · „
+                            {overlap.first.title}“ {overlap.first.start}–
+                            {overlap.first.end} / „{overlap.second.title}“{" "}
+                            {overlap.second.start}–{overlap.second.end}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                    {weekConflicts.absences.map(({ event, absence }) => (
+                      <li key={`absence-${event.id}`}>
+                        <button
+                          type="button"
+                          className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-muted"
+                          onClick={() => handleEventSelect(event)}
+                        >
+                          <span className="font-medium">
+                            {absence.instructor} abwesend ({absence.kind})
+                          </span>
+                          <span className="text-muted-foreground tabular-nums">
+                            {formatGermanDate(event.date)} · „{event.title}“ {event.start}
+                            –{event.end}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </PopoverContent>
+              </Popover>
+            )}
             <div className="flex items-center gap-0.5">
               <Button
                 type="button"
@@ -1114,9 +1313,27 @@ export function Kalendar() {
                   Ganztägig
                 </div>
                 <div className="grid flex-1 grid-cols-7">
-                  {days.map((day) => (
-                    <div key={day.toISOString()} className="border-l border-border/60" />
-                  ))}
+                  {days.map((day) => {
+                    const absent = absencesByDay.get(toISODate(day)) ?? [];
+                    const label = absent
+                      .map((absence) => `${absence.instructor} (${absence.kind})`)
+                      .join(", ");
+                    return (
+                      <div
+                        key={day.toISOString()}
+                        className="flex min-w-0 items-center border-l border-border/60 px-1.5"
+                      >
+                        {absent.length > 0 && (
+                          <span
+                            className="truncate text-[10px] text-muted-foreground"
+                            title={`Abwesend: ${label}`}
+                          >
+                            Abwesend: {label}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -1248,6 +1465,9 @@ export function Kalendar() {
               onEdit={handleEventEdit}
               onDelete={handleEventDelete}
               onCreate={handleEventCreate}
+              onCancelEvent={handleEventCancel}
+              onUncancelEvent={handleEventUncancel}
+              onDeleteFollowing={handleDeleteFollowing}
               onClear={() => {
                 setSelectedEventId(null);
                 setInspectorOpen(false);
@@ -1258,7 +1478,12 @@ export function Kalendar() {
       </div>
 
       <Sheet
-        open={mobileInspectorOpen && selectedEvent !== null && editingEvent === null}
+        open={
+          mobileInspectorOpen &&
+          selectedEvent !== null &&
+          editingEvent === null &&
+          cancelTarget === null
+        }
         onOpenChange={setMobileInspectorOpen}
       >
         <SheetContent className="gap-0 p-0 xl:hidden" showCloseButton={false}>
@@ -1271,6 +1496,9 @@ export function Kalendar() {
             onEdit={handleEventEdit}
             onDelete={handleEventDelete}
             onCreate={handleEventCreate}
+            onCancelEvent={handleEventCancel}
+            onUncancelEvent={handleEventUncancel}
+            onDeleteFollowing={handleDeleteFollowing}
             onClear={() => {
               setMobileInspectorOpen(false);
               setSelectedEventId(null);
@@ -1290,6 +1518,19 @@ export function Kalendar() {
         studentOptions={studentOptions}
         studentIdByName={studentIdByName}
         vehicleOptions={vehicleOptions}
+        allowRepeat={editingEvent?.id === NEW_EVENT_ID}
+      />
+
+      <CancelEventDialog
+        event={cancelTarget}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null);
+        }}
+        onCancelled={(updated) => {
+          replaceEvent(updated);
+          void refreshEvents();
+          void refetchConflicts();
+        }}
       />
     </div>
   );
