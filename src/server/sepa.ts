@@ -29,7 +29,12 @@ import {
 import { getCompany, nextSequence } from "./db";
 import { createTransaction, stornoTransaction, ValidationError } from "./engine";
 import { handle, json } from "./http";
-import { getInstalmentPlan, listDueInstalments, payInstalment } from "./instalments";
+import {
+  getInstalment,
+  getInstalmentPlan,
+  listDueInstalments,
+  payInstalment,
+} from "./instalments";
 import { listInvoices, todayIso } from "./invoices";
 import { getStudent } from "./students";
 
@@ -248,7 +253,7 @@ export function listCandidates(
       studentName: plan.studentName,
       label: `${plan.title}, Rate ${rate.seq}/${plan.instalments.length}`,
       dueDate: rate.dueDate,
-      amountCents: rate.amountCents,
+      amountCents: rate.openCents,
       mandateId: mandate.id,
       mandateRef: mandate.mandateRef,
       sequenceType: sequenceTypeFor(mandate),
@@ -485,11 +490,17 @@ export function bookCollection(db: Database, id: number, date: unknown): SepaCol
     );
     for (const item of pending) {
       let paymentId: number;
-      if (item.source_type === "instalment") {
+      // The bank collected item.amount_cents — book exactly that. A rate
+      // that got covered meanwhile (e.g. cash at the counter) still gets
+      // the money booked, just not linked to the rate.
+      const openRate =
+        item.source_type === "instalment" ? getInstalment(db, item.source_id) : null;
+      if (openRate && !openRate.paid && openRate.paymentTransactionId == null) {
         const rate = payInstalment(db, item.source_id, {
           date: bookingDate,
           geldkonto: "1800",
           paymentMethod: "lastschrift",
+          amountCents: item.amount_cents,
         });
         paymentId = rate.paymentTransactionId!;
       } else {
