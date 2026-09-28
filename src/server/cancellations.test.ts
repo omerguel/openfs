@@ -91,7 +91,10 @@ describe("resolveCancellationFee", () => {
     setCancellationPolicy(db, { feeCents: 2500 });
     expect(resolveCancellationFee(db, studentId)).toBe(2500);
     setCancellationPolicy(db, { feeCents: 0 });
+    // No plan assigned → the default (first) plan's lesson price.
     db.prepare("UPDATE students SET price_plan_id = NULL WHERE id = ?").run(studentId);
+    expect(resolveCancellationFee(db, studentId)).toBe(6500);
+    db.prepare("DELETE FROM price_plans").run();
     expect(resolveCancellationFee(db, studentId)).toBeNull();
   });
 });
@@ -117,6 +120,7 @@ describe("cancelCalendarEvent", () => {
     expect(result.event.cancellationKind).toBe("nicht_erschienen");
     expect(result.event.cancellationFeeTransactionId).toBe(result.transaction!.id);
     expect(result.event.cancellationFeeActive).toBe(true);
+    expect(result.event.cancellationFeeCents).toBe(6500);
     expect(feeBooking(result.transaction!.id)).toEqual({
       amount_cents: 6500,
       soll_account: "3272",
@@ -168,7 +172,8 @@ describe("cancelCalendarEvent", () => {
       }),
     ).toThrow(/Kein Fahrschüler/);
 
-    db.prepare("UPDATE students SET price_plan_id = NULL WHERE id = ?").run(studentId);
+    db.prepare("UPDATE students SET price_plan_id = NULL").run();
+    db.prepare("DELETE FROM price_plans").run();
     const noPrice = lesson({ start: "15:00", end: "15:45" });
     expect(() =>
       cancelCalendarEvent(db, Number(noPrice.id), { kind: "abgesagt", chargeFee: true }),

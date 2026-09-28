@@ -90,7 +90,8 @@ function studentRefFor(db: Database, studentId: number): StudentRef {
 }
 
 /** Fee in cents: explicit amount > policy fee > the student's
-    per-lesson price (Fahrübungsstunde) — null when none resolves. */
+    per-lesson price (Fahrübungsstunde, default plan when none is
+    assigned) — null when none resolves. */
 export function resolveCancellationFee(
   db: Database,
   studentId: number,
@@ -99,7 +100,12 @@ export function resolveCancellationFee(
   if (explicitCents !== undefined) return explicitCents;
   const policy = getCancellationPolicy(db);
   if (policy.feeCents > 0) return policy.feeCents;
-  const planId = getStudent(db, studentId).pricePlanId;
+  // Students without an assigned plan are billed on the default plan
+  // (the first one, same fallback as the Preise tab).
+  const planId =
+    getStudent(db, studentId).pricePlanId ??
+    db.query<{ id: number }, []>("SELECT id FROM price_plans ORDER BY id LIMIT 1").get()
+      ?.id;
   if (planId == null) return null;
   try {
     return resolveLessonPrice(getPricePlan(db, planId))?.priceCents ?? null;
@@ -211,9 +217,7 @@ export function uncancelCalendarEvent(
   if (event.cancellationFeeTransactionId != null && event.cancellationFeeActive) {
     throw new ValidationError("Die Ausfallgebühr ist noch gebucht — zuerst stornieren.");
   }
-  if (options.allowConflicts !== true) {
-    checkScheduling(db, event, id);
-  }
+  checkScheduling(db, event, id, { allowConflicts: options.allowConflicts === true });
   db.prepare(
     `UPDATE calendar_events
      SET cancelled_at = NULL, cancellation_kind = NULL, cancellation_fee_transaction_id = NULL
