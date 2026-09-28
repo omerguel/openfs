@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { serve } from "bun";
 
 import { buildApiRoutes } from "./app-routes";
+import { appointmentRequestRoutes } from "./appointment-requests";
 import { createUser, isPublic } from "./auth";
 import { openDb } from "./db";
 import { healthRoutes } from "./health";
@@ -171,5 +172,31 @@ describe("through the guarded API", () => {
     const body = await res.json();
     expect(body).toMatchObject({ status: "ok", version: APP_VERSION });
     expect(typeof body.commit).toBe("string");
+  });
+
+  test("public rate limits count per forwarded client IP only when trusted", async () => {
+    const limited = serve({
+      port: 0,
+      routes: appointmentRequestRoutes(db, { rateLimit: { max: 1, windowMs: 60_000 } }),
+      fetch: () => new Response("not found", { status: 404 }),
+    });
+    const post = (ip: string) =>
+      fetch(`http://127.0.0.1:${limited.port}/api/appointment-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": ip },
+        body: "{}",
+      }).then((res) => res.status);
+    try {
+      setTrust(true);
+      expect(await post("198.51.100.1")).not.toBe(429);
+      expect(await post("198.51.100.1")).toBe(429);
+      expect(await post("198.51.100.2")).not.toBe(429);
+      // Untrusted: everyone is the socket peer, a fake header does not help.
+      setTrust(false);
+      expect(await post("198.51.100.3")).not.toBe(429);
+      expect(await post("198.51.100.4")).toBe(429);
+    } finally {
+      limited.stop(true);
+    }
   });
 });
