@@ -142,6 +142,15 @@ Without a provider SMS stay "Nicht versendet". Demo mode never sends SMS.
 
 `GOOGLE_PLACES_API_KEY` (Places API (New) enabled) plus the Google Place ID in **Schulprofil** enable "Google importieren" on **Bewertungen**: the overall rating, the rating count and at most five reviews (Google's selection) are imported and de-duplicated by the review id. Replies stay internal — answering on Google needs the Business Profile API (OAuth and Google's approval).
 
+### Rechnungen & Buchhaltung — rules worth knowing
+
+- **Anzahlungen on the Endrechnung (§ 14 Abs. 5 UStG).** Every payment is booked to 3272 "Erhaltene Anzahlungen 19 %", because at receipt nobody knows what it will pay for; when a charge consumes the Guthaben, the tax follows the charge's own account. An invoice therefore deducts the prepayment with the tax of the positions it actually settled: payments settle charges oldest-first (FIFO, as for the payment status), within a multi-position charge proportionally to the gross amounts, and the deducted VAT per rate is capped at the invoiced VAT of that rate. A prepaid TÜV fee is a durchlaufender Posten, not a 19 % Anzahlung. The split is frozen with the invoice (`invoices.prepaid_vat`); older invoices fall back to a proportional split. *Steuerberater: please confirm this allocation (FIFO across charges, proportional within one charge).*
+- **Opening debts** (Saldovortrag "offener Betrag", 3272 an 9000) are open items: settled first by payments (FIFO), listed under Offene Posten and dunnable in three levels (`saldovortrag_reminders`), but never put on an invoice.
+- **Ratenpläne** count payments automatically: a rate is covered by its linked payment plus every other payment on the Ausbildungskonto made after the plan started (not after it ended), oldest rate first. Lastschriften collected for an invoice do not count towards a plan.
+- **Documents:** Rechnungen, Stornorechnungen and Mahnungen are real PDFs rendered server-side without dependencies (`src/server/pdf.ts`, `/api/invoices/:id/pdf`) and can be sent through the outbox with the PDF attached. Issued documents are frozen; corrections via Storno + new invoice.
+- **Guard rails (confirmable, not blocking):** invoice dates before the last invoice, dates in a past month or in the future, and cash bookings that would push the Kasse below zero.
+- **Reports** (`src/server/accounting-reports.ts`): current Kasse/Bank balances, Kassen-/Bankbuch with running balance, CSV exports of Kassenbuch and Buchungsjournal, and an Umsatzsteuer overview per month/quarter (Vorbereitung der Voranmeldung, keine Abgabe — derived like DATEV derives it from the Automatikkonten).
+
 ## Architecture
 
 ```
