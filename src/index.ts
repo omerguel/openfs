@@ -11,6 +11,8 @@ import { ensureMailTables, startMailScheduler } from "./server/mail";
 import { createSmtpTransport, smtpConfigFromEnv } from "./server/smtp";
 import { localIsoDate, queueLessonReminders } from "./server/notifications";
 import { ensurePortalTables } from "./server/portal";
+import { countUsers, createUser } from "./server/auth";
+import { applySetup } from "./server/setup";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
@@ -21,13 +23,24 @@ if (!demoMode) {
   // SQLite needs the directory to exist before it can create the file.
   mkdirSync("data", { recursive: true });
 }
-const db = openDb(demoMode ? ":memory:" : undefined);
+// A real school starts empty (first-run wizard); SEED_DEMO=1 fills a file
+// database with the demo school for trying things out locally.
+const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "true";
+const db = openDb(demoMode ? ":memory:" : (process.env.DB_PATH ?? undefined), {
+  demoData: demoMode || seedDemo,
+});
 seedTransactions(db);
 // Runs after the students/instructors seeds so seed groups pick up real names.
 ensureTheoryGroupTables(db);
 ensureAttestationTables(db);
 ensureMailTables(db);
 ensurePortalTables(db);
+
+/* Demo mode: a ready-made Inhaber login, shown on the sign-in page. */
+const DEMO_LOGIN = { email: "demo@openfs.de", password: "openfs-demo" };
+if (demoMode && countUsers(db) === 0) {
+  await createUser(db, { ...DEMO_LOGIN, name: "Demo Inhaber/in", role: "inhaber" });
+}
 
 /* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
    local time on, so nobody gets a mail at midnight) and deliver the
@@ -47,14 +60,21 @@ hot.__openfsStopMailScheduler = startMailScheduler(db, {
 });
 
 const server = serve({
-  // Keep the development UI reachable from other devices on the local network.
-  hostname: "0.0.0.0",
+  // Loopback by default: put a TLS-terminating reverse proxy in front (or
+  // set HOST=0.0.0.0 on a trusted network) to reach it from elsewhere.
+  hostname: process.env.HOST ?? "127.0.0.1",
 
   routes: {
     // Serve index.html for all unmatched routes.
     "/*": index,
 
-    ...buildApiRoutes(db, { mail: { config: smtpConfig } }),
+    ...buildApiRoutes(db, {
+      mail: { config: smtpConfig },
+      auth: {
+        demo: demoMode ? DEMO_LOGIN : null,
+        onSetup: (setupDb, body) => applySetup(setupDb, body),
+      },
+    }),
   },
 
   development: process.env.NODE_ENV !== "production" && {
