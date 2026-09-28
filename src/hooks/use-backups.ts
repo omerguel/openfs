@@ -23,6 +23,10 @@ export type BackupOverview =
         intervalHours: number;
         /** "bucket/prefix/backups/" or null when no S3 is configured. */
         offsite: string | null;
+        /** The live database file a restore replaces ("" = unknown). */
+        dbPath?: string;
+        /** Where uploaded documents live. */
+        files?: string | null;
       };
     }
   | { enabled: false; message: string; backups: BackupItem[] };
