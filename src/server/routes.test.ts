@@ -23,6 +23,11 @@ import {
 import { openSqlite } from "./sqlite";
 import { attestationRoutes, ensureAttestationTables } from "./ausbildungsnachweis";
 import { getSchoolProfile } from "./school-profile";
+import { absenceRoutes } from "./absences";
+import { calendarConflictRoutes } from "./calendar-conflicts";
+import { calendarSeriesRoutes } from "./calendar-series";
+import { cancellationRoutes } from "./cancellations";
+import { reportRoutes } from "./instructor-hours";
 
 /* ------------------------------------------------------------------ */
 /* Server setup — one server for the whole file.                       */
@@ -40,6 +45,11 @@ beforeAll(() => {
       ...accountingRoutes(db),
       ...attestationRoutes(db),
       ...calendarEventRoutes(db),
+      ...calendarSeriesRoutes(db),
+      ...calendarConflictRoutes(db),
+      ...cancellationRoutes(db),
+      ...absenceRoutes(db),
+      ...reportRoutes(db),
       ...exportRoutes(db),
       ...instructorRoutes(db),
       ...pricePlanRoutes(db),
@@ -1067,5 +1077,288 @@ describe("POST /api/calendar-events/:id/exam-result", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error.length).toBeGreaterThan(0);
+  });
+});
+
+/* ================================================================== */
+/* Scheduling: series, conflicts, absences, cancellation, reports      */
+/* ================================================================== */
+
+async function postJson(path: string, body: unknown, method = "POST") {
+  return fetch(url(path), {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/* A slot no other test in this file uses (shared DB). */
+const schedEvent = {
+  date: "2027-03-01",
+  start: "08:00",
+  end: "08:45",
+  title: "Scheduling-Route",
+  instructor: "Emre Yilmaz",
+  type: "Praktisch",
+};
+
+describe("POST /api/calendar-events (overlap + lessonKind + warnings)", () => {
+  test("overlap → 400 Überschneidung; allowConflicts → 201", async () => {
+    const first = await postJson("/api/calendar-events", {
+      ...schedEvent,
+      lessonKind: "Autobahnfahrt",
+    });
+    expect(first.status).toBe(201);
+    expect(((await first.json()) as { lessonKind: string }).lessonKind).toBe(
+      "Autobahnfahrt",
+    );
+
+    const clash = await postJson("/api/calendar-events", schedEvent);
+    expect(clash.status).toBe(400);
+    expect(((await clash.json()) as { error: string }).error).toContain("Überschneidung");
+
+    const forced = await postJson("/api/calendar-events", {
+      ...schedEvent,
+      allowConflicts: true,
+    });
+    expect(forced.status).toBe(201);
+  });
+
+  test("more than 495 practical minutes → 201 with warnings", async () => {
+    const day = { ...schedEvent, date: "2027-03-02" };
+    await postJson("/api/calendar-events", { ...day, start: "06:00", end: "14:00" });
+    const res = await postJson("/api/calendar-events", {
+      ...day,
+      start: "14:00",
+      end: "14:45",
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { warnings?: string[] };
+    expect(body.warnings?.[0]).toContain("Tageshöchstdauer praktischer Unterricht");
+  });
+});
+
+describe("GET /api/calendar-events/conflicts", () => {
+  test("returns the forced overlap from above", async () => {
+    const res = await fetch(
+      url("/api/calendar-events/conflicts?from=2027-03-01&to=2027-03-01"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      overlaps: { resource: string; label: string }[];
+      absences: unknown[];
+      count: number;
+    };
+    expect(body.count).toBe(1);
+    expect(body.overlaps[0]).toMatchObject({
+      resource: "instructor",
+      label: "Emre Yilmaz",
+    });
+  });
+
+  test("bad range → 400", async () => {
+    const res = await fetch(url("/api/calendar-events/conflicts?from=03.2027"));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/calendar-events/series + DELETE /series/:id", () => {
+  test("creates weekly occurrences; deletes from a date on", async () => {
+    const res = await postJson("/api/calendar-events/series", {
+      ...schedEvent,
+      date: "2027-04-05",
+      repeat: { interval: "weekly", count: 3 },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      seriesId: string;
+      events: { date: string; seriesId: string }[];
+    };
+    expect(body.events.map((event) => event.date)).toEqual([
+      "2027-04-05",
+      "2027-04-12",
+      "2027-04-19",
+    ]);
+    expect(body.events.every((event) => event.seriesId === body.seriesId)).toBe(true);
+
+    const del = await fetch(
+      url(`/api/calendar-events/series/${body.seriesId}?from=2027-04-12`),
+      { method: "DELETE" },
+    );
+    expect(del.status).toBe(200);
+    expect(await del.json()).toEqual({ deleted: 2, skipped: 0 });
+  });
+
+  test("invalid repeat → 400", async () => {
+    const res = await postJson("/api/calendar-events/series", {
+      ...schedEvent,
+      date: "2027-05-03",
+      repeat: { interval: "weekly", count: 99 },
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("Anzahl");
+  });
+
+  test("unknown series → 400", async () => {
+    const res = await fetch(url("/api/calendar-events/series/unbekannt"), {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("/api/absences", () => {
+  test("POST → 201, GET filters, event on that day → 400 abwesend, DELETE → 200", async () => {
+    const instructors = (await (await fetch(url("/api/instructors"))).json()) as {
+      instructors: { id: number; firstName: string }[];
+    };
+    const emre = instructors.instructors.find((i) => i.firstName === "Emre")!;
+
+    const created = await postJson("/api/absences", {
+      instructorId: emre.id,
+      fromDate: "2027-06-07",
+      toDate: "2027-06-11",
+      kind: "Urlaub",
+    });
+    expect(created.status).toBe(201);
+    const absence = (await created.json()) as { id: number; instructor: string };
+    expect(absence.instructor).toBe("Emre Yilmaz");
+
+    const list = await fetch(
+      url(`/api/absences?instructorId=${emre.id}&from=2027-06-10&to=2027-06-30`),
+    );
+    expect(((await list.json()) as { absences: unknown[] }).absences).toHaveLength(1);
+
+    const blocked = await postJson("/api/calendar-events", {
+      ...schedEvent,
+      date: "2027-06-09",
+    });
+    expect(blocked.status).toBe(400);
+    expect(((await blocked.json()) as { error: string }).error).toBe(
+      "Emre Yilmaz ist am 09.06.2027 abwesend (Urlaub).",
+    );
+
+    const del = await fetch(url(`/api/absences/${absence.id}`), { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const again = await fetch(url(`/api/absences/${absence.id}`), { method: "DELETE" });
+    expect(again.status).toBe(400);
+  });
+
+  test("invalid kind → 400", async () => {
+    const res = await postJson("/api/absences", {
+      instructorId: 1,
+      fromDate: "2027-06-07",
+      kind: "Party",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("cancel / uncancel + cancellation policy", () => {
+  test("GET/PUT /api/settings/cancellation-policy", async () => {
+    const get = await fetch(url("/api/settings/cancellation-policy"));
+    expect(await get.json()).toEqual({ hoursBefore: 24, feeCents: 0 });
+    const put = await postJson(
+      "/api/settings/cancellation-policy",
+      { hoursBefore: 48, feeCents: 2000 },
+      "PUT",
+    );
+    expect(put.status).toBe(200);
+    expect(await put.json()).toEqual({ hoursBefore: 48, feeCents: 2000 });
+    const bad = await postJson(
+      "/api/settings/cancellation-policy",
+      { hoursBefore: -5 },
+      "PUT",
+    );
+    expect(bad.status).toBe(400);
+    await postJson(
+      "/api/settings/cancellation-policy",
+      { hoursBefore: 24, feeCents: 0 },
+      "PUT",
+    );
+  });
+
+  test("cancel with fee → transaction; uncancel blocked until storno", async () => {
+    const student = await createTestStudent();
+    const eventRes = await postJson("/api/calendar-events", {
+      ...schedEvent,
+      date: "2027-07-01",
+      studentId: student.id,
+    });
+    const event = (await eventRes.json()) as { id: string };
+
+    const cancel = await postJson(`/api/calendar-events/${event.id}/cancel`, {
+      kind: "nicht_erschienen",
+      chargeFee: true,
+      feeCents: 3500,
+      date: "2027-07-01",
+    });
+    expect(cancel.status).toBe(200);
+    const cancelled = (await cancel.json()) as {
+      event: { cancellationKind: string; cancellationFeeTransactionId: number };
+      transaction: { id: number };
+    };
+    expect(cancelled.event.cancellationKind).toBe("nicht_erschienen");
+    expect(cancelled.event.cancellationFeeTransactionId).toBe(cancelled.transaction.id);
+
+    // Cancelled lessons are not billable.
+    const bill = await postJson(`/api/calendar-events/${event.id}/bill`, {
+      type: "guthaben_uebertragung",
+    });
+    expect(bill.status).toBe(400);
+    expect(((await bill.json()) as { error: string }).error).toContain("Abgesagte");
+
+    const blocked = await postJson(`/api/calendar-events/${event.id}/uncancel`, {});
+    expect(blocked.status).toBe(400);
+
+    const storno = await postJson(
+      `/api/accounting/transactions/${cancelled.transaction.id}/storno`,
+      { reason: "Kulanz", date: "2027-07-02" },
+    );
+    expect(storno.status).toBe(201);
+
+    const reverted = await postJson(`/api/calendar-events/${event.id}/uncancel`, {});
+    expect(reverted.status).toBe(200);
+    expect(
+      ((await reverted.json()) as { cancelledAt?: string }).cancelledAt,
+    ).toBeUndefined();
+  });
+
+  test("invalid kind → 400; non-numeric id → 400", async () => {
+    const eventRes = await postJson("/api/calendar-events", {
+      ...schedEvent,
+      date: "2027-07-02",
+    });
+    const event = (await eventRes.json()) as { id: string };
+    const bad = await postJson(`/api/calendar-events/${event.id}/cancel`, {
+      kind: "weg",
+    });
+    expect(bad.status).toBe(400);
+    const abc = await postJson("/api/calendar-events/abc/cancel", { kind: "abgesagt" });
+    expect(abc.status).toBe(400);
+  });
+});
+
+describe("GET /api/reports/instructor-hours", () => {
+  test("returns per-instructor days with the limit flag", async () => {
+    const res = await fetch(
+      url("/api/reports/instructor-hours?from=2027-03-02&to=2027-03-02"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      limitMinutes: number;
+      instructors: {
+        instructor: string;
+        days: { practicalMinutes: number; overLimit: boolean }[];
+      }[];
+    };
+    expect(body.limitMinutes).toBe(495);
+    const emre = body.instructors.find((row) => row.instructor === "Emre Yilmaz")!;
+    expect(emre.days[0]).toMatchObject({ practicalMinutes: 525, overLimit: true });
+  });
+
+  test("missing range → 400", async () => {
+    const res = await fetch(url("/api/reports/instructor-hours"));
+    expect(res.status).toBe(400);
   });
 });
