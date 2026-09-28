@@ -9,6 +9,7 @@ alwaysApply: true
 - `bun test` / `bun run <script>` / `bun install` / `bunx` — never npm/yarn/pnpm/npx.
 - `bun:sqlite` not better-sqlite3; `Bun.serve()` not express; `Bun.file` not fs.readFile.
 - `vite.config.ts` exists as a deliberate shadcn-CLI shim — do not delete it or run vite at runtime.
+- The shadcn CLI is not a dependency (its transitive deps failed `bun audit`). Add components with `bunx shadcn@latest add <component>`; its base CSS is vendored in `src/styles/shadcn-tailwind.css`.
 
 ## What this is
 
@@ -22,6 +23,7 @@ OpenFS is a Fahrschule (driving school) management web app: student records, cal
 | Browser smoke | `bun run test:e2e` | every route ✓ (needs Chromium: `bunx playwright install chromium`) |
 | Typecheck  | `bun run typecheck` | exit 0         |
 | Build      | `bun run build`     | exit 0         |
+| Audit      | `bun audit`         | no vulnerabilities |
 
 The test count grows over time — fewer tests than last documented is the red flag, not an exact-number mismatch.
 
