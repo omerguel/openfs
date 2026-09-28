@@ -42,11 +42,14 @@ function makeStudent(overrides: Partial<StudentRecord> = {}): StudentRecord {
     lessons: [],
     documents: [],
     theory: {
-      lastLogin: "—",
       preExams: "0",
       exam: "—",
       status: "Aktiv",
       progress: 0,
+      attendedUnits: 0,
+      requiredUnits: 14,
+      lastSession: "Noch keine",
+      lastSessionDate: null,
     },
     ...overrides,
   };
