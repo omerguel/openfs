@@ -35,7 +35,10 @@ bun run test:e2e         # browser smoke test over every route (needs Chromium)
 bun run typecheck        # type-check without emitting
 bun run build            # production renderer bundle → dist/
 bun run start            # production server
+bun run drill            # restore drill: backup → disaster → restore, verified via the API
 ```
+
+**Running it in production** (install, HTTPS with Caddy/nginx, systemd, backups, off-site copies, restore, updates, monitoring): see the runbook [`docs/operations.md`](docs/operations.md) and the files in [`deploy/`](deploy/).
 
 `data/fahrschule.db` is created and seeded automatically on first start — no migration step needed.
 
@@ -64,7 +67,7 @@ The menu and a route guard follow the same split (`src/lib/navigation.ts`): page
 
 Passwords are hashed with argon2id (`Bun.password`). Sessions are random tokens in an `HttpOnly; SameSite=Strict` cookie (`Secure` behind HTTPS); only their SHA-256 is stored, they slide for 7 days and end on sign-out, password change, role change or deactivation. State-changing requests from a foreign `Origin` are rejected, failed sign-ins are rate-limited per IP and e-mail (10 per 15 minutes; a successful sign-in resets the count), and every write (plus every sign-in attempt) lands in the audit log (*Benutzer → Protokoll*, shown as plain German with the raw request as detail). Unknown `/api/*` paths answer with a JSON 404. The rules live in `src/server/auth.ts`; new endpoints are protected automatically.
 
-**Network.** The server listens on `127.0.0.1` by default (`HOST`/`PORT` to change). To use it from other devices, run it behind a TLS-terminating reverse proxy (Caddy, nginx) that forwards `X-Forwarded-Proto`; don't expose plain HTTP.
+**Network.** The server listens on `127.0.0.1` by default (`HOST`/`PORT` to change). To use it from other devices, run it behind a TLS-terminating reverse proxy (Caddy, nginx — configs in `deploy/`) and set `TRUST_PROXY=1`: only then are `X-Forwarded-Proto` (→ `Secure` cookie), `X-Forwarded-Host` (→ Origin check, school lookup) and `X-Forwarded-For` (→ client IP for rate limits and the audit log; the last entry counts) believed. Without a proxy leave it off, and don't expose plain HTTP. `GET /api/health` (public) answers `200` with version and commit for uptime monitors. Details and HSTS rollout: [`docs/operations.md`](docs/operations.md#https-reverse-proxy).
 
 **Public surfaces** (no sign-in): `/einladung/:token` with `GET/POST /api/auth/invite/:token` (token-gated, one-time); `/anfrage` with `POST /api/appointment-requests` (rate-limited, length-capped) and `GET /api/school-profile`; the legal pages `/impressum` and `/datenschutz` (`/api/public/…`); and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords.
 
@@ -116,22 +119,27 @@ With all four required `S3_*` variables set, files go to the bucket; otherwise t
 
 ### Datensicherung (backups)
 
-Outside demo mode the server backs up the database with SQLite's `VACUUM INTO` (a consistent copy while the app keeps running), checks the copy with `PRAGMA integrity_check` and keeps it as `openfs-YYYY-MM-DD-HHMMSS.db`. It checks at startup and then hourly, and creates a backup whenever the newest one is older than the interval. When S3 is configured (see above), every backup is also uploaded to `<S3_PREFIX>backups/`. The page **Verwaltung → Datensicherung** (`/datensicherung`, Inhaber only) lists backups, creates one on demand and offers two downloads: the **Datenbank-Sicherung (.db)** (`/api/export/database`, the file to restore from) and a **Datenexport (ZIP)** (`/api/export/zip`) with CSVs of students, instructors, vehicles, Termine, invoices, bookings, accounts and price plans plus all uploaded documents — for reading, archiving or the tax advisor. Its restore steps name the real database file (`DB_PATH`) and document store.
+Outside demo mode the server creates a **backup set** per interval: a directory `openfs-YYYY-MM-DD-HHMMSS/` with a consistent copy of the database (`VACUUM INTO`, checked with `PRAGMA integrity_check`), every uploaded document it references (from disk or S3) and a `manifest.json` (time, app version/commit, school, SHA-256 of the database and of every document). Unchanged documents are hard-linked from the previous set, so each set is complete but a document takes disk space once. It checks at startup and then hourly and creates a set whenever the newest one is older than the interval; the newest `BACKUP_KEEP` sets are kept, older ones are deleted with their documents. With S3 configured, each set's database and manifest are also uploaded to `<S3_PREFIX>backups/` (documents already live in the bucket — enable bucket versioning). In multi-tenant mode every school has its own sets under `BACKUP_DIR/<slug>/` with only its documents.
+
+The page **Verwaltung → Datensicherung** (`/datensicherung`, Inhaber only) lists the sets with their contents („Datenbank + N Dokumente“), creates one on demand, re-checks one (*Prüfen*) and downloads a set as one **archive (.tar)** — database, documents and manifest. It also offers the bare **Datenbank-Sicherung (.db)** (`/api/export/database`) and the **Datenexport (ZIP)** (`/api/export/zip`) with CSVs plus all documents for reading, archiving or the tax advisor.
 
 | Variable | Meaning |
 |----------|---------|
 | `BACKUP_DIR` | Local backup directory (default `data/backups`) |
-| `BACKUP_KEEP` | Number of most recent backups kept, locally and in S3 (default `14`) |
+| `BACKUP_KEEP` | Number of most recent sets kept, locally and in S3 (default `14`) |
 | `BACKUP_INTERVAL_HOURS` | Backup interval (default `24`) |
+| `BACKUP_FILES` | `0` = database-only sets (default: documents included) |
 
-Backups contain the database only; uploaded documents live in the file store (`data/files` or S3) and need their own backup (S3 versioning, or copy `data/files`).
+**Restore** with `bun run restore` (stop the server first):
 
-**Restore:**
+```bash
+bun run restore list                                  # sets in BACKUP_DIR
+bun run restore verify openfs-2026-09-28-031500        # checksums + integrity_check
+bun run restore restore openfs-2026-09-28-031500       # or a set directory, a downloaded .tar, an old .db
+bun run restore restore <name> --tenant fs-mueller     # one school in multi-tenant mode
+```
 
-1. Stop the server.
-2. Move the current database file (`DB_PATH`, default `data/fahrschule.db`) and its `-wal` / `-shm` files aside.
-3. Copy the backup (from `BACKUP_DIR`, S3 or the download on `/datensicherung`) to that same path.
-4. Start the server.
+It verifies the set (a damaged backup is never restored), refuses while the server still has the database open or answers its health URL, moves the current database and documents aside as `…before-restore-<timestamp>` instead of deleting them, restores and re-verifies database and documents, and rolls back on any error. `bun run drill` rehearses the whole cycle against real server processes (also in CI). Step-by-step runbook, off-site copies and the manual fallback: [`docs/operations.md`](docs/operations.md#restore).
 
 ### SMS
 
