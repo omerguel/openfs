@@ -487,6 +487,23 @@ describe("defaults", () => {
   });
 });
 
+describe("demo data", () => {
+  test("the demo shows a due batch and an archived student still in its period", async () => {
+    const demo = openDb(":memory:");
+    await prepareSchoolDb(demo, { demoLogin: true });
+    await prepareSchoolDb(demo, { demoLogin: true }); // idempotent
+    expect(listSubjects(demo).filter((s) => s.status === "archiviert")).toHaveLength(2);
+    const plan = planRetention(demo);
+    expect(plan.counts.schueler).toBe(1);
+    expect(plan.counts.ausbildungsnachweis).toBe(1);
+    expect(plan.counts.anfragen).toBeGreaterThanOrEqual(1);
+    expect(plan.counts.chat).toBeGreaterThanOrEqual(1);
+    const recent = listSubjects(demo).find((s) => s.name === "Lea Brandt")!;
+    expect(plan.items.some((i) => i.studentId === recent.studentId)).toBe(false);
+    expect(planErasure(demo, recent.studentId).retain.length).toBe(1);
+  });
+});
+
 describe("edge cases", () => {
   test("the audit log keeps deletion runs, only older entries go", async () => {
     db.prepare(
@@ -589,7 +606,9 @@ describe("edge cases", () => {
     db.prepare(
       "INSERT INTO users (email, name, password_hash, role) VALUES ('a@b.de', 'A', 'x', 'buero')",
     ).run();
-    const userId = db.query<{ id: number }, []>("SELECT max(id) AS id FROM users").get()!.id;
+    const userId = db
+      .query<{ id: number }, []>("SELECT max(id) AS id FROM users")
+      .get()!.id;
     db.prepare(
       `INSERT INTO sessions (token_hash, user_id, expires_at, last_seen_at)
        VALUES ('old', ?1, ?2, ?2), ('live', ?1, ?3, ?3)`,

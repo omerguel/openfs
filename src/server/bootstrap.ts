@@ -23,6 +23,7 @@ import {
 } from "./notifications";
 import { ensurePortalTables } from "./portal";
 import { ensureRetentionTables, startRetentionScheduler } from "./retention";
+import { seedRetentionDemo } from "./retention-demo";
 import { seedTransactions } from "./seed";
 import type { SmtpConfig } from "./smtp";
 import { createSmtpTransport } from "./smtp";
@@ -56,6 +57,8 @@ export async function prepareSchoolDb(
   if (options.demoLogin && countUsers(db) === 0) {
     await createUser(db, { ...DEMO_LOGIN, name: "Sabine Krämer", role: "inhaber" });
   }
+  // Demo mode: former students, so the Löschvorschau has something to show.
+  if (options.demoLogin) seedRetentionDemo(db);
   if (options.fileStore) {
     // Older databases kept uploads as base64 in students.documents.
     const moved = await migrateInlineDocuments(db, options.fileStore);
