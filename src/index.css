@@ -308,6 +308,15 @@ body {
   --chart-3: oklch(0.64 0.12 155);
   --chart-4: oklch(0.74 0.12 85);
   --chart-5: oklch(0.55 0.01 257);
+  /* Calendar: one muted hue per instructor (card edge + faint tint). */
+  --instructor-1: oklch(0.58 0.12 255);
+  --instructor-2: oklch(0.6 0.12 155);
+  --instructor-3: oklch(0.68 0.13 70);
+  --instructor-4: oklch(0.6 0.14 25);
+  --instructor-5: oklch(0.6 0.1 200);
+  --instructor-6: oklch(0.6 0.12 345);
+  --instructor-7: oklch(0.58 0.1 120);
+  --instructor-8: oklch(0.55 0.03 257);
   --radius: 0.625rem;
   --sidebar: oklch(0.977 0.002 255);
   --sidebar-foreground: oklch(0.27 0.008 260);
@@ -343,6 +352,14 @@ body {
   --chart-3: oklch(0.7 0.13 155);
   --chart-4: oklch(0.78 0.12 85);
   --chart-5: oklch(0.72 0.008 258);
+  --instructor-1: oklch(0.68 0.11 255);
+  --instructor-2: oklch(0.7 0.12 155);
+  --instructor-3: oklch(0.76 0.12 70);
+  --instructor-4: oklch(0.7 0.13 25);
+  --instructor-5: oklch(0.72 0.09 200);
+  --instructor-6: oklch(0.72 0.11 345);
+  --instructor-7: oklch(0.7 0.1 120);
+  --instructor-8: oklch(0.68 0.03 257);
   --sidebar: oklch(0.195 0.006 260);
   --sidebar-foreground: oklch(0.95 0.002 255);
   --sidebar-primary: oklch(0.6 0.115 258);

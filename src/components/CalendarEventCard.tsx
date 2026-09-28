@@ -1,5 +1,5 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { Pencil, Trash2 } from "lucide-react";
+import { Ban, Car, Moon, Pencil, Route, StickyNote, Trash2, Waypoints } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { CalEvent } from "@/lib/calendar-data";
@@ -11,16 +11,21 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
-/* The calendar owns the token classes so presets and event cards share the
-   same accent without this component knowing about event types. */
-export type CalendarEventCardTheme = {
-  surface: string;
-  text: string;
-  meta: string;
-  focus: string;
+/* Short Fahrtart labels + icons for the cards (Übungsfahrt is the
+   default and not worth the space). */
+export const LESSON_KIND_BADGE: Record<
+  string,
+  { label: string; Icon: React.ComponentType<{ className?: string }> }
+> = {
+  Überlandfahrt: { label: "Überland", Icon: Route },
+  Autobahnfahrt: { label: "Autobahn", Icon: Car },
+  Nachtfahrt: { label: "Nacht", Icon: Moon },
+  Grundfahraufgaben: { label: "GFA", Icon: Waypoints },
 };
 
-const RESIZE_EDGE_SIZE = 10;
+/** The bottom strip that resizes the card — small on purpose, so a
+    grab anywhere else moves the Termin. */
+export const RESIZE_HANDLE_PX = 5;
 
 export function CalendarEventCard({
   event,
@@ -28,8 +33,8 @@ export function CalendarEventCard({
   dense,
   isDragging,
   isSelected,
+  hasConflict,
   style,
-  theme,
   onPointerDown,
   onResizeStart,
   onSelect,
@@ -38,46 +43,50 @@ export function CalendarEventCard({
 }: {
   event: CalEvent;
   compact: boolean;
-  /* Taller than compact but still too short for a wrapped meta row (~1h):
-     title and meta stay on one line each and truncate instead of wrapping. */
+  /* Taller than compact but still too short for a third row (~1h). */
   dense: boolean;
   isDragging: boolean;
   isSelected: boolean;
+  /** Part of an overlap / absence conflict — outlined in red. */
+  hasConflict: boolean;
+  /** Positioning plus `--ev` (the instructor colour). */
   style: CSSProperties;
-  theme: CalendarEventCardTheme;
   onPointerDown: (pointerEvent: ReactPointerEvent<HTMLButtonElement>) => void;
-  onResizeStart: (
-    edge: "start" | "end",
-    pointerEvent: ReactPointerEvent<HTMLElement>,
-  ) => void;
+  onResizeStart: (pointerEvent: ReactPointerEvent<HTMLElement>) => void;
   onSelect: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
+  const cancelled = Boolean(event.cancelledAt);
+  // Lessons and exams are about the student; theory and other Termine
+  // are about their topic.
+  const personal = event.type !== "Theorie" && event.type !== "Andere";
+  const primary = (personal && event.subtitle?.trim()) || event.title;
+  const kind = event.lessonKind ? LESSON_KIND_BADGE[event.lessonKind] : undefined;
+  const secondary = [event.instructor, event.vehicle].filter(Boolean).join(" · ");
+  const label = [
+    primary,
+    primary !== event.title ? event.title : null,
+    `${event.start} bis ${event.end}`,
+    event.lessonKind,
+    event.instructor,
+    cancelled ? "abgesagt" : null,
+    hasConflict ? "Konflikt" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
           type="button"
           aria-grabbed={isDragging}
-          aria-label={`${event.title}, ${event.start} bis ${event.end}${event.cancelledAt ? ", abgesagt" : ""}`}
+          aria-label={label}
+          title={`${primary} · ${event.start}–${event.end}${event.notes ? `\n${event.notes}` : ""}`}
           draggable={false}
-          onPointerDown={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            const offsetY = event.clientY - rect.top;
-
-            if (offsetY <= RESIZE_EDGE_SIZE) {
-              onResizeStart("start", event);
-              return;
-            }
-
-            if (rect.height - offsetY <= RESIZE_EDGE_SIZE) {
-              onResizeStart("end", event);
-              return;
-            }
-
-            onPointerDown(event);
-          }}
+          data-event-id={event.id}
+          onPointerDown={onPointerDown}
           onClick={onSelect}
           onDoubleClick={(pointerEvent) => {
             pointerEvent.preventDefault();
@@ -85,77 +94,82 @@ export function CalendarEventCard({
           }}
           style={style}
           className={cn(
-            "group absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[top,height,color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2",
-            theme.surface,
-            "h-[var(--card-h)]",
+            "group absolute touch-none select-none overflow-hidden rounded-md border border-l-[3px] text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            "h-[var(--card-h)] border-[color-mix(in_oklab,var(--border)_60%,var(--ev))] border-l-[var(--ev)] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
             "cursor-grab active:cursor-grabbing hover:z-30 focus-visible:z-30 data-[state=open]:z-30",
-            theme.focus,
-            event.tentative &&
-              "border-dashed border-border bg-[color-mix(in_oklab,var(--background)_20%,var(--muted))] hover:bg-muted",
-            // Cancelled lessons stay as greyed-out history.
-            event.cancelledAt &&
-              "border-dashed border-border bg-muted/40 opacity-70 hover:bg-muted",
-            isSelected &&
-              "z-30 border-primary/45 bg-[color-mix(in_oklab,var(--background)_89%,var(--primary))] ring-2 ring-primary/20",
+            event.tentative && "border-dashed",
+            cancelled && "opacity-60",
+            hasConflict && "ring-2 ring-destructive/60",
+            isSelected && "z-30 ring-2 ring-primary/40",
             isDragging ? "z-40 opacity-90 transition-none" : "z-20",
           )}
         >
-          <span
-            aria-hidden="true"
-            className="absolute inset-x-0 top-0 z-10 h-2.5 cursor-ns-resize rounded-t-lg"
-            onPointerDown={(event) => onResizeStart("start", event)}
-          />
-          <span
-            aria-hidden="true"
-            className="absolute inset-x-0 bottom-0 z-10 h-2.5 cursor-ns-resize rounded-b-lg"
-            onPointerDown={(event) => onResizeStart("end", event)}
-          />
           {compact ? (
-            <div className="flex h-full min-w-0 items-center gap-1.5 px-2">
+            <div className="flex h-full min-w-0 items-center gap-1.5 px-1.5">
               <span
                 className={cn(
                   "block min-w-0 flex-1 truncate text-[11px] font-medium",
-                  theme.text,
-                  event.cancelledAt && "text-muted-foreground line-through",
+                  cancelled && "line-through",
                 )}
               >
-                {event.title}
+                {primary}
               </span>
-              <span className={cn("shrink-0 text-[10px] tabular-nums", theme.meta)}>
+              {kind && (
+                <kind.Icon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+              )}
+              <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
                 {event.start}
               </span>
             </div>
           ) : (
-            <div className="flex h-full min-w-0 flex-col px-2 py-1.5">
-              <span
-                className={cn(
-                  "block w-full min-w-0 shrink-0 truncate text-[12px] font-medium leading-[1.2]",
-                  theme.text,
-                  event.cancelledAt && "text-muted-foreground line-through",
+            <div className="flex h-full min-w-0 flex-col gap-0.5 px-1.5 py-1">
+              <span className="flex min-w-0 items-center gap-1 text-[12px] leading-tight font-medium">
+                {cancelled && (
+                  <Ban aria-hidden className="size-3 shrink-0 text-destructive" />
                 )}
-              >
-                {event.title}
-              </span>
-              <span
-                className={cn(
-                  "mt-1 shrink-0 text-[10px] leading-none tabular-nums",
-                  theme.meta,
+                <span className={cn("truncate", cancelled && "line-through")}>
+                  {primary}
+                </span>
+                {event.notes && (
+                  <StickyNote
+                    aria-hidden
+                    className="size-3 shrink-0 text-muted-foreground"
+                  />
                 )}
-              >
-                {event.start}–{event.end}
               </span>
-              {!dense && (
-                <span
-                  className={cn(
-                    "mt-auto truncate pt-1 text-[10px] leading-none",
-                    theme.meta,
-                  )}
-                >
-                  {event.subtitle || event.instructor}
-                  {event.vehicle ? ` · ${event.vehicle}` : ""}
+              <span className="flex min-w-0 items-center gap-1 text-[10px] leading-none text-muted-foreground tabular-nums">
+                <span className="shrink-0">
+                  {event.start}–{event.end}
+                </span>
+                {kind && (
+                  <span className="flex min-w-0 items-center gap-0.5 font-medium text-foreground/80">
+                    <kind.Icon aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">{kind.label}</span>
+                  </span>
+                )}
+                {!kind && primary !== event.title && (
+                  <span className="truncate">· {event.title}</span>
+                )}
+              </span>
+              {!dense && secondary && (
+                <span className="mt-auto truncate text-[10px] leading-none text-muted-foreground">
+                  {secondary}
                 </span>
               )}
             </div>
+          )}
+          {!cancelled && (
+            <span
+              aria-hidden="true"
+              className="absolute inset-x-0 bottom-0 z-10 flex cursor-ns-resize justify-center"
+              style={{ height: RESIZE_HANDLE_PX }}
+              onPointerDown={(pointerEvent) => {
+                pointerEvent.stopPropagation();
+                onResizeStart(pointerEvent);
+              }}
+            >
+              <span className="mt-px h-[3px] w-6 rounded-full bg-[var(--ev)] opacity-0 transition-opacity group-hover:opacity-60" />
+            </span>
           )}
         </button>
       </ContextMenuTrigger>
@@ -167,7 +181,7 @@ export function CalendarEventCard({
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={() => onDelete?.()}>
           <Trash2 />
-          Löschen
+          Löschen…
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

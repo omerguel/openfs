@@ -124,6 +124,21 @@ export async function createCalendarEventSeries(
   );
 }
 
+/** "Diesen und alle folgenden": apply the change to this occurrence and
+    every later one of its series. */
+export async function updateCalendarEventSeriesFrom(
+  id: string,
+  input: Partial<CalendarEventInput>,
+): Promise<{ events: CalEvent[]; skipped: number; warnings?: string[] }> {
+  return parseOrThrow(
+    await fetch(`/api/calendar-events/${id}/series`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
 export async function deleteCalendarEventSeries(
   seriesId: string,
   from: string,
