@@ -21,6 +21,7 @@ import {
 } from "../lib/special-drives";
 import { tableExists } from "./archive";
 import { listStudentBalances } from "./engine";
+import { schoolNow } from "./school-time";
 
 export type StudentFacts = {
   balanceCents: number;
@@ -70,7 +71,8 @@ type EventRow = SpecialDriveEvent & { student_id: number; lesson_kind: string | 
 export function deriveStudentFacts(
   db: Database,
   students: { id: number; customerNumber: string; classes?: string }[],
-  now = new Date(),
+  // School wall clock: Termine are local times, the server may run in UTC.
+  now = schoolNow(),
 ): Map<number, StudentFacts> {
   const { date: today, time } = localNow(now);
   const balances = new Map(

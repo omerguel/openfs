@@ -23,6 +23,9 @@ import {
   notifyAppointmentRequestDeclined,
 } from "./notifications";
 import { demoDataEnabled } from "./db";
+import { schoolToday } from "./school-time";
+
+export { schoolToday };
 
 export type AppointmentRequestStatus = "offen" | "bestätigt" | "abgelehnt";
 
@@ -610,16 +613,6 @@ function normalize(
    so the public form checks this fixed window instead. */
 export const PUBLIC_EARLIEST_TIME = "06:00";
 export const PUBLIC_LATEST_TIME = "21:00";
-
-/** Local "YYYY-MM-DD" of `now` in the school's time zone (Europe/Berlin). */
-export function schoolToday(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: process.env.SCHOOL_TIMEZONE || "Europe/Berlin",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
 
 export type PublicRequestInput = Partial<AppointmentRequestInput> & {
   campaign?: unknown;

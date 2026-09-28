@@ -37,6 +37,7 @@ import { isValidEmail, mailSchool, queueMail, type OutboxEntry } from "./mail";
 import { portalLinkMail } from "./mail-templates";
 import { localIsoDate } from "./notifications";
 import { instructorNameSql } from "./refs";
+import { schoolNow } from "./school-time";
 
 /* ----------------------------- schema ----------------------------- */
 
@@ -207,7 +208,7 @@ function studentBalanceCents(db: Database, customerNumber: string): number | nul
 export function getPortalOverview(
   db: Database,
   studentId: number,
-  now = new Date(),
+  now = schoolNow(),
 ): PortalOverview {
   const student = requireStudent(db, studentId);
   const company = getCompany(db);
