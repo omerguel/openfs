@@ -11,8 +11,10 @@ Management software for German driving schools (Fahrschulen). It covers the full
 - **Billing & receivables:** lesson billing (per lesson or batch), exam billing (Vorstellungsentgelt + TÜV/DEKRA fee as durchlaufender Posten in one booking), § 14 UStG invoices with gapless numbers and Stornorechnungen, open items with FIFO payment matching, a three-level Mahnwesen, instalment plans (Ratenpläne) and SEPA direct debit (mandates, pain.008 export for the bank portal, booking and Rücklastschriften).
 - **Scheduling:** recurring lessons, instructor absences, overlap checks for instructors and vehicles, lesson kinds with Sonderfahrten progress (class B minimums), cancellations and no-shows with an optional Ausfallentschädigung, and a working-time report with the 495-minute daily limit for practical instruction.
 - **Training records:** exam results with a Prüfungsplaner, a digital Ausbildungsnachweis (signed per lesson, printable), theory attendance, statistics.
-- **Communication:** e-mail through an outbox (confirmations, reminders, cancellations, free-text mails), a per-student Schülerportal at `/portal/:token` with a two-way chat, and a public appointment request form at `/anfrage`.
-- **Onboarding:** CSV import of the student register from other software (column mapping, preview, all-or-nothing commit).
+- **Communication:** e-mail and SMS through one outbox (confirmations, reminders, cancellations, free-text mails/SMS), a per-student Schülerportal at `/portal/:token` with a two-way chat, and a public appointment request form at `/anfrage`.
+- **Marketing:** campaigns with a tracking link (`/anfrage?kampagne=<code>`, `utm_campaign` works too); leads and signups are counted from the requests (plus manual offline numbers), ad spend stays manual. Google reviews import via the Places API.
+- **Onboarding:** CSV import of the student register from other software (column mapping, preview, all-or-nothing commit), optionally with each student's opening balance booked as Saldovortrag (9000 ↔ 3272).
+- **Theory:** progress and status per student are derived from theory-group attendance (FahrSchAusbO: 12 Doppelstunden Grundstoff + class-specific units).
 
 Currently a single-tenant Bun web app; being rebuilt as a multi-tenant SaaS (one portal per school at `schoolname.openfs.de`) — see `plans/saas-plan.md`.
 
@@ -65,6 +67,23 @@ Mails (appointment confirmations/declines, lesson reminders the day before, port
 | `SMTP_SECURE` | Optional override: `tls`, `starttls`, or `none` (plaintext, local relays only) |
 
 Without `SMTP_HOST`/`SMTP_FROM` nothing is sent: mails show up as "Nicht versendet" in Nachrichten and can be copied by hand. Demo mode never sends mail.
+
+### SMS
+
+SMS (free text from **Nachrichten**, optional reminders the day before — toggle "SMS-Erinnerungen", off by default) share the outbox, statuses and retries with e-mail. Numbers are normalised to E.164 (+49 when no country code is given); texts are cut to at most three segments.
+
+| Variable | Meaning |
+|----------|---------|
+| `SMS_PROVIDER` | `seven` (seven.io) or `webhook` |
+| `SMS_API_KEY` | seven.io API key (sent as `X-Api-Key`) |
+| `SMS_FROM` | Sender ID, max. 11 alphanumeric characters (optional) |
+| `SMS_WEBHOOK_URL` | For `webhook`: receives `POST` JSON `{ to, text, from }`, any 2xx counts as sent |
+
+Without a provider SMS stay "Nicht versendet". Demo mode never sends SMS.
+
+### Google reviews
+
+`GOOGLE_PLACES_API_KEY` (Places API (New) enabled) plus the Google Place ID in **Schulprofil** enable "Google importieren" on **Bewertungen**: the overall rating, the rating count and at most five reviews (Google's selection) are imported and de-duplicated by the review id. Replies stay internal — answering on Google needs the Business Profile API (OAuth and Google's approval).
 
 ## Architecture
 
