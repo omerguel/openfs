@@ -17,6 +17,7 @@ import { chatRoutes } from "./chat";
 import { instalmentRoutes } from "./instalments";
 import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
+import { legalRoutes } from "./legal";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
 import { theoryGroupRoutes } from "./theory-groups";
@@ -72,5 +73,8 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     // Second deliberate public surface besides /anfrage: token-gated,
     // rate-limited Schülerportal endpoints (/api/portal/:token…).
     ...portalRoutes(db),
+    // Third public surface: read-only Impressum/Datenschutz data
+    // (/api/public/legal) for the public legal pages.
+    ...legalRoutes(db),
   };
 }
