@@ -6,6 +6,9 @@
 /*   bun scripts/tenant.ts create <slug> "<Schulname>" <email> "<Name>" */
 /*   bun scripts/tenant.ts suspend <slug>                              */
 /*   bun scripts/tenant.ts activate <slug>                             */
+/*   bun scripts/tenant.ts register <slug> "<Schulname>" <email>       */
+/*     (registry entry only, for a school database restored from a     */
+/*     backup after the registry was lost — see docs/operations.md)    */
 /*                                                                     */
 /* `create` prints a generated initial password for the Inhaber        */
 /* account. A running server picks new schools up on restart (or at    */
@@ -52,6 +55,16 @@ switch (command) {
     console.log(`Anmeldung: ${email.toLowerCase()} / ${password}  (bitte sofort ändern)`);
     break;
   }
+  case "register": {
+    const [slug, schoolName, email] = args;
+    if (!slug || !schoolName || !email) {
+      console.error('Aufruf: register <slug> "<Schulname>" <email>');
+      process.exit(1);
+    }
+    registry.insert(slug, schoolName.trim(), email.trim().toLowerCase());
+    console.log(`Eingetragen: ${slug} (Datenbank ${config.dir}/${slug}.db)`);
+    break;
+  }
   case "suspend":
   case "activate": {
     const [slug] = args;
@@ -64,6 +77,6 @@ switch (command) {
     break;
   }
   default:
-    console.error("Befehle: list | create | suspend | activate");
+    console.error("Befehle: list | create | register | suspend | activate");
     process.exit(1);
 }

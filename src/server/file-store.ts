@@ -76,6 +76,28 @@ export class DiskFileStore implements FileStore {
   }
 }
 
+/** A view of another store below a key prefix, e.g. "<slug>/" — one
+ *  school's documents in multi-tenant mode, outside a request context
+ *  (backup jobs, restore). */
+export class PrefixedFileStore implements FileStore {
+  constructor(
+    readonly base: FileStore,
+    readonly prefix: string,
+  ) {}
+  put(key: string, bytes: Uint8Array, contentType: string) {
+    assertValidKey(key);
+    return this.base.put(`${this.prefix}${key}`, bytes, contentType);
+  }
+  get(key: string) {
+    assertValidKey(key);
+    return this.base.get(`${this.prefix}${key}`);
+  }
+  delete(key: string) {
+    assertValidKey(key);
+    return this.base.delete(`${this.prefix}${key}`);
+  }
+}
+
 /* The subset of Bun's S3Client the stores use — lets tests inject a fake
    without any network access. */
 export type S3ClientLike = {

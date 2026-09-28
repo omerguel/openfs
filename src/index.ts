@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import index from "./index.html";
 
 import { API_NOT_FOUND, buildApiRoutes } from "./server/app-routes";
@@ -7,6 +8,7 @@ import { backupConfigFromEnv } from "./server/backups";
 import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap";
 import { openDb } from "./server/db";
 import { createFileStoreFromEnv } from "./server/file-store";
+import { healthRoutes } from "./server/health";
 import { applySetup } from "./server/setup";
 import { smsConfigFromEnv } from "./server/sms";
 import { smtpConfigFromEnv } from "./server/smtp";
@@ -30,16 +32,21 @@ const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "tru
 // MULTI_TENANT=1: one portal per school at <slug>.<BASE_DOMAIN>.
 const tenancy = demoMode ? null : tenancyConfigFromEnv();
 
-if (!demoMode) {
+if (!demoMode && !tenancy) {
   // SQLite needs the directory to exist before it can create the file.
-  mkdirSync("data", { recursive: true });
+  // Only this one: the working directory may be read-only (systemd
+  // ProtectSystem=strict) when DB_PATH points elsewhere.
+  mkdirSync(dirname(process.env.DB_PATH || "data/fahrschule.db"), { recursive: true });
 }
 
 /* Uploaded documents: S3 when configured, else data/files (memory in
    demo mode). Datensicherung: off in demo mode. E-Mail: demo never sends
    (mails are only marked 'nicht_konfiguriert' so the UI shows them). */
 const { store: baseFileStore } = createFileStoreFromEnv({ demoMode });
-const backupConfig = demoMode ? null : backupConfigFromEnv();
+// Backup sets hold the database plus the documents from the file store.
+const backupConfig = demoMode
+  ? null
+  : backupConfigFromEnv(process.env, undefined, baseFileStore);
 const smtpConfig = demoMode ? null : smtpConfigFromEnv();
 const smsConfig = demoMode ? null : smsConfigFromEnv();
 
@@ -109,6 +116,9 @@ const server = serve({
     "/*": index,
     // ... except unknown API paths: JSON 404 (single- and multi-tenant).
     ...API_NOT_FOUND,
+
+    // Public liveness/version probe (answers on every host).
+    ...healthRoutes(),
 
     ...apiRoutes,
   },

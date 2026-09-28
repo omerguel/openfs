@@ -27,6 +27,8 @@ jobs:
         run: bun run lint
       - name: Test
         run: bun test
+      - name: Restore drill (backup, disaster, restore; single + multi-tenant)
+        run: bun run drill
       - name: Build
         run: bun run build
 

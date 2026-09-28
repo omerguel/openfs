@@ -41,8 +41,44 @@ export type RequestIPSource = {
   requestIP(req: Request): { address: string } | null;
 };
 
+/* ------------------------------------------------------------------ */
+/* Reverse proxy trust. X-Forwarded-Proto/-Host/-For are only believed */
+/* with TRUST_PROXY=1 — i.e. when the server listens on loopback (or a */
+/* private network) behind Caddy/nginx, which overwrite or append      */
+/* these headers. Without it, a client could fake HTTPS, its IP (rate  */
+/* limits, audit log) or the host the Origin check compares against.  */
+/* With several comma-separated values the last one counts: it was    */
+/* written by the proxy directly in front of us.                       */
+/* ------------------------------------------------------------------ */
+
+export function trustProxy(env: Record<string, string | undefined> = process.env) {
+  return env.TRUST_PROXY === "1" || env.TRUST_PROXY === "true";
+}
+
+function forwarded(req: Request, name: string): string | null {
+  if (!trustProxy()) return null;
+  const value = req.headers.get(name)?.split(",").at(-1)?.trim();
+  return value || null;
+}
+
+/** True when the client reached us via HTTPS (directly, or via a trusted
+ *  proxy that terminated TLS). Decides the cookie's Secure flag. */
+export function isHttpsRequest(req: Request): boolean {
+  return (
+    new URL(req.url).protocol === "https:" ||
+    forwarded(req, "x-forwarded-proto") === "https"
+  );
+}
+
+/** Host the client asked for (X-Forwarded-Host behind a trusted proxy). */
+export function requestHost(req: Request): string | null {
+  return forwarded(req, "x-forwarded-host") ?? req.headers.get("host");
+}
+
 export function clientIp(req: Request, server?: RequestIPSource): string {
-  return server?.requestIP(req)?.address ?? "unknown";
+  return (
+    forwarded(req, "x-forwarded-for") ?? server?.requestIP(req)?.address ?? "unknown"
+  );
 }
 
 /** Counts only failures (e.g. wrong passwords): `blocked(key)` is true

@@ -1,6 +1,6 @@
 /* Multi-tenant mode end to end: two schools on one server must never see
-   each other's data, sessions or files. Hosts are sent via
-   X-Forwarded-Host (what the reverse proxy sets). In-memory databases
+   each other's data, sessions or files. Hosts are sent via the Host
+   header (X-Forwarded-Host only counts with TRUST_PROXY=1, see http.ts). In-memory databases
    throughout (TENANTS_DIR ":memory:"). */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -55,7 +55,7 @@ const at = (slug: string | null, init: RequestInit & { cookie?: string } = {}) =
   ...init,
   headers: {
     "Content-Type": "application/json",
-    "X-Forwarded-Host": slug ? `${slug}.${BASE}` : BASE,
+    Host: slug ? `${slug}.${BASE}` : BASE,
     ...(init.cookie ? { cookie: init.cookie } : {}),
     ...init.headers,
   },
@@ -140,6 +140,41 @@ describe("isolation", () => {
       name: string;
     };
     expect(company.name).toBe("Fahrschule Beta");
+  });
+
+  test("invoices work in every school (per-school invoice schema)", async () => {
+    await provision("alpha", "Fahrschule Alpha");
+    await provision("beta", "Fahrschule Beta");
+    for (const slug of ["alpha", "beta"]) {
+      const cookie = await login(slug);
+      const post = async (path: string, body: unknown) => {
+        const res = await fetch(
+          `${url}${path}`,
+          at(slug, { method: "POST", cookie, body: JSON.stringify(body) }),
+        );
+        expect(res.status).toBe(201);
+        return (await res.json()) as Record<string, unknown>;
+      };
+      const student = await post("/api/students", {
+        firstName: "Rita",
+        lastName: "Rechnung",
+        customerNumber: `K-${slug}`,
+        contractNumber: `V-${slug}`,
+      });
+      const charge = await post("/api/accounting/transactions", {
+        type: "guthaben_uebertragung",
+        date: "2026-03-01",
+        amountCents: 6500,
+        habenKonto: "4400",
+        student: { customerNo: student.customerNumber, name: "Rita Rechnung" },
+        description: "Fahrstunde",
+      });
+      await post("/api/invoices", {
+        studentId: student.id,
+        date: "2026-03-02",
+        transactionIds: [charge.id],
+      });
+    }
   });
 
   test("new schools start empty (no demo data)", async () => {

@@ -24,9 +24,11 @@ import {
   createFailureLimiter,
   err,
   handle,
+  isHttpsRequest,
   json,
   type RateLimit,
   type RequestIPSource,
+  requestHost,
 } from "./http";
 import { requestContext, type Role, type SessionUser } from "./request-context";
 
@@ -362,13 +364,6 @@ export function deleteSession(db: Database, token: string | null) {
   if (token) db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
 }
 
-function isHttps(req: Request): boolean {
-  return (
-    new URL(req.url).protocol === "https:" ||
-    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https"
-  );
-}
-
 export function sessionCookie(
   req: Request,
   token: string,
@@ -380,7 +375,7 @@ export function sessionCookie(
     "HttpOnly",
     "SameSite=Strict",
     `Max-Age=${maxAgeSeconds}`,
-    ...(isHttps(req) ? ["Secure"] : []),
+    ...(isHttpsRequest(req) ? ["Secure"] : []),
   ].join("; ");
 }
 
@@ -418,6 +413,8 @@ type Rule = { method: string | "*"; pattern: RegExp };
 /* Reachable without a session. Everything else requires one. */
 export const PUBLIC_ROUTES: Rule[] = [
   { method: "GET", pattern: /^\/api\/auth\/status$/ },
+  // Monitoring: liveness + version, no data (health.ts).
+  { method: "GET", pattern: /^\/api\/health$/ },
   { method: "POST", pattern: /^\/api\/auth\/(login|setup|logout)$/ },
   // Einladungslink: read who is invited, set the password (token-gated).
   { method: "*", pattern: /^\/api\/auth\/invite\/[^/]+$/ },
@@ -486,8 +483,7 @@ function sameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
   if (!origin) return true;
   try {
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-    return new URL(origin).host === host;
+    return new URL(origin).host === requestHost(req);
   } catch {
     return false;
   }

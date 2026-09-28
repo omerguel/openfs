@@ -26,15 +26,17 @@ import type { BackupConfig } from "./backups";
 import { type SchoolJobOptions, prepareSchoolDb, startSchoolJobs } from "./bootstrap";
 import { openDb } from "./db";
 import { ValidationError } from "./errors";
-import type { FileStore } from "./file-store";
+import { type FileStore, PrefixedFileStore } from "./file-store";
 import {
   clientIp,
   createRateLimiter,
   err,
   handle,
+  isHttpsRequest,
   json,
   type RateLimit,
   type RequestIPSource,
+  requestHost,
 } from "./http";
 import { requestContext } from "./request-context";
 import { applySetup } from "./setup";
@@ -106,9 +108,7 @@ export function tenantSlugFromHost(
   return sub.includes(".") ? undefined : sub;
 }
 
-export function requestHost(req: Request): string | null {
-  return req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-}
+export { requestHost } from "./http";
 
 /* ------------------------------------------------------------------ */
 /* registry                                                            */
@@ -392,6 +392,9 @@ export function tenantBackupConfig(base: BackupConfig, slug: string): BackupConf
     ...base,
     dir: join(base.dir, slug),
     files: base.files ? `${base.files}/${slug}` : base.files,
+    // Only this school's documents (TenantFileStore keeps them under <slug>/).
+    fileStore: base.fileStore ? new PrefixedFileStore(base.fileStore, `${slug}/`) : null,
+    tenant: slug,
     offsite: base.offsite
       ? {
           ...base.offsite,
@@ -417,6 +420,12 @@ export function contextBackupConfig(base: BackupConfig): BackupConfig {
     },
     get offsite() {
       return current().offsite;
+    },
+    get fileStore() {
+      return current().fileStore;
+    },
+    get tenant() {
+      return current().tenant;
     },
   };
 }
@@ -494,11 +503,7 @@ export function platformRoutes(
             address: text("address"),
             phone: text("phone"),
           });
-          const proto =
-            new URL(req.url).protocol === "https:" ||
-            req.headers.get("x-forwarded-proto") === "https"
-              ? "https"
-              : "http";
+          const proto = isHttpsRequest(req) ? "https" : "http";
           const port = requestHost(req)?.match(/:\d+$/)?.[0] ?? "";
           return json(
             {

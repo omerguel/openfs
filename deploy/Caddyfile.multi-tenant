@@ -1,0 +1,47 @@
+# OpenFS behind Caddy — multi-tenant (MULTI_TENANT=1, BASE_DOMAIN=openfs.de):
+# the platform at openfs.de and every school at <slug>.openfs.de.
+#
+# A wildcard certificate needs the ACME DNS challenge, i.e. a Caddy build
+# with the plugin for your DNS provider, e.g. for Hetzner DNS:
+#
+#   xcaddy build --with github.com/caddy-dns/hetzner
+#   (or download a build with that plugin from caddyserver.com/download)
+#
+# DNS: A/AAAA records for openfs.de and *.openfs.de pointing to this server.
+# The API token comes from the environment (systemctl edit caddy →
+# Environment=HETZNER_API_TOKEN=…), never from this file.
+{
+	email betrieb@openfs.de
+}
+
+openfs.de, www.openfs.de, *.openfs.de {
+	tls {
+		dns hetzner {env.HETZNER_API_TOKEN}
+	}
+
+	encode zstd gzip
+
+	header {
+		# All subdomains are served over HTTPS by this block, so HSTS may
+		# include them. Start with a short max-age, then raise it.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	request_body {
+		max_size 16MB
+	}
+
+	# Caddy passes the original Host (fs-mueller.openfs.de) and sets
+	# X-Forwarded-Host/-Proto/-For; OpenFS picks the school from it.
+	reverse_proxy 127.0.0.1:3000
+
+	log {
+		output file /var/log/caddy/openfs-access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}

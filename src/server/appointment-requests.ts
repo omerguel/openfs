@@ -17,7 +17,7 @@ import {
 } from "./calendar-events";
 import { campaignIdByTrackingCode } from "./campaigns";
 import { ValidationError } from "./engine";
-import { handle, json } from "./http";
+import { clientIp, handle, json } from "./http";
 import {
   notifyAppointmentRequestConfirmed,
   notifyAppointmentRequestDeclined,
@@ -981,7 +981,7 @@ export function appointmentRequestRoutes(
         handle(() => json({ requests: listAppointmentRequests(db) }))(),
       POST: (req: BunRequest, server?: RequestIPSource) =>
         handle(async () => {
-          const ip = server?.requestIP(req)?.address ?? "unknown";
+          const ip = clientIp(req, server);
           if (rateLimited(ip, Date.now())) {
             return json(
               { error: "Zu viele Anfragen. Bitte später erneut versuchen." },
