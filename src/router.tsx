@@ -25,6 +25,7 @@ import { Plaudern } from "./Plaudern";
 import { Preisangebot } from "./Preisangebot";
 import { Profil } from "./Profil";
 import { Pruefungsplaner } from "./Pruefungsplaner";
+import { Schuelerportal } from "./Schuelerportal";
 import { Schulprofil } from "./Schulprofil";
 import { Statistik } from "./Statistik";
 import { Terminanfragen } from "./Terminanfragen";
@@ -206,6 +207,13 @@ const appointmentRequestRoute = createRoute({
   component: Anfrage,
 });
 
+/* Schülerportal — public, token-gated, outside the staff app shell. */
+const studentPortalRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/portal/$token",
+  component: Schuelerportal,
+});
+
 const portalRouteTree = portalRoute.addChildren([
   dashboardRoute,
   profileRoute,
@@ -232,7 +240,11 @@ const portalRouteTree = portalRoute.addChildren([
   archiveRoute,
 ]);
 
-const routeTree = rootRoute.addChildren([portalRouteTree, appointmentRequestRoute]);
+const routeTree = rootRoute.addChildren([
+  portalRouteTree,
+  appointmentRequestRoute,
+  studentPortalRoute,
+]);
 
 export const router = createRouter({
   routeTree,
