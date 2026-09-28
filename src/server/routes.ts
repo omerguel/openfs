@@ -38,7 +38,6 @@ import { UNASSIGNED_VEHICLE } from "../lib/vehicle-options";
 import {
   createVehicle,
   type VehicleInput,
-  listVehicleModels,
   listVehicles,
   updateVehicle,
   deleteVehicle,
@@ -56,6 +55,7 @@ import {
   type ListFilter,
 } from "./engine";
 import { handle, json } from "./http";
+import { listVehicleLabels } from "./refs";
 
 function filterFromUrl(url: string): ListFilter {
   const params = new URL(url).searchParams;
@@ -164,8 +164,9 @@ export function vehicleRoutes(db: Database) {
     "/api/vehicle-options": {
       GET: () =>
         handle(() => {
-          const models = listVehicleModels(db);
-          const options = [...new Set(models), UNASSIGNED_VEHICLE];
+          // Unique labels ("Modell" or "Modell · Kennzeichen" for fleet
+          // mates) — the server resolves each back to exactly one vehicle.
+          const options = [...listVehicleLabels(db), UNASSIGNED_VEHICLE];
           return json({ vehicleOptions: options });
         })(),
     },
