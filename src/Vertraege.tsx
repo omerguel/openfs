@@ -21,6 +21,7 @@ import { useFinanceAccess } from "@/hooks/use-finance-access";
 import { useStudents, type StudentRecord } from "@/hooks/use-students";
 import { usePricePlans } from "@/hooks/use-price-plans";
 import { type StudentBalance, accountingApi, useApi } from "@/components/buchhaltung/api";
+import { archiveReasonLabel } from "@/lib/archive-reasons";
 import { BALANCE_TONE_CLASS, describeBalance } from "@/lib/student-balance";
 import { cn } from "@/lib/utils";
 import {
@@ -386,7 +387,7 @@ export function Vertraege() {
                         </span>
                         {row.archived?.reason ? (
                           <span className="text-xs text-muted-foreground">
-                            {row.archived.reason}
+                            {archiveReasonLabel(row.archived.reason)}
                           </span>
                         ) : (
                           showBalance && (
@@ -477,7 +478,7 @@ export function Vertraege() {
                           <StatusBadge row={row} />
                           {row.archived?.reason && (
                             <span className="text-[11px] text-muted-foreground">
-                              {row.archived.reason}
+                              {archiveReasonLabel(row.archived.reason)}
                             </span>
                           )}
                         </div>

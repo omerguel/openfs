@@ -73,6 +73,8 @@ export type ArchiveRecord = {
   /** Short summary of the snapshot (Kundennummer, Datum, Kennzeichen …)
       so similar entries can be told apart before restoring. */
   detail: string;
+  /** Why it was archived (students only; null = not given). */
+  reason: string | null;
 };
 
 type ArchiveRow = {
@@ -147,7 +149,17 @@ const toRecord = (row: ArchiveRow): ArchiveRecord => ({
   deletedAt: `${row.deleted_at.replace(" ", "T")}Z`,
   deletedBy: row.deleted_by ?? "",
   detail: archiveDetail(row.entity, row.payload),
+  reason: archiveReason(row.payload),
 });
+
+function archiveReason(payload: string): string | null {
+  try {
+    const reason = (JSON.parse(payload) as { reason?: unknown }).reason;
+    return typeof reason === "string" && reason ? reason : null;
+  } catch {
+    return null;
+  }
+}
 
 /* Snapshot a row into the archive. Call this inside the same
    transaction that deletes the row. */

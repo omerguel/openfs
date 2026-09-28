@@ -27,6 +27,7 @@ import {
   type ArchiveEntity,
   type ArchiveItem,
 } from "@/hooks/use-archive";
+import { archiveReasonLabel } from "@/lib/archive-reasons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -111,8 +112,13 @@ function ArchiveRow({
               {item.detail}
             </span>
           )}
+          {item.reason && (
+            <span className="text-xs text-muted-foreground">
+              Grund: {archiveReasonLabel(item.reason)}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground tabular-nums">
-            Gelöscht am {formatDeletedAt(item.deletedAt)}
+            Archiviert am {formatDeletedAt(item.deletedAt)}
             {item.deletedBy ? ` von ${item.deletedBy}` : ""}
           </span>
         </div>

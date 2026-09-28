@@ -21,6 +21,8 @@ export type ArchiveItem = {
   deletedBy: string;
   /** Short summary (Kundennummer, Termin-Datum, Kennzeichen …). */
   detail: string;
+  /** Why it was archived (students only). */
+  reason: string | null;
 };
 
 export async function fetchArchive(): Promise<ArchiveItem[]> {

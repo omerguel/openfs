@@ -18,6 +18,7 @@ import { PreiseTab } from "./components/fahrschueler/PreiseTab";
 import { StundenTab } from "./components/fahrschueler/StundenTab";
 import { UebersichtTab } from "./components/fahrschueler/UebersichtTab";
 import { ZahlungTab } from "./components/fahrschueler/ZahlungTab";
+import { ARCHIVE_REASONS } from "@/lib/archive-reasons";
 import type { Student } from "@/lib/student-data";
 import { BALANCE_DOT_CLASS, describeBalance } from "@/lib/student-balance";
 import { cn } from "@/lib/utils";
@@ -62,13 +63,6 @@ const tabs: { value: TabKey; label: string; money?: boolean }[] = [
   { value: "dokumente", label: "Dokumente" },
   { value: "zahlung", label: "Zahlungserfassung", money: true },
   { value: "preise", label: "Preise", money: true },
-];
-
-const ARCHIVE_REASONS: { value: string; label: string }[] = [
-  { value: "abgeschlossen", label: "Ausbildung abgeschlossen" },
-  { value: "abgebrochen", label: "Ausbildung abgebrochen" },
-  { value: "wechsel", label: "Wechsel zu anderer Fahrschule" },
-  { value: "sonstiges", label: "Sonstiges" },
 ];
 
 function ArchiveDialog({
