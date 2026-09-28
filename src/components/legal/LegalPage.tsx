@@ -15,6 +15,7 @@ import {
   type LegalField,
   type LegalInfo,
 } from "@/lib/legal";
+import { SETTINGS_TAB_LABELS, type SettingsTab } from "@/lib/settings-tabs";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,17 @@ export function StaffOnly({ children }: { children: ReactNode }) {
   return useIsStaffViewer() ? children : null;
 }
 
+/* Where each field is edited in "Fahrschule & Einstellungen". */
+const LEGAL_TAB_FIELDS: LegalField[] = [
+  "registergericht",
+  "registernummer",
+  "aufsichtsbehoerde",
+  "datenschutzEmail",
+  "impressumZusatz",
+];
+const legalFieldTab = (field: LegalField): SettingsTab =>
+  LEGAL_TAB_FIELDS.includes(field) ? "recht" : "stammdaten";
+
 export function MissingFieldsNotice({ fields }: { fields: LegalField[] }) {
   const staff = useIsStaffViewer();
   if (!staff || fields.length === 0) return null;
@@ -71,8 +83,13 @@ export function MissingFieldsNotice({ fields }: { fields: LegalField[] }) {
         Im Profil der Fahrschule fehlen noch:{" "}
         {fields.map((field) => LEGAL_FIELD_LABELS[field]).join(", ")}. Bitte ergänzen Sie
         diese Angaben unter{" "}
-        <Link to="/profil" className="font-medium text-foreground underline">
-          Profil → Stammdaten
+        <Link
+          to="/fahrschule"
+          search={{ tab: legalFieldTab(fields[0]!) }}
+          className="font-medium text-foreground underline"
+        >
+          Fahrschule &amp; Einstellungen →{" "}
+          {SETTINGS_TAB_LABELS[legalFieldTab(fields[0]!)]}
         </Link>
         . Besucher sehen diesen Hinweis nicht; fehlende Angaben werden für sie
         ausgelassen.
