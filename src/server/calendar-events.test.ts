@@ -546,7 +546,41 @@ describe("overlap checks", () => {
         instructor: "Nadine Aksoy",
         vehicle: "VW Golf",
       }),
-    ).toThrow(/für Fahrzeug VW Golf/);
+    ).toThrow(/Fahrzeug VW Golf ist bereits belegt: „Golf-Stunde“ \(09:00–10:00\)/);
+  });
+
+  test("a vehicle double booking cannot be overridden with allowConflicts", () => {
+    createCalendarEvent(db, { ...VALID, vehicle: "VW Golf", subtitle: "Lena Braun" });
+    expect(() =>
+      createCalendarEvent(db, {
+        ...VALID,
+        instructor: "Nadine Aksoy",
+        vehicle: "VW Golf",
+        allowConflicts: true,
+      }),
+    ).toThrow(/Fahrzeug VW Golf ist bereits belegt: „Fahrstunde“ mit Lena Braun/);
+    // Moving onto the booked vehicle is blocked as well.
+    const other = createCalendarEvent(db, {
+      ...VALID,
+      instructor: "Nadine Aksoy",
+      vehicle: "Audi A3",
+    });
+    expect(() =>
+      updateCalendarEvent(db, Number(other.id), {
+        vehicle: "VW Golf",
+        allowConflicts: true,
+      }),
+    ).toThrow(/ist bereits belegt/);
+  });
+
+  test("instructor overlap names the student and stays overridable", () => {
+    createCalendarEvent(db, { ...VALID, subtitle: "Lena Braun" });
+    expect(() => createCalendarEvent(db, { ...VALID, vehicle: "VW Golf" })).toThrow(
+      "Überschneidung mit „Fahrstunde“ mit Lena Braun (09:00–10:00) für Fahrlehrer/in Martin Weber.",
+    );
+    expect(
+      createCalendarEvent(db, { ...VALID, vehicle: "VW Golf", allowConflicts: true }).id,
+    ).toBeTruthy();
   });
 
   test("touching edges, other days and other resources do not conflict", () => {
@@ -637,5 +671,37 @@ describe("daily practical limit warnings", () => {
       end: "19:30",
     });
     expect(theory.warnings).toBeUndefined();
+  });
+});
+
+describe("vehicle maintenance warning", () => {
+  test("booking a vehicle in 'wartung' returns a warning, not an error", () => {
+    const event = createCalendarEvent(db, { ...VALID, vehicle: "Audi A3" });
+    expect(event.warnings).toEqual(["Fahrzeug Audi A3 ist als „In Wartung“ markiert."]);
+    const ok = createCalendarEvent(db, { ...VALID, date: "2026-06-11", vehicle: "VW Golf" });
+    expect(ok.warnings).toBeUndefined();
+  });
+
+  test("editing only the title does not repeat the warning", () => {
+    const event = createCalendarEvent(db, { ...VALID, vehicle: "Audi A3" });
+    const renamed = updateCalendarEvent(db, Number(event.id), { title: "Neu" });
+    expect(renamed.warnings).toBeUndefined();
+  });
+});
+
+describe("notes", () => {
+  test("are stored, trimmed, updated and omitted when empty", () => {
+    const event = createCalendarEvent(db, { ...VALID, notes: "  Abholung Bahnhof " });
+    expect(event.notes).toBe("Abholung Bahnhof");
+    const kept = updateCalendarEvent(db, Number(event.id), { title: "Neu" });
+    expect(kept.notes).toBe("Abholung Bahnhof");
+    const cleared = updateCalendarEvent(db, Number(event.id), { notes: "" });
+    expect(cleared.notes).toBeUndefined();
+  });
+
+  test("longer than 2000 characters → ValidationError", () => {
+    expect(() => createCalendarEvent(db, { ...VALID, notes: "x".repeat(2001) })).toThrow(
+      /höchstens 2000 Zeichen/,
+    );
   });
 });
