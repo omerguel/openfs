@@ -637,7 +637,7 @@ describe("POST /api/calendar-events/:id/bill", () => {
     expect(errBody.error).toContain("abgerechnet");
   });
 
-  test("billing a Theorie event → 400 'praktische Fahrstunden'", async () => {
+  test("billing a Theorie (lesson) event → 400 'praktische Fahrstunden'", async () => {
     const res1 = await fetch(url("/api/calendar-events"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -674,6 +674,54 @@ describe("POST /api/calendar-events/:id/bill", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("praktische");
+  });
+
+  test("billing a practical exam books service + TÜV fee as one two-line transaction", async () => {
+    const student = await createTestStudent();
+    const created = await fetch(url("/api/calendar-events"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date: "2026-06-20",
+        start: "09:00",
+        end: "10:00",
+        title: "Praktische Prüfung",
+        instructor: "Martin Weber",
+        type: "Vorstellung zur prakt. Prüfung",
+        studentId: student.id,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const exam = (await created.json()) as { id: string };
+
+    const res = await fetch(url(`/api/calendar-events/${exam.id}/bill`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "guthaben_uebertragung",
+        date: "2026-06-20",
+        amountCents: 28000 + 12983,
+        student: {
+          customerNo: student.customerNumber,
+          name: "Bill Test",
+          address: "",
+          contractNo: student.contractNumber,
+          classes: "B",
+        },
+        description: "",
+        lines: [
+          { habenKonto: "4400", amountCents: 28000, description: "Praktische Prüfung" },
+          { habenKonto: "1370", amountCents: 12983, description: "TÜV-Gebühr Praxis" },
+        ],
+      }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      transaction: { id: number; bookings: { haben: string }[] };
+      event: { billedActive: boolean };
+    };
+    expect(body.transaction.bookings.map((b) => b.haben)).toEqual(["4400", "1370"]);
+    expect(body.event.billedActive).toBe(true);
   });
 
   test("billing event without studentId → 400 'Kein Fahrschüler'", async () => {

@@ -35,6 +35,7 @@ import {
   updateCalendarEvent,
 } from "./calendar-events";
 import { UNASSIGNED_VEHICLE } from "../lib/vehicle-options";
+import { BILLABLE_EVENT_TYPES } from "../lib/price-plan";
 import {
   createVehicle,
   type VehicleInput,
@@ -258,9 +259,9 @@ export function calendarEventRoutes(db: Database) {
 
           // Pre-flight: load event, validate prerequisites.
           const event = getCalendarEvent(db, id);
-          if (event.type !== "Praktisch") {
+          if (!(BILLABLE_EVENT_TYPES as string[]).includes(event.type)) {
             throw new ValidationError(
-              "Nur praktische Fahrstunden können abgerechnet werden.",
+              "Nur praktische Fahrstunden und Prüfungen können abgerechnet werden.",
             );
           }
           if (event.studentId == null) {

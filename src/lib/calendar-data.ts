@@ -89,6 +89,11 @@ export const eventPresets: EventPreset[] = [
    exams, exam prep and other appointments are NOT Fahrstunden. */
 export const isFahrstunde = (event: { type: EventType }) => event.type === "Praktisch";
 
+/* Exams are billable like Fahrstunden (Vorstellungsentgelt + Prüfgebühr),
+   through the multi-line charge dialog. */
+export const isExamEvent = (event: { type: EventType }) =>
+  event.type === "Theorieprüfung" || event.type === "Vorstellung zur prakt. Prüfung";
+
 export const nonFahrstundeTypes = eventTypeOptions.filter(
   (type) => !isFahrstunde({ type }),
 );

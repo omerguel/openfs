@@ -11,12 +11,17 @@ import { toast } from "sonner";
 import {
   eventTypeOptions,
   eventTypeShortLabel,
+  isExamEvent,
   isFahrstunde,
   toMinutes,
   type CalEvent,
   type EventType,
 } from "@/lib/calendar-data";
-import { resolveLessonPrice } from "@/lib/price-plan";
+import {
+  type BillableEventType,
+  resolveEventCharges,
+  resolveLessonPrice,
+} from "@/lib/price-plan";
 import { billCalendarEvent, useCalendarEvents } from "@/hooks/use-calendar-events";
 import { usePricePlans } from "@/hooks/use-price-plans";
 import { useStudents } from "@/hooks/use-students";
@@ -25,6 +30,7 @@ import { accountingApi, useApi } from "@/components/buchhaltung/api";
 import { PaymentDialog } from "@/components/buchhaltung/PaymentDialog";
 import { AusbildungsnachweisPrintDialog } from "@/components/fahrschueler/AusbildungsnachweisPrintDialog";
 import { BatchBillDialog } from "@/components/fahrschueler/BatchBillDialog";
+import { ChargeDialog } from "@/components/fahrschueler/ChargeDialog";
 import { SignaturePad } from "@/components/SignaturePad";
 import type { SignaturePadHandle } from "@/components/SignaturePad";
 import { Badge } from "@/components/ui/badge";
@@ -276,6 +282,8 @@ function NachweisViewDialog({ open, attestation, onClose }: NachweisViewDialogPr
 export function StundenTab({ student }: { student: StudentRecord }) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("alle");
   const [billTarget, setBillTarget] = useState<CalEvent | null>(null);
+  /* Exams bill through the multi-line ChargeDialog (service + Prüfgebühr). */
+  const [examBillTarget, setExamBillTarget] = useState<CalEvent | null>(null);
   const [batchBillOpen, setBatchBillOpen] = useState(false);
   const [nachweisPrintOpen, setNachweisPrintOpen] = useState(false);
   const [nachweisTarget, setNachweisTarget] = useState<CalEvent | null>(null);
@@ -375,6 +383,14 @@ export function StundenTab({ student }: { student: StudentRecord }) {
       defaultHabenKonto: "4400",
     };
   }, [billTarget, studentPlan]);
+
+  const examProposals = useMemo(
+    () =>
+      examBillTarget && isExamEvent(examBillTarget)
+        ? resolveEventCharges(studentPlan, examBillTarget.type as BillableEventType)
+        : [],
+    [examBillTarget, studentPlan],
+  );
 
   const handleBillSubmit = async (input: CreateTransactionInput) => {
     if (!billTarget) return;
@@ -522,10 +538,12 @@ export function StundenTab({ student }: { student: StudentRecord }) {
               <TableBody>
                 {events.map((event) => {
                   const isPraktisch = isFahrstunde(event);
-                  const state = isPraktisch ? billingState(event) : null;
+                  const isExam = isExamEvent(event);
+                  const isBillable = isPraktisch || isExam;
+                  const state = isBillable ? billingState(event) : null;
                   const hasStudent = event.studentId != null;
                   const billDisabledReason =
-                    isPraktisch && !hasStudent ? "Kein Fahrschüler verknüpft" : null;
+                    isBillable && !hasStudent ? "Kein Fahrschüler verknüpft" : null;
 
                   const attestation = attestationMap.get(event.id);
                   const nachweisChecked = attestationMap.has(event.id);
@@ -563,7 +581,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
 
                       {/* Abrechnung column */}
                       <TableCell>
-                        {!isPraktisch ? null : state === "billed" ? (
+                        {!isBillable ? null : state === "billed" ? (
                           <span className="text-muted-foreground text-xs">
                             Abgerechnet
                           </span>
@@ -587,7 +605,9 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                               variant="outline"
                               size="sm"
                               className="h-6 px-2 text-xs"
-                              onClick={() => setBillTarget(event)}
+                              onClick={() =>
+                                isExam ? setExamBillTarget(event) : setBillTarget(event)
+                              }
                             >
                               <Receipt className="mr-1 size-3" />
                               Abrechnen
@@ -651,6 +671,21 @@ export function StundenTab({ student }: { student: StudentRecord }) {
             onCreated={() => {}}
           />
         )}
+
+        {/* Exam billing: Vorstellungsentgelt + Prüfgebühr as one transaction */}
+        <ChargeDialog
+          event={examBillTarget}
+          student={studentRef}
+          proposals={examProposals}
+          onClose={() => setExamBillTarget(null)}
+          onSubmit={async (input) => {
+            if (!examBillTarget) return;
+            await billCalendarEvent(examBillTarget.id, input);
+            await refreshEvents();
+            setExamBillTarget(null);
+            toast.success("Prüfung abgerechnet.");
+          }}
+        />
 
         {/* Batch billing confirmation dialog */}
         {batchBillOpen && (
