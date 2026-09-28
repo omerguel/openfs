@@ -427,6 +427,19 @@ export function Kalendar() {
   useEffect(() => {
     setCalendarEvents(storedEvents);
   }, [storedEvents]);
+  /** Puts a card at a date/time locally (failed drag, undo). */
+  const placeEvent = useCallback(
+    (id: string, slot: { date: string; start: string; end: string }) => {
+      setCalendarEvents((current) =>
+        current.map((event) =>
+          event.id === id
+            ? { ...event, date: slot.date, start: slot.start, end: slot.end }
+            : event,
+        ),
+      );
+    },
+    [],
+  );
   // dragResultRef holds the exact final position computed synchronously on
   // every pointermove. Drag-end reads it instead of calendarEvents state, so
   // the persisted value is never behind by one React commit cycle.
@@ -763,7 +776,12 @@ export function Kalendar() {
                     ...previous,
                     allowConflicts: true,
                   })
-                    .then(() => toast.success("Änderung rückgängig gemacht."))
+                    .then((restored) => {
+                      // The refetch returns what the cache already holds,
+                      // so local state must be moved back explicitly.
+                      placeEvent(id, restored);
+                      toast.success("Änderung rückgängig gemacht.");
+                    })
                     .catch((error: unknown) =>
                       toast.error(errorMessage(error, "Rückgängig fehlgeschlagen.")),
                     )
@@ -779,6 +797,7 @@ export function Kalendar() {
           })
           .catch((error: unknown) => {
             toast.error(errorMessage(error, "Termin konnte nicht gespeichert werden."));
+            placeEvent(id, previous);
             void refreshEvents();
           });
       }
@@ -795,7 +814,7 @@ export function Kalendar() {
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);
     };
-  }, [dragging, refreshEvents, refetchConflicts]);
+  }, [dragging, refreshEvents, refetchConflicts, placeEvent]);
 
   const selectedEvent = useMemo(
     () =>
