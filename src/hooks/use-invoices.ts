@@ -12,9 +12,11 @@ import type {
   Invoice,
   InvoiceReminder,
   InvoicingSettings,
+  OpeningBalanceReminder,
   OpenItems,
   UninvoicedCharge,
 } from "@/lib/invoice-types";
+import type { OutboxEntry } from "@/hooks/use-mail";
 import { queryClient } from "@/lib/query-client";
 
 async function post<T>(url: string, body: unknown, method = "POST"): Promise<T> {
@@ -100,6 +102,26 @@ export async function createReminder(
   const reminder = await post<InvoiceReminder>(`/api/invoices/${id}/reminders`, input);
   await invalidateInvoices();
   return reminder;
+}
+
+export async function createOpeningReminder(
+  transactionId: number,
+  input: { date: string; feeCents?: number },
+): Promise<OpeningBalanceReminder> {
+  const reminder = await post<OpeningBalanceReminder>(
+    `/api/open-items/saldovortrag/${transactionId}/reminders`,
+    input,
+  );
+  await invalidateInvoices();
+  return reminder;
+}
+
+/** Queue an invoice/Mahnung PDF in the Postausgang (see invoice-documents.ts). */
+export async function sendDocumentMail(
+  url: string,
+  body: Record<string, unknown>,
+): Promise<OutboxEntry> {
+  return post<OutboxEntry>(url, body);
 }
 
 export async function saveInvoicingSettings(
