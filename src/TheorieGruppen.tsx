@@ -670,7 +670,8 @@ function AttendanceDialog({
                     </label>
                   </div>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {countByMember[member.id] ?? 0} Einheiten
+                    {countByMember[member.id] ?? 0}{" "}
+                    {(countByMember[member.id] ?? 0) === 1 ? "Einheit" : "Einheiten"}
                   </span>
                 </li>
               ))}
