@@ -10,6 +10,7 @@ import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
+import { mailRoutes, type MailRouteOptions } from "./mail";
 import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
@@ -25,7 +26,11 @@ import {
   vehicleRoutes,
 } from "./routes";
 
-export function buildApiRoutes(db: Database) {
+export type ApiRouteOptions = {
+  mail?: MailRouteOptions;
+};
+
+export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
   return {
     ...accountingRoutes(db),
     ...archiveRoutes(db),
@@ -44,5 +49,6 @@ export function buildApiRoutes(db: Database) {
     ...schoolProfileRoutes(db),
     ...statisticsRoutes(db),
     ...attestationRoutes(db),
+    ...mailRoutes(db, options.mail),
   };
 }

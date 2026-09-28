@@ -7,6 +7,9 @@ import { seedTransactions } from "./server/seed";
 import { ensureTheoryGroupTables } from "./server/theory-groups";
 import { ensureAttestationTables } from "./server/ausbildungsnachweis";
 import { buildApiRoutes } from "./server/app-routes";
+import { ensureMailTables, startMailScheduler } from "./server/mail";
+import { createSmtpTransport, smtpConfigFromEnv } from "./server/smtp";
+import { localIsoDate, queueLessonReminders } from "./server/notifications";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
@@ -22,6 +25,24 @@ seedTransactions(db);
 // Runs after the students/instructors seeds so seed groups pick up real names.
 ensureTheoryGroupTables(db);
 ensureAttestationTables(db);
+ensureMailTables(db);
+
+/* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
+   local time on, so nobody gets a mail at midnight) and deliver the
+   outbox. Demo mode never sends — it runs without a transport, which
+   only marks queued mails 'nicht_konfiguriert' so the UI shows them. */
+const REMINDER_HOUR = 9;
+const smtpConfig = demoMode ? null : smtpConfigFromEnv();
+// `bun --hot` re-runs this module — stop the previous interval first.
+const hot = globalThis as { __openfsStopMailScheduler?: () => void };
+hot.__openfsStopMailScheduler?.();
+hot.__openfsStopMailScheduler = startMailScheduler(db, {
+  transport: smtpConfig ? createSmtpTransport(smtpConfig) : null,
+  intervalMs: 60_000,
+  beforeDelivery: (now) => {
+    if (now.getHours() >= REMINDER_HOUR) queueLessonReminders(db, localIsoDate(now));
+  },
+});
 
 const server = serve({
   // Keep the development UI reachable from other devices on the local network.
@@ -31,7 +52,7 @@ const server = serve({
     // Serve index.html for all unmatched routes.
     "/*": index,
 
-    ...buildApiRoutes(db),
+    ...buildApiRoutes(db, { mail: { config: smtpConfig } }),
   },
 
   development: process.env.NODE_ENV !== "production" && {
