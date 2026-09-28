@@ -198,6 +198,32 @@ describe("isolation", () => {
     expect([...files.files.keys()]).toEqual(["alpha/x/1.pdf"]);
   });
 
+  test("Löschkonzept: settings, holds and runs are per school", async () => {
+    await provision("alpha", "Fahrschule Alpha");
+    await provision("beta", "Fahrschule Beta");
+    const alpha = await login("alpha");
+    const beta = await login("beta");
+    const put = await fetch(
+      `${url}/api/admin/retention/policy`,
+      at("alpha", {
+        method: "PUT",
+        cookie: alpha,
+        body: JSON.stringify({ mode: "automatisch", months: { anfragen: 2 } }),
+      }),
+    );
+    expect(put.status).toBe(200);
+    const overview = async (slug: string, cookie: string) =>
+      (await (
+        await fetch(`${url}/api/admin/retention`, at(slug, { cookie }))
+      ).json()) as {
+        policy: { mode: string; months: { anfragen: number } };
+      };
+    expect((await overview("alpha", alpha)).policy.mode).toBe("automatisch");
+    const other = await overview("beta", beta);
+    expect(other.policy.mode).toBe("bestaetigung");
+    expect(other.policy.months.anfragen).toBe(6);
+  });
+
   test("the context database refuses to work outside a request", () => {
     expect(() => createContextDb().query("SELECT 1")).toThrow();
   });

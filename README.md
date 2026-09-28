@@ -89,7 +89,9 @@ Every write (`POST`/`PUT`/`PATCH`/`DELETE`) — public ones such as sign-in, set
 
 The sidebar is grouped and collapsible (collapsed groups are remembered per browser): **Übersicht** (Dashboard, Kalender, Mein Tag for Fahrlehrer), **Schüler** (Fahrschüler, Schüler anmelden, Terminanfragen, Verträge, Archiv), **Ausbildung** (Theorie, Theoriegruppen, Prüfungsplaner), **Finanzen** (Rechnungen, Buchhaltung, Preise, Statistik), **Kommunikation** (Chat, Nachrichten, Bewertungen, Marketing) and **Verwaltung** (Fahrschule & Einstellungen, Fahrlehrer, Fahrzeuge, Benutzer, Datenimport, Datensicherung). Add a page by adding one entry to `NAV_GROUPS` in `src/lib/navigation.ts`.
 
-*Fahrschule & Einstellungen* (`/fahrschule?tab=…`) holds all school settings in tabs — Stammdaten & Steuer, Bankverbindung, Öffentliches Profil, Öffnungszeiten, Standorte, Rechtliches, Terminabsagen. The old URLs `/profil` and `/schulprofil` redirect there, `/kalendar` redirects to `/kalender`.
+*Fahrschule & Einstellungen* (`/fahrschule?tab=…`) holds all school settings in tabs — Stammdaten & Steuer, Bankverbindung, Öffentliches Profil, Öffnungszeiten, Standorte, Rechtliches, Terminabsagen, Datenschutz. The old URLs `/profil` and `/schulprofil` redirect there, `/kalendar` redirects to `/kalender`.
+
+**Datenschutz / Löschkonzept** (tab *Datenschutz*, Inhaber only): retention periods per category (enquiries, documents, chat, portal links, mail/SMS log, audit log, Ausbildungsnachweis, student master data, accounting), a daily per-school job that deletes or anonymises what is due — after the owner confirms the Löschvorschau (default) or automatically — „Aufbewahrung verlängern“ (legal hold), the last runs, and per student an Auskunft (Art. 15, printable + JSON) and Löschen auf Antrag (Art. 17). Bookings and invoices stay untouched until their 10-year period is over; only then are names pseudonymised (amounts and numbers stay). Details and legal basis: `docs/datenschutz/loeschkonzept.md`; legal templates (AGB, AVV, Art. 30, Art. 13): `docs/legal/`.
 
 ### Multi-tenant mode (one portal per school)
 

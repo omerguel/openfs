@@ -4,6 +4,8 @@
 /* Clients send intent (type + params); the engine derives the         */
 /* Soll/Haben accounts, VAT split and document numbers server-side.    */
 /* Bookings are immutable; corrections happen via Storno reversals.    */
+/* Sole exception: pseudonymiseExpiredCustomer (Löschkonzept) replaces */
+/* names in records whose statutory retention period is over.          */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -22,6 +24,7 @@ import type {
 } from "../lib/accounting-types";
 import { TRANSACTION_TYPE_LABELS } from "../lib/accounting-types";
 import { splitVat } from "../lib/money";
+import { periodEnd } from "../lib/retention";
 import { getCompany, nextBelegNr, nextBuchungNr, nextQuittungNr } from "./db";
 import { SALDOVORTRAG_SETTLEMENT_LINE, unsettledOpeningDebt } from "./open-items";
 
@@ -1003,4 +1006,148 @@ export function listStudentBalances(db: Database): StudentBalance[] {
       name: row.name ?? "",
       balanceCents: row.balance_cents,
     }));
+}
+
+/* ---------------- retention: expired accounting years -------------- */
+
+/** Shortest period after which accounting records of a year may be
+ *  touched: Bücher/Aufzeichnungen 10 Jahre (§ 147 Abs. 1 Nr. 1, Abs. 3 AO,
+ *  § 257 HGB), counted from the end of the calendar year (§ 147 Abs. 4 AO). */
+export const ACCOUNTING_RETENTION_MONTHS = 120;
+
+export type PseudonymiseResult = { transactions: number; invoices: number };
+
+function hasTable(db: Database, name: string): boolean {
+  return (
+    db
+      .query<{ n: number }, [string]>(
+        "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get(name)!.n > 0
+  );
+}
+
+/** Newest booking/invoice date of a customer (null = no records). */
+export function latestAccountingDate(db: Database, customerNo: string): string | null {
+  const tx = db
+    .query<{ date: string | null }, [string]>(
+      "SELECT max(date) AS date FROM transactions WHERE student_customer_no = ?",
+    )
+    .get(customerNo)!.date;
+  const inv = hasTable(db, "invoices")
+    ? db
+        .query<{ date: string | null }, [string]>(
+          "SELECT max(date) AS date FROM invoices WHERE student_customer_no = ?",
+        )
+        .get(customerNo)!.date
+    : null;
+  if (!tx) return inv;
+  if (!inv) return tx;
+  return tx > inv ? tx : inv;
+}
+
+/**
+ * Löschkonzept — the one narrowly scoped exception to immutability, for
+ * records whose statutory retention period is OVER (see
+ * docs/datenschutz/loeschkonzept.md): once every booking and invoice of a
+ * customer lies in years whose period ended, the personal data they
+ * embed (name, address, the name inside Buchungstext / Rechnungszeilen)
+ * is replaced by a pseudonym. Amounts, accounts, dates, Beleg-/Buchungs-
+ * /Rechnungsnummern, the gapless sequences and all balances stay exactly
+ * as they are — nothing is deleted, no row is added or removed.
+ *
+ * Refuses (ValidationError) while any record of the customer is still
+ * within its period, so it can never alter a record under GoBD retention.
+ * Idempotent: a second call finds nothing left to replace.
+ */
+export function pseudonymiseExpiredCustomer(
+  db: Database,
+  input: {
+    customerNo: string;
+    pseudonym: string;
+    /** Extra names to replace (e.g. from the student master data). */
+    names?: string[];
+    /** ISO date of the run. */
+    today: string;
+    /** Retention period in months (never below 120). */
+    months?: number;
+  },
+): PseudonymiseResult {
+  const months = Math.max(
+    input.months ?? ACCOUNTING_RETENTION_MONTHS,
+    ACCOUNTING_RETENTION_MONTHS,
+  );
+  const customerNo = input.customerNo.trim();
+  if (!customerNo) throw new ValidationError("Kundennummer fehlt.");
+  const latest = latestAccountingDate(db, customerNo);
+  if (!latest) return { transactions: 0, invoices: 0 };
+  const end = periodEnd(latest, months, true);
+  if (!(end < input.today)) {
+    throw new ValidationError(
+      `Aufbewahrungsfrist der Buchhaltung für Kunde ${customerNo} läuft noch bis ${end}.`,
+    );
+  }
+  const withInvoices = hasTable(db, "invoices");
+
+  const names = new Set<string>(input.names ?? []);
+  for (const row of db
+    .query<{ name: string | null }, [string]>(
+      "SELECT DISTINCT student_name AS name FROM transactions WHERE student_customer_no = ?",
+    )
+    .all(customerNo)) {
+    if (row.name) names.add(row.name);
+  }
+  if (withInvoices) {
+    for (const row of db
+      .query<{ name: string }, [string]>(
+        "SELECT DISTINCT recipient_name AS name FROM invoices WHERE student_customer_no = ?",
+      )
+      .all(customerNo)) {
+      if (row.name) names.add(row.name);
+    }
+  }
+  const replaceable = [...names]
+    .map((name) => name.trim())
+    .filter((name) => name.length >= 3 && name !== input.pseudonym)
+    // Longest first, so "Max Muster" goes before a bare "Max".
+    .sort((a, b) => b.length - a.length);
+
+  let transactions = 0;
+  let invoices = 0;
+  db.transaction(() => {
+    for (const name of replaceable) {
+      db.prepare(
+        `UPDATE transactions SET description = replace(description, ?1, ?2)
+         WHERE student_customer_no = ?3 AND instr(description, ?1) > 0`,
+      ).run(name, input.pseudonym, customerNo);
+      db.prepare(
+        `UPDATE bookings SET line_description = replace(line_description, ?1, ?2)
+         WHERE transaction_id IN (SELECT id FROM transactions WHERE student_customer_no = ?3)
+           AND instr(line_description, ?1) > 0`,
+      ).run(name, input.pseudonym, customerNo);
+      if (withInvoices) {
+        db.prepare(
+          `UPDATE invoices SET lines = replace(lines, ?1, ?2), note = replace(note, ?1, ?2)
+           WHERE student_customer_no = ?3 AND (instr(lines, ?1) > 0 OR instr(note, ?1) > 0)`,
+        ).run(name, input.pseudonym, customerNo);
+      }
+    }
+    transactions = db
+      .prepare(
+        `UPDATE transactions SET student_name = ?1, student_address = ''
+         WHERE student_customer_no = ?2
+           AND (student_name IS NOT ?1 OR coalesce(student_address, '') != '')`,
+      )
+      .run(input.pseudonym, customerNo).changes;
+    if (withInvoices) {
+      invoices = db
+        .prepare(
+          `UPDATE invoices SET recipient_name = ?1, recipient_address = ''
+           WHERE student_customer_no = ?2
+             AND (recipient_name != ?1 OR recipient_address != '')`,
+        )
+        .run(input.pseudonym, customerNo).changes;
+    }
+  })();
+  return { transactions, invoices };
 }

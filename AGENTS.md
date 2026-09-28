@@ -44,6 +44,7 @@ The accounting module enforces GoBD: immutable bookings, Storno-only corrections
 
 **The only permitted write paths are `createTransaction` and `stornoTransaction` in `src/server/engine.ts`.**
 Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
+The one documented exception is `pseudonymiseExpiredCustomer` in `src/server/engine.ts` (DSGVO Löschkonzept, `docs/datenschutz/loeschkonzept.md`): once every record of a customer is past its retention period (10 years), it replaces names and addresses; amounts, numbers, rows and sequences stay unchanged. It refuses while any record of that customer is still inside the period. Do not add other exceptions.
 
 ### Instructor / vehicle references
 `students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record). A vehicle's "Fahrlehrer/in" is not stored on the vehicle: it is derived from `instructors.vehicle_id` (Stammfahrzeug); setting it on a vehicle moves that instructor's Stammfahrzeug (`src/server/vehicles.ts`).

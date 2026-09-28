@@ -12,8 +12,13 @@ import { FileWarning } from "lucide-react";
 import {
   missingDatenschutzFields,
   privacyContactEmail,
-  type LegalInfo,
+  type PublicLegalInfo,
 } from "@/lib/legal";
+import {
+  DEFAULT_RETENTION_POLICY,
+  formatPeriod,
+  type RetentionCategory,
+} from "@/lib/retention";
 import {
   Address,
   LabeledLine,
@@ -43,8 +48,17 @@ function List({ items }: { items: string[] }) {
   );
 }
 
-function DatenschutzContent({ info }: { info: LegalInfo }) {
+/* Löschfristen as the retention job applies them (Fahrschule →
+   Datenschutz); falls back to the defaults for older servers. */
+function periodOf(info: PublicLegalInfo, category: RetentionCategory): string {
+  return formatPeriod(
+    info.retention?.[category] ?? DEFAULT_RETENTION_POLICY.months[category],
+  );
+}
+
+function DatenschutzContent({ info }: { info: PublicLegalInfo }) {
   const privacyEmail = privacyContactEmail(info);
+  const period = (category: RetentionCategory) => periodOf(info, category);
   return (
     <div className="space-y-8">
       <StaffOnly>
@@ -159,13 +173,9 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           Zweck ist die Bearbeitung Ihrer Anfrage und die Vereinbarung eines Termins.
           Rechtsgrundlage ist Art. 6 Abs. 1 lit. b DSGVO (Durchführung vorvertraglicher
           Maßnahmen auf Ihre Anfrage). Wird ein Termin bestätigt oder abgelehnt und haben
-          Sie eine E-Mail-Adresse angegeben, erhalten Sie darüber eine E-Mail. Anfragen
-          werden gelöscht, sobald sie erledigt sind und keine Aufbewahrungspflicht
-          besteht.
-          <StaffOnly>
-            {" "}
-            Löschfrist: <Placeholder>Löschfrist ergänzen</Placeholder>.
-          </StaffOnly>
+          Sie eine E-Mail-Adresse angegeben, erhalten Sie darüber eine E-Mail. Werden Sie
+          nicht Fahrschülerin oder Fahrschüler, löschen wir Name, Kontaktdaten und
+          Nachricht {period("anfragen")} nach Eingang der Anfrage.
         </p>
       </LegalSection>
 
@@ -183,6 +193,7 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           Zweck ist die Durchführung des Ausbildungsvertrags. Rechtsgrundlage ist Art. 6
           Abs. 1 lit. b DSGVO. Der Link wirkt wie ein Passwort — bitte geben Sie ihn nicht
           weiter. Die Fahrschule kann ihn jederzeit sperren und einen neuen ausstellen.
+          Mit dem Ende der Ausbildung wird der Link gelöscht.
         </p>
       </LegalSection>
 
@@ -221,20 +232,50 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
 
       <LegalSection title="8. Speicherdauer">
         <p>
-          Personenbezogene Daten werden gelöscht, sobald der Zweck ihrer Verarbeitung
-          entfällt, es sei denn, gesetzliche Aufbewahrungspflichten stehen entgegen.
-          Insbesondere gelten die handels- und steuerrechtlichen Aufbewahrungsfristen nach
-          § 147 AO und § 257 HGB: Bücher, Inventare und Jahresabschlüsse 10 Jahre,
-          Buchungsbelege wie Rechnungen und Quittungen 8 Jahre (bis Ende 2024: 10 Jahre),
-          empfangene und versandte Handels- und Geschäftsbriefe 6 Jahre. Buchungen werden
-          in der Buchhaltung unveränderbar gespeichert.
+          Personenbezogene Daten werden gelöscht oder anonymisiert, sobald der Zweck ihrer
+          Verarbeitung entfällt und keine gesetzliche Aufbewahrungspflicht entgegensteht.
+          Die Software der Fahrschule ermittelt täglich, welche Daten ihre Frist erreicht
+          haben, und löscht bzw. anonymisiert sie nach folgendem Löschkonzept. Die
+          Ausbildung gilt als beendet, sobald die Fahrschule Ihre Akte archiviert (nach
+          bestandener Prüfung, Abbruch oder Wechsel der Fahrschule).
+          <StaffOnly>
+            {" "}
+            Hinweis für die Fahrschule: Im Löschmodus „Nach Bestätigung“ werden fällige
+            Daten erst gelöscht, wenn Sie den Löschlauf unter Fahrschule &amp;
+            Einstellungen → Datenschutz bestätigen. Bestätigen Sie ihn regelmäßig, damit
+            diese Angaben zutreffen, und archivieren Sie Fahrschüler/innen zeitnah nach
+            dem Ende der Ausbildung.
+          </StaffOnly>
         </p>
-        <StaffOnly>
-          <p>
-            Aufbewahrung des Ausbildungsnachweises nach Fahrlehrerrecht:{" "}
-            <Placeholder>Frist ergänzen</Placeholder>.
-          </p>
-        </StaffOnly>
+        <List
+          items={[
+            `Terminanfragen, aus denen keine Ausbildung wird: Name, Kontaktdaten und Nachricht ${period("anfragen")} nach Eingang der Anfrage (danach bleibt nur ein anonymer Eintrag für die Statistik).`,
+            `Hochgeladene Dokumente (z. B. Sehtest, Passbild, Erste-Hilfe-Nachweis, Antragsunterlagen): ${period("dokumente")} nach Ende der Ausbildung.`,
+            `Nachrichten im Schülerportal/Chat: ${period("chat")} nach der letzten Nachricht, frühestens ${period("chat")} nach Ende der Ausbildung.`,
+            `Zugangslinks zum Schülerportal: mit dem Ende der Ausbildung; gesperrte Links ${period("portal")} nach der Sperrung.`,
+            `Versandte E-Mails und SMS (Empfänger, Text): ${period("nachrichten")} nach Versand.`,
+            `Ausbildungsnachweis mit Ihrer Unterschrift (§ 31 Fahrlehrergesetz): ${period("ausbildungsnachweis")} nach Ablauf des Jahres, in dem die Ausbildung beendet wurde; danach wird er gelöscht.`,
+            `Stammdaten (Name, Anschrift, Geburtsdatum, Kontaktdaten, Begleitperson) und Ihr Name in Terminen: ${period("schueler")} nach Ablauf des Jahres, in dem die Ausbildung endete; danach wird der Name durch ein Pseudonym („Gelöscht #Nummer“) ersetzt und die übrigen Angaben werden gelöscht.`,
+            `Buchungen, Rechnungen, Quittungen und Lastschriftdaten: Die steuer- und handelsrechtlichen Fristen (§ 147 AO, § 257 HGB, § 14b UStG) betragen für Bücher und Aufzeichnungen 10 Jahre und für Buchungsbelege wie Rechnungen 8 Jahre, jeweils ab Ende des Kalenderjahres. Weil Buchungen und Rechnungen zusammen geführt werden, ersetzen wir Ihren Namen, Ihre Anschrift und Ihre Bankverbindung darin einheitlich ${period("buchhaltung")} nach Ablauf des Jahres Ihrer letzten Buchung bzw. Rechnung durch ein Pseudonym; Beträge und Belegnummern bleiben erhalten.`,
+            `Protokoll der Änderungen durch Mitarbeitende der Fahrschule (enthält Benutzer, Adresse der Änderung und IP-Adresse): ${period("protokoll")} nach dem Eintrag.`,
+          ]}
+        />
+        <p>
+          Die Fristen verlängern sich nur, soweit die Daten für ein laufendes Verfahren
+          (z. B. Rechtsstreit, Betriebsprüfung, offene Forderung) benötigt werden; in
+          dieser Zeit ist die Verarbeitung eingeschränkt. Datensicherungen werden nach
+          einem festen Turnus überschrieben, sodass gelöschte Daten auch dort nach kurzer
+          Zeit nicht mehr vorhanden sind.
+          <StaffOnly>
+            {" "}
+            Turnus der Datensicherungen:{" "}
+            <Placeholder>
+              Anzahl Tage ergänzen – Standard: 14 Sicherungen im Abstand von 24 Stunden
+              (BACKUP_KEEP, BACKUP_INTERVAL_HOURS), also etwa 14 Tage
+            </Placeholder>
+            .
+          </StaffOnly>
+        </p>
       </LegalSection>
 
       <LegalSection title="9. Ihre Rechte">
@@ -249,6 +290,13 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
             "Widerspruch gegen Verarbeitungen auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO (Art. 21 DSGVO)",
           ]}
         />
+        <p>
+          Beantragen Sie die Löschung, löschen wir sofort alles, was keiner
+          Aufbewahrungspflicht unterliegt (z. B. Kontaktdaten, Dokumente, Chat, E-Mails).
+          Daten, die wir aufbewahren müssen (Ausbildungsnachweis, Buchhaltung), sperren
+          wir bis zum Ende der jeweiligen Frist und löschen bzw. anonymisieren sie dann;
+          wir teilen Ihnen mit, welche Daten das sind und bis wann.
+        </p>
         <p>
           Über Berichtigungen, Löschungen und Einschränkungen informiert die Fahrschule
           etwaige Empfänger (Art. 19 DSGVO).

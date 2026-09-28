@@ -294,6 +294,8 @@ function relink(
     relinkColumn("calendar_events", "vehicle_id", links.calendarEvents);
   } else if (entity === "price_plan") {
     relinkColumn("students", "price_plan_id", links.students);
+  } else if (entity === "student") {
+    relinkColumn("calendar_events", "student_id", links.calendarEvents);
   }
 
   if (links.theoryGroups?.length && tableExists(db, "theory_groups")) {

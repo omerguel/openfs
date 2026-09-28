@@ -191,7 +191,48 @@ const RULES: Rule[] = [
     labels: { DELETE: "Aus dem Archiv endgültig gelöscht", "*": "Archiv bearbeitet" },
   },
   { pattern: /^\/api\/admin\/backups$/, labels: { POST: "Datensicherung erstellt" } },
+  {
+    pattern: /^\/api\/admin\/retention\/policy$/,
+    labels: { "*": "Löschfristen geändert" },
+  },
+  { pattern: /^\/api\/admin\/retention\/run$/, labels: { POST: "Löschlauf bestätigt" } },
+  {
+    pattern: /^\/api\/admin\/retention\/holds/,
+    labels: { POST: "Aufbewahrung verlängert", DELETE: "Aufbewahrung aufgehoben" },
+  },
+  {
+    pattern: /^\/api\/admin\/privacy\/students\/[^/]+\/erasure$/,
+    labels: { POST: "Löschung auf Antrag (Art. 17) ausgeführt" },
+  },
 ];
+
+const RUN_LABELS: Record<string, string> = {
+  anfragen: "Anfragen",
+  dokumente: "Dokumente",
+  chat: "Chat-Nachrichten",
+  portal: "Portal-Links",
+  nachrichten: "E-Mails/SMS",
+  protokoll: "Protokolleinträge",
+  ausbildungsnachweis: "Ausbildungsnachweise",
+  schueler: "Schüler anonymisiert",
+  buchhaltung: "Buchhaltung pseudonymisiert",
+};
+
+/* "LOESCHLAUF" entries carry counts only: ?trigger=…&anfragen=2&… */
+function describeRun(path: string): string {
+  const params = new URLSearchParams(path.split("?")[1] ?? "");
+  const trigger = params.get("trigger");
+  const parts = [...params.entries()]
+    .filter(([key]) => key !== "trigger")
+    .map(([key, n]) => `${n} ${RUN_LABELS[key] ?? key}`);
+  const kind =
+    trigger === "antrag"
+      ? "Löschung auf Antrag"
+      : trigger === "automatisch"
+        ? "Automatischer Löschlauf"
+        : "Löschlauf";
+  return parts.length ? `${kind}: ${parts.join(", ")}` : kind;
+}
 
 export type AuditDescription = { label: string; failed: boolean; detail: string };
 
@@ -209,6 +250,9 @@ export function describeAudit(entry: {
       failed,
       detail,
     };
+  }
+  if (entry.method === "LOESCHLAUF") {
+    return { label: describeRun(entry.path), failed, detail };
   }
   if (entry.method === "INVITE") {
     return { label: "Passwort über Einladungslink gesetzt", failed, detail };

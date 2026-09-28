@@ -6,6 +6,7 @@
 /* ------------------------------------------------------------------ */
 
 import type { CompanyProfile } from "./accounting-types";
+import type { RetentionCategory } from "./retention";
 
 /** The subset of the company profile that is safe to publish. Bank data,
  *  DATEV numbers and the Gläubiger-ID stay private. */
@@ -27,6 +28,12 @@ export const LEGAL_FIELDS = [
 
 export type LegalField = (typeof LEGAL_FIELDS)[number];
 export type LegalInfo = Pick<CompanyProfile, LegalField>;
+
+/** What /api/public/legal returns: the legal fields plus the Löschfristen
+ *  (months per category) the retention job applies. */
+export type PublicLegalInfo = LegalInfo & {
+  retention?: Partial<Record<RetentionCategory, number>>;
+};
 
 export const EMPTY_LEGAL_INFO: LegalInfo = Object.fromEntries(
   LEGAL_FIELDS.map((field) => [field, ""]),

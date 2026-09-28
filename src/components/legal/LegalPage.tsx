@@ -13,7 +13,7 @@ import {
   LEGAL_FIELD_LABELS,
   addressLines,
   type LegalField,
-  type LegalInfo,
+  type PublicLegalInfo,
 } from "@/lib/legal";
 import { SETTINGS_TAB_LABELS, type SettingsTab } from "@/lib/settings-tabs";
 import { cn } from "@/lib/utils";
@@ -124,7 +124,7 @@ export function LegalPage({
   children,
 }: {
   title: string;
-  children: (info: LegalInfo) => ReactNode;
+  children: (info: PublicLegalInfo) => ReactNode;
 }) {
   const legal = useLegalInfo();
   const auth = useAuthStatus();

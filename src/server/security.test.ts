@@ -228,6 +228,18 @@ const POLICY: Record<string, Access> = {
   "POST /api/admin/backups": "owner",
   "GET /api/admin/backups/:name": "owner",
   "POST /api/admin/backups/:name/verify": "owner",
+  // Löschkonzept and Betroffenenrechte: decisions of the controller.
+  "GET /api/admin/retention": "owner",
+  "GET /api/admin/retention/policy": "owner",
+  "PUT /api/admin/retention/policy": "owner",
+  "POST /api/admin/retention/run": "owner",
+  "GET /api/admin/retention/holds": "owner",
+  "POST /api/admin/retention/holds": "owner",
+  "DELETE /api/admin/retention/holds/:studentId": "owner",
+  "GET /api/admin/privacy/subjects": "owner",
+  "GET /api/admin/privacy/students/:id/auskunft": "owner",
+  "GET /api/admin/privacy/students/:id/erasure": "owner",
+  "POST /api/admin/privacy/students/:id/erasure": "owner",
   // public surfaces
   "GET /api/portal/:token": "public",
   "GET /api/portal/:token/messages": "public",

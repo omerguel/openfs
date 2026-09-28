@@ -2,7 +2,8 @@
 /* Fahrschule & Einstellungen — one place for the school's settings    */
 /* (formerly Profil, Schulprofil and Fahrschule):                      */
 /*   Stammdaten & Steuer · Bankverbindung · Öffentliches Profil ·      */
-/*   Öffnungszeiten · Standorte · Rechtliches · Terminabsagen          */
+/*   Öffnungszeiten · Standorte · Rechtliches · Terminabsagen ·        */
+/*   Datenschutz (Löschfristen, Betroffenenrechte — Inhaber only)       */
 /* /profil and /schulprofil redirect here (?tab=…).                    */
 /*                                                                     */
 /* Editing model: the server state comes from react-query; the page    */
@@ -21,6 +22,7 @@ import { toast } from "sonner";
 import { FormField, RequiredLegend } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
 import { ChipSelect, HoursEditor, TagInput } from "@/components/fahrschule/editors";
+import { DatenschutzSettings } from "@/components/fahrschule/Datenschutz";
 import { Standorte } from "@/components/fahrschule/Standorte";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -741,7 +743,7 @@ function AbsagenTab({ value, errors, setPolicy }: TabProps) {
 }
 
 const TAB_CONTENT: Record<
-  Exclude<SettingsTab, "standorte">,
+  Exclude<SettingsTab, "standorte" | "datenschutz">,
   (props: TabProps) => React.ReactNode
 > = {
   stammdaten: StammdatenTab,
@@ -887,7 +889,7 @@ export function Fahrschule() {
       : "Ungespeicherte Änderungen";
 
   const firstErrorTab = errorIds[0] ? tabOfField(errorIds[0]) : null;
-  const TabBody = tab === "standorte" ? null : TAB_CONTENT[tab];
+  const TabBody = tab === "standorte" || tab === "datenschutz" ? null : TAB_CONTENT[tab];
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
@@ -972,6 +974,10 @@ export function Fahrschule() {
             {tab === "standorte" ? (
               <TabsContent value="standorte">
                 <Standorte />
+              </TabsContent>
+            ) : tab === "datenschutz" ? (
+              <TabsContent value="datenschutz">
+                <DatenschutzSettings />
               </TabsContent>
             ) : error && !value ? (
               <Alert variant="destructive">
