@@ -13,6 +13,7 @@ import { localIsoDate, queueLessonReminders } from "./server/notifications";
 import { ensurePortalTables } from "./server/portal";
 import { createFileStoreFromEnv } from "./server/file-store";
 import { migrateInlineDocuments } from "./server/student-files";
+import { backupConfigFromEnv, startBackupScheduler } from "./server/backups";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
@@ -42,6 +43,15 @@ if (migratedFiles > 0) {
   );
 }
 
+/* Datensicherung: check at startup and hourly; back up when the newest
+   backup is older than BACKUP_INTERVAL_HOURS. Off in demo mode. */
+const backupConfig = demoMode ? null : backupConfigFromEnv();
+const hotBackup = globalThis as { __openfsStopBackupScheduler?: () => void };
+hotBackup.__openfsStopBackupScheduler?.();
+hotBackup.__openfsStopBackupScheduler = backupConfig
+  ? startBackupScheduler(db, backupConfig)
+  : undefined;
+
 /* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
    local time on, so nobody gets a mail at midnight) and deliver the
    outbox. Demo mode never sends — it runs without a transport, which
@@ -70,6 +80,7 @@ const server = serve({
     ...buildApiRoutes(db, {
       mail: { config: smtpConfig },
       fileStore,
+      backups: backupConfig,
     }),
   },
 
