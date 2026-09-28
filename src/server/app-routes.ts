@@ -8,6 +8,7 @@ import type { Database } from "./sqlite";
 import { absenceRoutes } from "./absences";
 import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
+import { backupRoutes, type BackupConfig } from "./backups";
 import { branchRoutes } from "./branches";
 import { calendarConflictRoutes } from "./calendar-conflicts";
 import { calendarSeriesRoutes } from "./calendar-series";
@@ -42,6 +43,8 @@ export type ApiRouteOptions = {
   mail?: MailRouteOptions;
   /** Where uploaded documents live; defaults to memory (tests). */
   fileStore?: FileStore;
+  /** Datensicherung settings; null/undefined = disabled (demo, tests). */
+  backups?: BackupConfig | null;
 };
 
 export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
@@ -75,6 +78,8 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     ...importRoutes(db),
     ...mailRoutes(db, options.mail),
     ...fileRoutes(db, fileStore),
+    // Admin-only: /api/admin/*.
+    ...backupRoutes(db, options.backups ?? null),
     // Second deliberate public surface besides /anfrage: token-gated,
     // rate-limited Schülerportal endpoints (/api/portal/:token…).
     ...portalRoutes(db),
