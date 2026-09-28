@@ -391,6 +391,7 @@ export function tenantBackupConfig(base: BackupConfig, slug: string): BackupConf
   return {
     ...base,
     dir: join(base.dir, slug),
+    files: base.files ? `${base.files}/${slug}` : base.files,
     offsite: base.offsite
       ? {
           ...base.offsite,
@@ -411,6 +412,9 @@ export function contextBackupConfig(base: BackupConfig): BackupConfig {
     },
     keep: base.keep,
     intervalHours: base.intervalHours,
+    get files() {
+      return current().files;
+    },
     get offsite() {
       return current().offsite;
     },

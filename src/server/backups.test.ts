@@ -15,6 +15,7 @@ import {
   type BackupConfig,
   backupRoutes,
   createBackup,
+  databaseFile,
   isBackupName,
   listBackups,
   runBackupIfDue,
@@ -212,6 +213,13 @@ describe("backupConfigFromEnv", () => {
     expect(config.offsite?.label).toBe("fs/muster/backups/");
   });
 
+  test("names where uploaded documents live (FILE_STORE_DIR, default, S3)", () => {
+    expect(backupConfigFromEnv({}).files).toBe(join("data", "files"));
+    expect(backupConfigFromEnv({ FILE_STORE_DIR: "/srv/files" }).files).toBe(
+      "/srv/files",
+    );
+  });
+
   test("invalid numbers fall back to the defaults", () => {
     const config = backupConfigFromEnv({
       BACKUP_KEEP: "0",
@@ -251,6 +259,18 @@ describe("/api/admin/backups", () => {
     expect(list.enabled).toBe(true);
     expect(list.backups[0]).toMatchObject({ name: backup.name, offsite: false });
     expect(list.config).toMatchObject({ keep: 14, intervalHours: 24, offsite: null });
+    // In-memory test DB: no file — the restore steps then name no path.
+    expect(list.config.dbPath).toBe("");
+  });
+
+  test("the configured database file is reported for the restore steps", () => {
+    const path = join(root, "custom-name.db");
+    const fileDb = openSqlite(path);
+    try {
+      expect(databaseFile(fileDb)).toBe(path);
+    } finally {
+      fileDb.close();
+    }
   });
 
   test("GET :name downloads a valid backup as attachment", async () => {
