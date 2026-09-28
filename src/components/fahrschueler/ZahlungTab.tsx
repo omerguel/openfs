@@ -5,7 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
-import { Plus, Printer, Undo2 } from "lucide-react";
+import { FilePlus2, Plus, Printer, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type { StudentRecord } from "@/hooks/use-students";
@@ -28,6 +28,9 @@ import { accountingApi, formatIsoDate, useApi } from "@/components/buchhaltung/a
 import { PaymentDialog } from "@/components/buchhaltung/PaymentDialog";
 import { QuittungDialog } from "@/components/buchhaltung/QuittungDialog";
 import { StornoDialog, type StornoTarget } from "@/components/buchhaltung/StornoDialog";
+import { CreateInvoiceDialog } from "@/components/rechnungen/CreateInvoiceDialog";
+import { InvoiceList } from "@/components/rechnungen/InvoiceList";
+import { invalidateInvoices, useInvoices } from "@/hooks/use-invoices";
 
 function Money({
   cents,
@@ -58,14 +61,19 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
   const [stornoTarget, setStornoTarget] = useState<StornoTarget | null>(null);
   const [quittungIds, setQuittungIds] = useState<number[]>([]);
 
-  // The ledger search matches on the stored student snapshot name, so the
-  // full name scopes the rows to this student.
-  const query = `?q=${encodeURIComponent(fullName)}`;
+  // Scoped by the customer number stored on every booking (exact match —
+  // a name search would also hit namesakes and miss renamed students).
+  const query = `?customerNo=${encodeURIComponent(student.customerNumber)}`;
   const ledger = useApi(() => accountingApi.ledger(query), [query, refresh]);
   const accounts = useApi(() => accountingApi.accounts(), []);
   const balancesData = useApi(() => accountingApi.studentBalances(), [refresh]);
 
-  const refetch = () => setRefresh((value) => value + 1);
+  const refetch = () => {
+    setRefresh((value) => value + 1);
+    void invalidateInvoices();
+  };
+  const invoices = useInvoices(student.id);
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
 
   const rows = ledger.data?.rows ?? [];
   const activeRows = rows.filter((row) => !row.storniert && !row.isStorno);
@@ -285,6 +293,37 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
           </Table>
         </div>
       )}
+
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-medium">Rechnungen</h3>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setCreatingInvoice(true)}
+          >
+            <FilePlus2 data-icon="inline-start" />
+            Rechnung erstellen
+          </Button>
+        </div>
+        <InvoiceList
+          invoices={invoices.data ?? []}
+          showStudent={false}
+          emptyText={`Für ${fullName} wurden noch keine Rechnungen erstellt.`}
+        />
+      </section>
+
+      <CreateInvoiceDialog
+        open={creatingInvoice}
+        studentId={student.id}
+        studentName={fullName}
+        onClose={() => setCreatingInvoice(false)}
+        onCreated={() => {
+          setCreatingInvoice(false);
+          refetch();
+        }}
+      />
 
       <PaymentDialog
         open={paymentOpen}
