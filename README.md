@@ -6,7 +6,7 @@
 
 # OpenFS
 
-Management software for German driving schools (Fahrschulen). It covers the full operational workflow: a week-based lesson calendar, student and instructor management, vehicle fleet tracking, configurable price plans, and a GoBD-shaped double-entry accounting engine (SKR 04, immutable bookings, Storno-only corrections, gapless receipt sequences) with Quittungen printing and DATEV CSV export. On top of that: lesson billing (confirm-to-bill per lesson, plus batch billing), exam result tracking with a Prüfungsplaner, a digital Ausbildungsnachweis (signed per lesson, printable per student), theory attendance, statistics, an internal chat, and a public appointment request form at `/anfrage`.
+Management software for German driving schools (Fahrschulen). It covers the full operational workflow: a week-based lesson calendar, student and instructor management, vehicle fleet tracking, configurable price plans, and a GoBD-shaped double-entry accounting engine (SKR 04, immutable bookings, Storno-only corrections, gapless receipt sequences) with Quittungen printing and DATEV CSV export. On top of that: lesson billing (confirm-to-bill per lesson, plus batch billing), exam result tracking with a Prüfungsplaner, a digital Ausbildungsnachweis (signed per lesson, printable per student), theory attendance, statistics, a chat with students, e-mail notifications through an outbox (confirmations, reminders, free-text mails), a per-student Schülerportal at `/portal/:token`, and a public appointment request form at `/anfrage`.
 
 Currently a single-tenant Bun web app; being rebuilt as a multi-tenant SaaS (one portal per school at `schoolname.openfs.de`) — see `plans/saas-plan.md`.
 
@@ -43,7 +43,21 @@ DEMO_MODE=1 bun run start
 
 ## Security & deployment
 
-This application currently has **no authentication**. It is designed for single-user local use on a trusted machine. The database holds personal data (student names, addresses, phone numbers) and financial records. Do not expose the server to a network or the internet without first adding an authentication layer; doing so would give anyone with network access full read and write access to all data. (Multi-tenant auth is part of the SaaS plan.) The one deliberate exception is `/anfrage` and its POST endpoint, which are intentionally public (rate-limited per IP and length-capped); everything else keeps this no-auth local posture.
+This application currently has **no authentication**. It is designed for single-user local use on a trusted machine. The database holds personal data (student names, addresses, phone numbers) and financial records. Do not expose the server to a network or the internet without first adding an authentication layer; doing so would give anyone with network access full read and write access to all data. (Multi-tenant auth is part of the SaaS plan.) There are two deliberate public surfaces: `/anfrage` and its POST endpoint (rate-limited per IP and length-capped), and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords. Everything else keeps this no-auth local posture.
+
+### E-Mail (SMTP)
+
+Mails (appointment confirmations/declines, lesson reminders the day before, portal links, free-text mails from **Nachrichten**) go through an outbox table and are delivered every minute by a built-in SMTP client. Configure it with environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `SMTP_HOST` | SMTP server host (required) |
+| `SMTP_PORT` | Port — `465` implicit TLS, `587` STARTTLS (default) |
+| `SMTP_USER` / `SMTP_PASS` | Login (AUTH PLAIN or LOGIN); leave empty for no auth |
+| `SMTP_FROM` | Sender, e.g. `Fahrschule Muster <info@example.de>` (required) |
+| `SMTP_SECURE` | Optional override: `tls`, `starttls`, or `none` (plaintext, local relays only) |
+
+Without `SMTP_HOST`/`SMTP_FROM` nothing is sent: mails show up as "Nicht versendet" in Nachrichten and can be copied by hand. Demo mode never sends mail.
 
 ## Architecture
 
