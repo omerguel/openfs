@@ -2,3 +2,7 @@
    can throw it without importing the engine — which would close an
    import cycle through db.ts. engine.ts re-exports it unchanged. */
 export class ValidationError extends Error {}
+
+/* The signed-in role may not perform this particular change (answered
+   with 403 by handle() in http.ts). */
+export class ForbiddenError extends Error {}

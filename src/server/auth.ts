@@ -435,6 +435,8 @@ const FINANCE = [
   /^\/api\/import\//,
   /^\/api\/calendar-events\/[^/]+\/bill$/,
   /^\/api\/campaigns/,
+  // Umsatz per month etc. — the Statistik page is an office/owner tool.
+  /^\/api\/statistics/,
 ];
 
 /* What a Fahrlehrer may change: Termine (incl. Absage), Ausbildungs-

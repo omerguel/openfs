@@ -1,4 +1,4 @@
-import { ValidationError } from "./errors";
+import { ForbiddenError, ValidationError } from "./errors";
 
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -17,6 +17,9 @@ export function handle<A extends unknown[]>(
     } catch (error) {
       if (error instanceof ValidationError) {
         return err(error.message);
+      }
+      if (error instanceof ForbiddenError) {
+        return err(error.message, 403);
       }
       console.error(error);
       return err("Interner Fehler.", 500);

@@ -177,7 +177,9 @@ describe("unknown API paths", () => {
     server = serve({
       port: 0,
       routes: {
-        "/*": new Response("<!doctype html>", { headers: { "Content-Type": "text/html" } }),
+        "/*": new Response("<!doctype html>", {
+          headers: { "Content-Type": "text/html" },
+        }),
         ...API_NOT_FOUND,
         ...buildApiRoutes(db, { auth: { loginRateLimit: false } }),
       },
@@ -249,6 +251,27 @@ describe("roles", () => {
       false,
     );
     expect(isAllowed("buero", "POST", "/api/outbox/sms")).toBe(true);
+    // Umsatz statistics are money matters.
+    expect(isAllowed("fahrlehrer", "GET", "/api/statistics")).toBe(false);
+    expect(isAllowed("buero", "GET", "/api/statistics")).toBe(true);
+  });
+
+  test("Büro cannot change tax numbers or the IBAN; the Inhaber can", async () => {
+    await seedUsers();
+    start();
+    const put = (cookie: string, body: object) =>
+      fetch(
+        `${base}/api/profile`,
+        as(cookie, { method: "PUT", body: JSON.stringify(body) }),
+      );
+    const office = await login("buero@fs.de", "geheim-geheim");
+    expect((await put(office, { phone: "06151 99" })).status).toBe(200);
+    const denied = await put(office, { steuernummer: "045/123/45678" });
+    expect(denied.status).toBe(403);
+    const owner = await login("chefin@fs.de", "geheim-geheim");
+    expect((await put(owner, { steuernummer: "045/123/45678" })).status).toBe(200);
+    const instructor = await login("lehrer@fs.de", "geheim-geheim");
+    expect((await put(instructor, { phone: "1" })).status).toBe(403);
   });
 
   test("the last Inhaber cannot be demoted or deactivated", async () => {
