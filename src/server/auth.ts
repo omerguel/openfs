@@ -7,7 +7,8 @@
 /*    (calendar, Nachweise, Theorie-Anwesenheit, Chat; no finances).   */
 /*  - sessions: random 32-byte token in an HttpOnly SameSite=Strict    */
 /*    cookie; only its SHA-256 is stored, so a leaked DB/backup does   */
-/*    not leak live sessions. Sliding expiry, instant revocation.      */
+/*    not leak live sessions. Sliding expiry (7 days) capped by an     */
+/*    absolute lifetime (30 days), instant revocation.                 */
 /*  - audit_log: every non-GET API call with user, path and status.    */
 /*                                                                     */
 /* protectApiRoutes() wraps every handler of the routes object built   */
@@ -42,6 +43,11 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 export const SESSION_COOKIE = "openfs_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** No session lives longer than this, however active it is. */
+export const SESSION_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+/** RFC 5321 limit — longer "addresses" are never looked up or logged. */
+export const MAX_EMAIL_LENGTH = 254;
+const MAX_LOGIN_PASSWORD_LENGTH = 1024;
 const SESSION_TOUCH_MS = 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 10;
 
@@ -341,17 +347,30 @@ export function sessionUser(db: Database, token: string | null, now = Date.now()
   if (!token) return null;
   const hash = sha256(token);
   const row = db
-    .query<UserRow & { expires_at: number; last_seen_at: number }, [string]>(
-      `SELECT u.*, s.expires_at, s.last_seen_at FROM sessions s
+    .query<
+      UserRow & { expires_at: number; last_seen_at: number; session_created_at: string },
+      [string]
+    >(
+      `SELECT u.*, s.expires_at, s.last_seen_at, s.created_at AS session_created_at
+       FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ? AND u.active = 1`,
     )
     .get(hash);
   if (!row || row.expires_at < now) return null;
+  // Absolute lifetime: sliding renewals never keep a session past it.
+  const createdAt = Date.parse(`${row.session_created_at.replace(" ", "T")}Z`);
+  const deadline = Number.isNaN(createdAt)
+    ? Number.POSITIVE_INFINITY
+    : createdAt + SESSION_MAX_LIFETIME_MS;
+  if (now >= deadline) {
+    db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hash);
+    return null;
+  }
   if (now - row.last_seen_at > SESSION_TOUCH_MS) {
     db.prepare(
       "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?",
-    ).run(now, now + SESSION_TTL_MS, hash);
+    ).run(now, Math.min(now + SESSION_TTL_MS, deadline), hash);
   }
   const user = toUser(row);
   return {
