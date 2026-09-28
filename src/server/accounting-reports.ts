@@ -308,6 +308,21 @@ function lastDay(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${day}`;
 }
 
+/* Other-side kinds that govern a line's VAT themselves (the engine's
+   vatAccount); mirrors the DATEV BU-40 rule in datev.ts. */
+const VAT_GOVERNING_KINDS = new Set(["erloes", "aufwand", "durchlaufend"]);
+
+/**
+ * A 3272 line booked without VAT against a Geldkonto or 9000 carries no
+ * Anzahlungs-USt: a Saldovortrag, or the part of a payment that settles
+ * an opening debt (already taxed in the previous software). A charge
+ * 3272 an 1370/4830 has no VAT rate either, but there the other account
+ * governs and the 3272 side still releases the Anzahlungs-USt.
+ */
+function anzahlungWithoutVat(row: VatRow, otherKind: string | undefined): boolean {
+  return row.vat_rate == null && !VAT_GOVERNING_KINDS.has(otherKind ?? "");
+}
+
 /**
  * Umsatzsteuer per period, derived from the bookings the same way DATEV
  * derives it from the Automatikkonten of the export:
@@ -316,7 +331,9 @@ function lastDay(year: number, month: number): string {
  *  - 3272 Erhaltene Anzahlungen 19 %: every payment in Haben adds 19 %
  *    Anzahlungs-USt; every charge that consumes the Guthaben (3272 in
  *    Soll) releases 19 % of its amount again, because the charge's own
- *    Erlöskonto carries the final tax. Saldenvorträge (9000) carry no tax.
+ *    Erlöskonto carries the final tax. Saldenvorträge (9000) carry no tax,
+ *    nor does the "Ausgleich Saldovortrag" part of a payment (Geldkonto
+ *    an 3272 without VAT) that settles an opening debt.
  *  - Aufwandskonten with 19 %/7 % in Soll: abziehbare Vorsteuer.
  * 4100 (0 %) is shown as steuerfreier Umsatz, 4830 as nicht steuerbar,
  * 1370 as durchlaufender Posten — none of them carries tax.
@@ -383,7 +400,7 @@ export function vatReport(
         }
       } else if (kind === "durchlaufend") {
         target.passThroughCents += sign * row.amount_cents;
-      } else if (kind === "anzahlung" && kinds.get(other) !== "vortrag") {
+      } else if (kind === "anzahlung" && !anzahlungWithoutVat(row, kinds.get(other))) {
         const split = splitVat(row.amount_cents, 19);
         target.prepayment19NetCents += sign * split.netCents;
         target.prepayment19VatCents += sign * split.vatCents;

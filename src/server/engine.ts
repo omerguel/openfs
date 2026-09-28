@@ -23,6 +23,7 @@ import type {
 import { TRANSACTION_TYPE_LABELS } from "../lib/accounting-types";
 import { splitVat } from "../lib/money";
 import { getCompany, nextBelegNr, nextBuchungNr, nextQuittungNr } from "./db";
+import { SALDOVORTRAG_SETTLEMENT_LINE, unsettledOpeningDebt } from "./open-items";
 
 export { ValidationError } from "./errors";
 import { ValidationError } from "./errors";
@@ -262,15 +263,32 @@ export function createTransaction(
       if (!description) {
         description = `FS ${student.name}${student.classes ? ` - ${student.classes}` : ""}`;
       }
-      bookings = [
-        {
+      // The part that settles an opening debt from the previous software
+      // (Saldovortrag "forderung") pays for services already taxed there —
+      // it carries no Anzahlungs-USt. Only the rest is a real Anzahlung.
+      const settlement = Math.min(
+        amountCents,
+        unsettledOpeningDebt(db, student.customerNo),
+      );
+      bookings = [];
+      if (settlement > 0) {
+        bookings.push({
           soll: geldkonto,
           haben: anzahlung,
-          amountCents,
+          amountCents: settlement,
+          vatAccount: null,
+          lineDescription: SALDOVORTRAG_SETTLEMENT_LINE,
+        });
+      }
+      if (amountCents > settlement) {
+        bookings.push({
+          soll: geldkonto,
+          haben: anzahlung,
+          amountCents: amountCents - settlement,
           vatAccount: anzahlung,
           lineDescription: "Zahlung auf Ausbildungskonto",
-        },
-      ];
+        });
+      }
       break;
     }
     case "direktzahlung": {
@@ -703,6 +721,8 @@ function transactionVatLabel(
   const withVat = bookings.find((b) => b.vat_rate != null);
   if (tx.type === "transfer" || tx.type === "saldovortrag") return "Nicht zutreffend";
   if (!withVat) {
+    // A payment that only settles an opening debt carries no Anzahlungs-USt.
+    if (tx.type === "zahlung_guthaben") return "Nicht zutreffend";
     const haben = accounts.get(bookings[0]?.haben_account ?? "");
     return haben?.vatLabel ?? "Nicht zutreffend";
   }

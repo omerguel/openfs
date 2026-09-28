@@ -53,7 +53,10 @@ import {
   sendInvoiceMail,
   sendOpeningReminderMail,
 } from "./invoice-documents";
+import { activeCharges, chargeRemainders } from "./open-items";
 import { getStudent } from "./students";
+
+export { chargeRemainders };
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -171,64 +174,8 @@ export function setInvoicingSettings(db: Database, input: unknown): InvoicingSet
 }
 
 /* ------------------------------------------------------------------ */
-/* charges + FIFO allocation                                           */
+/* charges + FIFO allocation (shared with the engine: open-items.ts)   */
 /* ------------------------------------------------------------------ */
-
-type ChargeRow = {
-  id: number;
-  type: "guthaben_uebertragung" | "saldovortrag";
-  date: string;
-  description: string;
-  gross_cents: number;
-};
-
-/* Active charges of a student: guthaben_uebertragung that is neither a
-   Storno nor storniert, plus an opening debt taken over as Saldovortrag
-   (3272 an 9000) — it is owed like a charge and settled by payments,
-   but never invoiced. Oldest first — the FIFO order. */
-function activeCharges(db: Database, customerNo: string): ChargeRow[] {
-  return db
-    .query<ChargeRow, [string]>(
-      `SELECT t.id, t.type, t.date, t.description, SUM(b.amount_cents) AS gross_cents
-       FROM transactions t JOIN bookings b ON b.transaction_id = t.id
-       WHERE (t.type = 'guthaben_uebertragung'
-              OR (t.type = 'saldovortrag' AND b.soll_account = '3272'))
-         AND t.storno_of IS NULL AND t.storniert_by IS NULL
-         AND t.student_customer_no = ?
-       GROUP BY t.id
-       ORDER BY t.date, t.id`,
-    )
-    .all(customerNo);
-}
-
-/* Payments plus an opening Guthaben taken over as Saldovortrag
-   (9000 an 3272) — both settle charges oldest-first. */
-function paymentPool(db: Database, customerNo: string): number {
-  return (
-    db
-      .query<{ total: number | null }, [string]>(
-        `SELECT SUM(b.amount_cents) AS total
-         FROM transactions t JOIN bookings b ON b.transaction_id = t.id
-         WHERE (t.type = 'zahlung_guthaben'
-                OR (t.type = 'saldovortrag' AND b.haben_account = '3272'))
-           AND t.storno_of IS NULL AND t.storniert_by IS NULL
-           AND t.student_customer_no = ?`,
-      )
-      .get(customerNo)!.total ?? 0
-  );
-}
-
-/** Uncovered remainder per active charge (transaction id → cents). */
-export function chargeRemainders(db: Database, customerNo: string): Map<number, number> {
-  let pool = paymentPool(db, customerNo);
-  const remainders = new Map<number, number>();
-  for (const charge of activeCharges(db, customerNo)) {
-    const covered = Math.min(pool, charge.gross_cents);
-    pool -= covered;
-    remainders.set(charge.id, charge.gross_cents - covered);
-  }
-  return remainders;
-}
 
 /** Transactions on a live (not storniert) invoice. */
 function invoicedTransactionIds(db: Database, customerNo: string): Set<number> {
