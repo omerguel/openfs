@@ -35,6 +35,7 @@ const CLICK_THROUGH: Record<string, string[]> = {
     "Standorte",
     "Rechtliches",
     "Terminabsagen",
+    "Datenschutz",
   ],
   "/benutzer": ["Protokoll"],
   "/fahrlehrer": ["Arbeitszeiten"],
@@ -176,6 +177,31 @@ const FORM_CHECKS: { name: string; run: (page: Page) => Promise<string | null> }
       await page.getByRole("tab", { name: "Stammdaten & Steuer" }).click();
       const save = page.getByRole("button", { name: "Speichern" }).first();
       return (await save.isEnabled()) ? "Speichern ist ohne Änderung aktiv" : null;
+    },
+  },
+  {
+    name: "Datenschutz: Fristen, Auskunft und Löschen-auf-Antrag-Übersicht",
+    run: async (page) => {
+      await page.goto(`${BASE}/fahrschule?tab=datenschutz`, { waitUntil: "networkidle" });
+      if (!(await page.getByRole("heading", { name: "Löschvorschau" }).isVisible()))
+        return "Löschvorschau fehlt";
+      const anfragen = page.locator("#retention-anfragen");
+      await anfragen.fill("9");
+      const save = page.getByRole("button", { name: "Fristen speichern" });
+      if (!(await save.isEnabled())) return "Löschfristen: Speichern bleibt deaktiviert";
+      const select = page.locator("#privacy-subject");
+      const value = await select.locator("option").nth(1).getAttribute("value");
+      if (!value) return "keine Person zur Auswahl";
+      await select.selectOption(value);
+      const html = await api(`/api/admin/privacy/students/${value}/auskunft?format=html`);
+      if (!html.ok || !(await html.text()).includes("Art. 15"))
+        return `Auskunft: HTTP ${html.status}`;
+      await page.getByRole("button", { name: "Löschen auf Antrag" }).click();
+      await page
+        .getByRole("heading", { name: "Wird sofort gelöscht" })
+        .waitFor({ timeout: 5000 });
+      await page.getByRole("button", { name: "Abbrechen" }).click();
+      return null;
     },
   },
 ];

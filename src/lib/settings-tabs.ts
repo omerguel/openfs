@@ -8,6 +8,7 @@ export const SETTINGS_TABS = [
   "standorte",
   "recht",
   "absagen",
+  "datenschutz",
 ] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
@@ -20,4 +21,5 @@ export const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
   standorte: "Standorte",
   recht: "Rechtliches",
   absagen: "Terminabsagen",
+  datenschutz: "Datenschutz",
 };
