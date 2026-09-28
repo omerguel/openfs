@@ -28,6 +28,7 @@ export type CalendarEventInput = Omit<
   | "cancellationKind"
   | "cancellationFeeTransactionId"
   | "cancellationFeeActive"
+  | "cancellationFeeCents"
   | "warnings"
 > & {
   /** number links the event to a student; null explicitly clears the
