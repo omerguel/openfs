@@ -32,6 +32,7 @@ import {
   FileSpreadsheet,
   KeyRound,
   UserCog,
+  Sun,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -70,6 +71,7 @@ type IconCmp = React.ComponentType<{ className?: string }>;
 
 const navItems: { label: string; Icon: IconCmp; route?: string }[] = [
   { label: "Home", Icon: LayoutGrid, route: "/" },
+  { label: "Mein Tag", Icon: Sun, route: "/mein-tag" },
   { label: "Profil", Icon: User, route: "/profil" },
   { label: "Theorie", Icon: BookOpen, route: "/theorie" },
   // { label: "Unterricht", Icon: Users },
