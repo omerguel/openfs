@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { cancelCalendarEvent, useCancellationPolicy } from "@/hooks/use-calendar-events";
+import { useFinanceAccess } from "@/hooks/use-finance-access";
 import { usePricePlans } from "@/hooks/use-price-plans";
 import { useStudents } from "@/hooks/use-students";
 import {
@@ -50,6 +51,9 @@ export function CancelEventDialog({
   const { data: policy = DEFAULT_CANCELLATION_POLICY } = useCancellationPolicy();
   const { students } = useStudents();
   const { plans } = usePricePlans();
+  // Fahrlehrer/innen charge the school's fee as is — the amount (and the
+  // booking date) is the office's call; the server refuses overrides.
+  const { isInstructor } = useFinanceAccess();
 
   const [kind, setKind] = useState<CancellationKind>("abgesagt");
   const [chargeFee, setChargeFee] = useState(false);
@@ -85,7 +89,9 @@ export function CancelEventDialog({
   const hasStudent = event.studentId != null;
   const feeCents = parseEuroToCents(amount);
   const canSave =
-    !saving && (!chargeFee || (hasStudent && feeCents != null && feeCents > 0));
+    !saving &&
+    (!chargeFee ||
+      (hasStudent && (isInstructor || (feeCents != null && feeCents > 0))));
 
   const changeKind = (next: CancellationKind) => {
     setKind(next);
@@ -98,7 +104,7 @@ export function CancelEventDialog({
       const result = await cancelCalendarEvent(event.id, {
         kind,
         chargeFee: chargeFee && hasStudent,
-        feeCents: chargeFee && feeCents ? feeCents : undefined,
+        feeCents: chargeFee && feeCents && !isInstructor ? feeCents : undefined,
       });
       toast.success(
         result.transaction
@@ -170,8 +176,18 @@ export function CancelEventDialog({
             </span>
           </label>
 
-          {chargeFee && hasStudent && (
+          {chargeFee && hasStudent && isInstructor && (
+            <p className="text-xs text-muted-foreground">
+              {policy.feeCents > 0
+                ? `Es wird die Ausfallgebühr laut Regelung der Fahrschule gebucht (${formatCents(policy.feeCents)} €).`
+                : "Es wird der Preis einer Fahrstunde laut Preisplan gebucht."}{" "}
+              Einen anderen Betrag trägt das Büro ein.
+            </p>
+          )}
+
+          {chargeFee && hasStudent && !isInstructor && (
             <Field>
+
               <FieldLabel htmlFor="cancel-fee">Betrag (EUR)</FieldLabel>
               {defaultFeeCents == null && (
                 <p className="text-xs text-muted-foreground">

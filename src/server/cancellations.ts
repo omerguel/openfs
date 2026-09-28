@@ -22,7 +22,10 @@ import { resolveLessonPrice } from "../lib/price-plan";
 import { formatGermanDate } from "../lib/working-time";
 import { type CalendarEvent, checkScheduling, getCalendarEvent } from "./calendar-events";
 import { type CreatedTransaction, createTransaction, ValidationError } from "./engine";
+import { ForbiddenError } from "./errors";
 import { handle, json } from "./http";
+import { currentUser } from "./request-context";
+
 import { getPricePlan } from "./price-plans";
 import { tableExists } from "./archive";
 import { notifyLessonCancelled } from "./notifications";
@@ -239,7 +242,24 @@ export function cancellationRoutes(db: Database) {
         handle(async () => {
           const id = parseId(req.params.id);
           const body = (await req.json().catch(() => null)) as CancelInput | null;
-          return json(cancelCalendarEvent(db, id, body as CancelInput));
+          if (currentUser()?.role !== "fahrlehrer") {
+            return json(cancelCalendarEvent(db, id, body as CancelInput));
+          }
+          /* Fahrlehrer/innen may record an Absage and charge the school's
+             fee (policy fee, else the student's lesson price) booked today —
+             never an amount or a booking date of their own: the fee is a
+             booking on the student's account, and money is office work. */
+          if (body && (body.feeCents !== undefined || body.date !== undefined)) {
+            throw new ForbiddenError(
+              "Betrag und Datum der Ausfallgebühr legt das Büro fest — bitte ohne eigene Angaben absagen.",
+            );
+          }
+          const result = cancelCalendarEvent(db, id, body as CancelInput);
+          return json(
+            result.transaction
+              ? { event: result.event, transaction: { id: result.transaction.id } }
+              : { event: result.event },
+          );
         })(),
     },
 
