@@ -66,6 +66,15 @@ Passwords are hashed with argon2id (`Bun.password`). Sessions are random tokens 
 
 **Data.** A real school starts empty; demo data only appears with `DEMO_MODE=1` (in-memory) or `SEED_DEMO=1`. `DB_PATH` overrides the database file (default `data/fahrschule.db`).
 
+### Multi-tenant mode (one portal per school)
+
+Set `MULTI_TENANT=1` and `BASE_DOMAIN=openfs.de` to serve many schools from one process: each school lives at `<slug>.openfs.de` with its own SQLite file (`TENANTS_DIR`, default `data/tenants/<slug>.db`), listed in a registry (`REGISTRY_PATH`, default `data/registry.db`) with status `aktiv`/`gesperrt`. Uploaded files are stored under `<slug>/…` and backups under `BACKUP_DIR/<slug>/` (and `<prefix><slug>/` in S3). Sessions are per school — a login at one subdomain is worthless at another.
+
+- The bare domain shows a landing page; with `PLATFORM_SIGNUP=1` schools can register themselves there (address, school name, Inhaber account, acceptance of AGB/AVV — templates in `docs/legal/`, have them reviewed).
+- Operators manage schools with `bun scripts/tenant.ts list | create <slug> "<Name>" <email> ["<Inhaber>"] | suspend <slug> | activate <slug>`; `create` prints an initial password. Suspended schools get a "Zugang gesperrt" page (HTTP 402).
+- DNS/TLS: a wildcard record `*.openfs.de` and a wildcard certificate on the reverse proxy, which must pass `Host` (or `X-Forwarded-Host`) and `X-Forwarded-Proto`.
+- Local testing: `BASE_DOMAIN=localhost` and open `http://<slug>.localhost:3000/` (browsers resolve `*.localhost` to the loopback address).
+
 ### E-Mail (SMTP)
 
 Mails (appointment confirmations/declines, lesson reminders the day before, portal links, free-text mails from **Nachrichten**) go through an outbox table and are delivered every minute by a built-in SMTP client. Configure it with environment variables:

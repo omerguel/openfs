@@ -50,6 +50,13 @@ Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
 ### Auth
 All `/api` routes are wrapped by `protectApiRoutes` (`src/server/auth.ts`): session required, role checked, writes audited. A new endpoint is protected automatically; making one public means adding it to `PUBLIC_ROUTES` deliberately. Route-level tests mount factories directly (unprotected); `src/server/auth.test.ts` covers the guard. The current user is available via `currentUser()` (`request-context.ts`).
 
+### Multi-tenancy
+In `MULTI_TENANT=1` mode the route table is built **once** over a context database (`createContextDb()` in `src/server/tenancy.ts`) that forwards to the current request's school DB. Consequences for new code:
+- Never compute DB-bound state at route-factory time (no `const stmt = db.prepare(...)` outside handlers); do it per request.
+- A module that creates tables lazily must also be called from `prepareSchoolDb` (`src/server/bootstrap.ts`), so every school's DB gets them.
+- Background work (schedulers) runs per school via `startSchoolJobs`; don't start timers in route factories.
+- `src/server/tenancy.test.ts` checks isolation between two schools — extend it for new cross-cutting features.
+
 ### Tests
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.
 - Test files are co-located as `*.test.ts` alongside the module they test.

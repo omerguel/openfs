@@ -1,6 +1,11 @@
 # Design spike: multi-tenant architecture mapping
 
-> Status: DESIGN — maintainer-decision document. No production code changed.
+> Status: IMPLEMENTED (2026-09-28, `src/server/tenancy.ts`). Deviation from §3
+> Option A: instead of rewriting all route factories to `getDb(req)`, routes
+> are built once over a context database (a Proxy resolving the request's
+> school DB from AsyncLocalStorage, set by the auth guard). Sessions are
+> server-side per school (§4 option 2), not signed cookies. Original design
+> text below.
 > Authored against branch `advisor/026-tenancy-spike`
 > (base `160eccc`, remove electron support).
 > Every factual claim cites `file:line` or quotes code read in this tree.
