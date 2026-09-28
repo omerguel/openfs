@@ -5,6 +5,13 @@
 
 import type { Database } from "./sqlite";
 
+import {
+  type AuthRouteOptions,
+  authRoutes,
+  protectApiRoutes,
+  type ProtectOptions,
+} from "./auth";
+
 import { absenceRoutes } from "./absences";
 import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
@@ -38,10 +45,22 @@ import {
 
 export type ApiRouteOptions = {
   mail?: MailRouteOptions;
+  auth?: AuthRouteOptions;
+  /** Per-request database (multi-tenant mode). */
+  resolveDb?: ProtectOptions["resolveDb"];
 };
 
+/* Every route below is wrapped by the session/role guard (auth.ts);
+   only PUBLIC_ROUTES are reachable without signing in. */
 export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
+  return protectApiRoutes(db, buildUnprotectedRoutes(db, options), {
+    resolveDb: options.resolveDb,
+  });
+}
+
+function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
   return {
+    ...authRoutes(db, options.auth),
     ...accountingRoutes(db),
     ...archiveRoutes(db),
     ...calendarEventRoutes(db),

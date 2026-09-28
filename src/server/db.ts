@@ -11,6 +11,7 @@
 import { openSqlite, type Database } from "./sqlite";
 import { ensureAbsenceTables } from "./absences";
 import { instructorIdByName, migrateNameColumn, vehicleIdByName } from "./refs";
+import { ensureAuthTables } from "./auth";
 
 import type { AccountKind, CompanyProfile } from "../lib/accounting-types";
 import { PRICE_PLAN_SEED } from "../lib/price-plan";
@@ -499,11 +500,42 @@ export const DEFAULT_COMPANY: CompanyProfile = {
   glaeubigerId: "",
 };
 
-export function openDb(path = "data/fahrschule.db"): Database {
+export type OpenDbOptions = {
+  /** Fill an empty database with the demo school (staff, students,
+      Termine, bookings, chats, …). Off for a real school — it starts
+      empty and is set up through the first-run wizard. Omitted: keeps
+      the stored choice (default on, which tests and old DBs rely on). */
+  demoData?: boolean;
+};
+
+/* Whether demo seeds may run on this database (settings 'demo_data'). */
+export function demoDataEnabled(db: Database): boolean {
+  try {
+    const row = db
+      .query<{ value: string }, []>("SELECT value FROM settings WHERE key = 'demo_data'")
+      .get();
+    return row?.value !== "false";
+  } catch {
+    return true; // minimal test schemas without a settings table
+  }
+}
+
+export function openDb(
+  path = "data/fahrschule.db",
+  options: OpenDbOptions = {},
+): Database {
   const db = openSqlite(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(DDL);
+  ensureAuthTables(db);
+  if (options.demoData !== undefined) {
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES ('demo_data', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(String(options.demoData));
+  }
+  const demo = demoDataEnabled(db);
   migrateSkr03ToSkr04(db);
   migrateStudentPricePlan(db);
   migrateCalendarEventBilling(db);
@@ -520,14 +552,17 @@ export function openDb(path = "data/fahrschule.db"): Database {
   migrateNameColumn(db, "instructors", { from: "vehicle" });
   migrateNameColumn(db, "calendar_events", { from: "instructor" });
   migrateNameColumn(db, "calendar_events", { from: "vehicle" });
-  initAccounts(db);
-  initSequences(db);
-  initSettings(db);
-  initVehicles(db);
-  initInstructors(db);
-  initStudents(db);
+  initAccounts(db, demo);
+  initSequences(db, demo);
+  initSettings(db, demo);
+  if (demo) {
+    initVehicles(db);
+    initInstructors(db);
+    initStudents(db);
+  }
+  // Price plans are editable tariff templates — useful for a new school too.
   initPricePlans(db);
-  initCalendarEvents(db);
+  if (demo) initCalendarEvents(db);
   // Calendar create/update checks absences, so the table must always exist.
   ensureAbsenceTables(db);
   repairSoftReferences(db);
@@ -1087,7 +1122,7 @@ function initInstructors(db: Database) {
 /* Seeds the chart on a fresh database and adds accounts introduced by
    later versions (e.g. 4830 for Mahngebühren) to existing ones. Existing
    rows are never touched — INSERT OR IGNORE on the account number. */
-function initAccounts(db: Database) {
+function initAccounts(db: Database, demo: boolean) {
   const insert = db.prepare(
     `INSERT OR IGNORE INTO accounts (number, name, kind, vat_rate, vat_label, active, opening_cents, opening_date)
      VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -1099,25 +1134,39 @@ function initAccounts(db: Database) {
       a.kind,
       a.vatRate,
       a.vatLabel,
-      a.openingCents ?? null,
-      a.openingDate ?? null,
+      // Opening balances are demo figures; a real school enters its own
+      // Kassen-/Bankbestand in the setup wizard.
+      demo ? (a.openingCents ?? null) : null,
+      demo ? (a.openingDate ?? null) : null,
     );
   }
 }
 
-function initSequences(db: Database) {
+function initSequences(db: Database, demo: boolean) {
   const insert = db.prepare(
     "INSERT OR IGNORE INTO sequences (name, value) VALUES (?, ?)",
   );
-  // Start below the demo numbers so the seed lines up with the old UI
-  // (first allocated Beleg becomes T0000124A, first Buchung 00000219A).
-  insert.run("beleg", 123);
-  insert.run("buchung", 218);
+  // Demo: start below the demo numbers so the seed lines up with the old
+  // UI (first Beleg T0000124A, first Buchung 00000219A). A real school
+  // starts at 1.
+  insert.run("beleg", demo ? 123 : 0);
+  insert.run("buchung", demo ? 218 : 0);
 }
 
-function initSettings(db: Database) {
+function initSettings(db: Database, demo: boolean) {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('company', ?)").run(
-    JSON.stringify(DEFAULT_COMPANY),
+    JSON.stringify(
+      demo
+        ? DEFAULT_COMPANY
+        : {
+            ...DEFAULT_COMPANY,
+            name: "",
+            address: "",
+            email: "",
+            phone: "",
+            website: "",
+          },
+    ),
   );
 }
 

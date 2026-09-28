@@ -11,6 +11,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { demoDataEnabled } from "./db";
 
 export type BranchStatus = "offen" | "geschlossen";
 
@@ -59,7 +60,7 @@ CREATE TABLE IF NOT EXISTS branches (
 );`);
 
   const count = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM branches").get();
-  if (count && count.n > 0) return;
+  if ((count && count.n > 0) || !demoDataEnabled(db)) return;
 
   const insert = db.prepare(
     `INSERT INTO branches (name, address, phone, email, opening_hours, is_main, status)

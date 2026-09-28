@@ -10,6 +10,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { demoDataEnabled } from "./db";
 
 export type ChatSender = "schule" | "schueler";
 
@@ -191,7 +192,7 @@ export function ensureChatTables(db: Database) {
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM conversations")
     .get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const students = seedStudents(db);
   const insertConversation = db.prepare(

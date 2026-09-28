@@ -11,6 +11,7 @@ import type { BunRequest } from "bun";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
 import { instructorNameSql, migrateNameColumn, resolveInstructorId } from "./refs";
+import { demoDataEnabled } from "./db";
 
 export type TheoryGroupStatus = "aktiv" | "abgeschlossen";
 
@@ -211,7 +212,7 @@ export function ensureTheoryGroupTables(db: Database) {
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM theory_groups")
     .get()!.n;
-  if (count === 0) seedTheoryGroups(db);
+  if (count === 0 && demoDataEnabled(db)) seedTheoryGroups(db);
 }
 
 /* ------------------------------------------------------------------ */

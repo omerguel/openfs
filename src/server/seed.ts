@@ -14,6 +14,7 @@ import type { Database } from "./sqlite";
 import type { StudentRef } from "../lib/accounting-types";
 import { students, type Student } from "../lib/student-data";
 import { createTransaction } from "./engine";
+import { demoDataEnabled } from "./db";
 
 function ref(student: Student): StudentRef {
   return {
@@ -35,7 +36,7 @@ export function seedTransactions(db: Database) {
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM transactions")
     .get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const aylin = byName("Demir");
   const lena = byName("Braun");

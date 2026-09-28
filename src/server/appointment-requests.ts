@@ -21,6 +21,7 @@ import {
   notifyAppointmentRequestConfirmed,
   notifyAppointmentRequestDeclined,
 } from "./notifications";
+import { demoDataEnabled } from "./db";
 
 export type AppointmentRequestStatus = "offen" | "bestätigt" | "abgelehnt";
 
@@ -233,7 +234,7 @@ export function ensureAppointmentRequestTables(db: Database): void {
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM appointment_requests")
     .get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const insert = db.prepare(
     `INSERT INTO appointment_requests

@@ -9,6 +9,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { demoDataEnabled } from "./db";
 
 export type CampaignChannel =
   | "Google Ads"
@@ -183,7 +184,7 @@ export function ensureCampaignTables(db: Database): void {
   const count = db
     .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM campaigns")
     .get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const insert = db.prepare(
     `INSERT INTO campaigns

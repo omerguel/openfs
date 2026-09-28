@@ -10,6 +10,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { demoDataEnabled } from "./db";
 
 export const REVIEW_SOURCES = ["Google", "Facebook", "Webseite", "Intern"] as const;
 export type ReviewSource = (typeof REVIEW_SOURCES)[number];
@@ -133,7 +134,7 @@ export function ensureReviewTables(db: Database) {
   db.exec(DDL);
 
   const count = db.query<{ n: number }, []>("SELECT count(*) AS n FROM reviews").get()!.n;
-  if (count > 0) return;
+  if (count > 0 || !demoDataEnabled(db)) return;
 
   const insert = db.prepare(
     `INSERT INTO reviews (author, rating, source, text, reply, status, date)
