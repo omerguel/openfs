@@ -39,7 +39,7 @@ bun run start            # production server
 
 ### Demo mode
 
-Set `DEMO_MODE=1` to run against an in-memory database instead of the file. The full
+Set `DEMO_MODE=1` to run against an in-memory database instead of the file (sign in with `demo@openfs.de` / `openfs-demo`, shown on the sign-in page). The full
 persistence layer still runs (same schema, migrations, seeds and read/write paths) — but
 every start begins from the freshly seeded state and changes are discarded on restart
 rather than written to disk. Use it for public demos where visitor edits should not stick:
@@ -50,7 +50,21 @@ DEMO_MODE=1 bun run start
 
 ## Security & deployment
 
-This application currently has **no authentication**. It is designed for single-user local use on a trusted machine. The database holds personal data (student names, addresses, phone numbers) and financial records. Do not expose the server to a network or the internet without first adding an authentication layer; doing so would give anyone with network access full read and write access to all data. (Multi-tenant auth is part of the SaaS plan.) There are two deliberate public surfaces: `/anfrage` and its POST endpoint (rate-limited per IP and length-capped), and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords. Everything else keeps this no-auth local posture.
+**Sign-in and roles.** Every `/api` endpoint requires a signed-in user unless it is explicitly public (see below). On first start a real school sees the setup wizard: school master data, optional opening balances of Kasse/Bank, and the first **Inhaber/in** account. Further accounts are created under *Benutzer & Protokoll* with one of three roles:
+
+| Rolle | Darf |
+|-------|------|
+| Inhaber/in | alles, inkl. Benutzerverwaltung, Protokoll, Datensicherung, Datenbank-Export |
+| Büro | alles außer Benutzerverwaltung, Protokoll, Datensicherung, Datenbank-Export |
+| Fahrlehrer/in | Kalender (inkl. Absagen), Ausbildungsnachweise, Theorie-Anwesenheit, Chat; lesend alles außer Finanzen |
+
+Passwords are hashed with argon2id (`Bun.password`). Sessions are random tokens in an `HttpOnly; SameSite=Strict` cookie (`Secure` behind HTTPS); only their SHA-256 is stored, they slide for 7 days and end on sign-out, password change, role change or deactivation. State-changing requests from a foreign `Origin` are rejected, sign-in is rate-limited per IP and e-mail, and every write (plus every sign-in attempt) lands in the audit log (*Benutzer & Protokoll → Protokoll*). The rules live in `src/server/auth.ts`; new endpoints are protected automatically.
+
+**Network.** The server listens on `127.0.0.1` by default (`HOST`/`PORT` to change). To use it from other devices, run it behind a TLS-terminating reverse proxy (Caddy, nginx) that forwards `X-Forwarded-Proto`; don't expose plain HTTP.
+
+**Public surfaces** (no sign-in): `/anfrage` with `POST /api/appointment-requests` (rate-limited, length-capped) and `GET /api/school-profile`; the legal pages `/impressum` and `/datenschutz` (`/api/public/…`); and the Schülerportal at `/portal/:token` with its `/api/portal/:token…` endpoints. The portal is token-gated — each student gets a secret link (32 random bytes, revocable and rotatable from the student page, deleted with the student) that only ever exposes that student's own lessons, balance and chat thread — and rate-limited per IP; unknown and revoked tokens get the same generic 404. Treat portal links like passwords.
+
+**Data.** A real school starts empty; demo data only appears with `DEMO_MODE=1` (in-memory) or `SEED_DEMO=1`. `DB_PATH` overrides the database file (default `data/fahrschule.db`).
 
 ### E-Mail (SMTP)
 

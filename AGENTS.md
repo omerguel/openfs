@@ -45,6 +45,9 @@ Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
 ### Instructor / vehicle references
 `students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record).
 
+### Auth
+All `/api` routes are wrapped by `protectApiRoutes` (`src/server/auth.ts`): session required, role checked, writes audited. A new endpoint is protected automatically; making one public means adding it to `PUBLIC_ROUTES` deliberately. Route-level tests mount factories directly (unprotected); `src/server/auth.test.ts` covers the guard. The current user is available via `currentUser()` (`request-context.ts`).
+
 ### Tests
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.
 - Test files are co-located as `*.test.ts` alongside the module they test.
