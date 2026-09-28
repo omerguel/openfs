@@ -142,6 +142,41 @@ describe("isolation", () => {
     expect(company.name).toBe("Fahrschule Beta");
   });
 
+  test("invoices work in every school (per-school invoice schema)", async () => {
+    await provision("alpha", "Fahrschule Alpha");
+    await provision("beta", "Fahrschule Beta");
+    for (const slug of ["alpha", "beta"]) {
+      const cookie = await login(slug);
+      const post = async (path: string, body: unknown) => {
+        const res = await fetch(
+          `${url}${path}`,
+          at(slug, { method: "POST", cookie, body: JSON.stringify(body) }),
+        );
+        expect(res.status).toBe(201);
+        return (await res.json()) as Record<string, unknown>;
+      };
+      const student = await post("/api/students", {
+        firstName: "Rita",
+        lastName: "Rechnung",
+        customerNumber: `K-${slug}`,
+        contractNumber: `V-${slug}`,
+      });
+      const charge = await post("/api/accounting/transactions", {
+        type: "guthaben_uebertragung",
+        date: "2026-03-01",
+        amountCents: 6500,
+        habenKonto: "4400",
+        student: { customerNo: student.customerNumber, name: "Rita Rechnung" },
+        description: "Fahrstunde",
+      });
+      await post("/api/invoices", {
+        studentId: student.id,
+        date: "2026-03-02",
+        transactionIds: [charge.id],
+      });
+    }
+  });
+
   test("new schools start empty (no demo data)", async () => {
     await provision("gamma", "Fahrschule Gamma");
     const cookie = await login("gamma");

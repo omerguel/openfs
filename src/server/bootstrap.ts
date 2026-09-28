@@ -15,6 +15,7 @@ import { ensureReviewTables } from "./reviews";
 import { countUsers, createUser } from "./auth";
 import { type BackupConfig, startBackupScheduler } from "./backups";
 import type { FileStore } from "./file-store";
+import { ensureInvoiceSchema } from "./invoices";
 import { ensureMailTables, startMailScheduler } from "./mail";
 import {
   localIsoDate,
@@ -51,6 +52,10 @@ export async function prepareSchoolDb(
   ensureChatTables(db);
   ensureReviewTables(db);
   ensureStudentFileTables(db);
+  // Invoices memoise their schema per Database object — in multi-tenant
+  // mode that is the shared context DB, so each school's own file needs
+  // it here (saldovortrag_reminders, invoices.prepaid_vat).
+  ensureInvoiceSchema(db);
   if (options.demoLogin && countUsers(db) === 0) {
     await createUser(db, { ...DEMO_LOGIN, name: "Sabine Krämer", role: "inhaber" });
   }
