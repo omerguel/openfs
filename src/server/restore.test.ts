@@ -7,7 +7,14 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { serve } from "bun";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -160,6 +167,29 @@ describe("restoreBackup", () => {
       "Vorher",
       "Nachher",
     ]);
+  });
+
+  test("the set-aside database is complete even when its WAL was never checkpointed", async () => {
+    const school = await schoolOnDisk();
+    // Simulate a crash: snapshot the live files while the newest student
+    // still sits only in the WAL, then put that snapshot back in place.
+    school.db.exec("PRAGMA wal_autocheckpoint = 0");
+    await changeAfterBackup(school);
+    expect(existsSync(`${school.dbPath}-wal`)).toBe(true);
+    const snapshot = [school.dbPath, `${school.dbPath}-wal`].map(
+      (path) => [path, readFileSync(path)] as const,
+    );
+    school.db.close();
+    rmSync(`${school.dbPath}-shm`, { force: true });
+    for (const [path, bytes] of snapshot) writeFileSync(path, bytes);
+
+    const report = await restoreBackup(await source(school), school.target, {
+      now: new Date(2026, 8, 28, 13, 0, 0),
+    });
+    const aside = `${school.dbPath}.before-restore-20260928-130000`;
+    expect(report.movedAside).toContain(aside);
+    expect(studentNames(school.dbPath)).toEqual(["Vorher"]);
+    expect(studentNames(aside)).toEqual(["Vorher", "Nachher"]);
   });
 
   test("restores into an empty data directory (after a disaster)", async () => {

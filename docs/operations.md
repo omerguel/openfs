@@ -155,7 +155,7 @@ Backups contain personal data (DSGVO): encrypt off-site copies, restrict access,
 3. **Check it**: `openfs-cli scripts/restore.ts verify openfs-2026-09-28-031500`
 4. **Restore**: `openfs-cli scripts/restore.ts restore openfs-2026-09-28-031500`
    - verifies the set again (checksums of database and every document, `PRAGMA integrity_check`, completeness) — a damaged backup is never restored;
-   - moves the current database (plus `-wal`/`-shm`) and the document directory aside as `…before-restore-<timestamp>` — nothing is deleted;
+   - checkpoints the current database, moves it (plus any `-wal`/`-shm`, renamed so they stay paired with it) and the document directory aside as `…before-restore-<timestamp>` — nothing is deleted;
    - copies the database in, writes the documents to the store (disk or S3) and verifies each one;
    - on any error puts the moved-aside data back.
 5. **Start**: `systemctl start openfs`, sign in, check a few students, invoices and a document.

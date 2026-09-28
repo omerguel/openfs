@@ -16,6 +16,7 @@
 /* Legacy single-file backups (openfs-…db) restore the database only.  */
 /* ------------------------------------------------------------------ */
 
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, readlink, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
@@ -249,6 +250,17 @@ function contentTypes(dbPath: string): Map<string, string> {
 const sha256 = (bytes: Uint8Array) =>
   new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 
+/* Nothing else holds the database here (assertSafeToRestore). */
+function checkpoint(dbPath: string): void {
+  if (!existsSync(dbPath)) return;
+  const db = openSqlite(dbPath);
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    db.close();
+  }
+}
+
 export async function restoreBackup(
   source: RestoreSource,
   target: RestoreTarget,
@@ -260,9 +272,8 @@ export async function restoreBackup(
   const databaseOnly = source.kind === "legacy" || !source.manifest.filesIncluded;
   const suffix = `.before-restore-${stamp(options.now ?? new Date())}`;
   const moved: [from: string, to: string][] = [];
-  const moveAside = async (path: string) => {
+  const moveAside = async (path: string, to = `${path}${suffix}`) => {
     if (!(await exists(path))) return;
-    const to = `${path}${suffix}`;
     if (await exists(to)) throw new RestoreError(`${to} existiert bereits.`);
     await rename(path, to);
     moved.push([path, to]);
@@ -273,7 +284,14 @@ export async function restoreBackup(
   const restoreFiles = !databaseOnly && source.kind === "set";
 
   try {
-    for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) await moveAside(path);
+    // Fold the WAL into the database first so the set-aside copy is
+    // complete on its own; then keep any -wal/-shm next to it under the
+    // names SQLite pairs with it ("<aside>-wal", not "<db>-wal<suffix>").
+    checkpoint(dbPath);
+    const aside = `${dbPath}${suffix}`;
+    await moveAside(dbPath, aside);
+    await moveAside(`${dbPath}-wal`, `${aside}-wal`);
+    await moveAside(`${dbPath}-shm`, `${aside}-shm`);
     if (restoreFiles && target.filesDir) await moveAside(resolve(target.filesDir));
 
     await mkdir(dirname(dbPath), { recursive: true });
