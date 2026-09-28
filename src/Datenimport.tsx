@@ -4,7 +4,8 @@
 /*                                                                     */
 /* Datei wählen → Spalten zuordnen (automatisch vorbelegt) → Vorschau  */
 /* mit Status je Zeile → Import (serverseitig in einer Transaktion).   */
-/* Salden werden bewusst NICHT übernommen (Buchhaltung, GoBD).         */
+/* Eine optionale Saldo-Spalte wird je Fahrschüler als Saldovortrag    */
+/* (9000 ↔ 3272) zum gewählten Datum in derselben Transaktion gebucht.*/
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +39,7 @@ import {
   type ImportRowResult,
   type ImportRowStatus,
 } from "@/lib/student-import";
+import { formatEuro } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -61,6 +63,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -274,7 +277,29 @@ function IdCell({ value, generated }: { value: string; generated: boolean }) {
   );
 }
 
-function PreviewTable({ rows }: { rows: ImportRowResult[] }) {
+function BalanceCell({ cents }: { cents: number }) {
+  if (cents === 0) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span
+      className={cn(
+        "whitespace-nowrap tabular-nums",
+        cents > 0
+          ? "text-green-700 dark:text-green-400"
+          : "text-red-700 dark:text-red-400",
+      )}
+    >
+      {formatEuro(cents)}
+    </span>
+  );
+}
+
+function PreviewTable({
+  rows,
+  showBalance,
+}: {
+  rows: ImportRowResult[];
+  showBalance: boolean;
+}) {
   const shown = rows.slice(0, PREVIEW_LIMIT);
   return (
     <div className="flex flex-col gap-2">
@@ -290,6 +315,7 @@ function PreviewTable({ rows }: { rows: ImportRowResult[] }) {
               <TableHead>Kundennr.</TableHead>
               <TableHead>Vertragsnr.</TableHead>
               <TableHead>Fahrlehrer/in</TableHead>
+              {showBalance && <TableHead className="text-right">Saldo</TableHead>}
               <TableHead className="min-w-[260px]">Hinweise</TableHead>
             </TableRow>
           </TableHeader>
@@ -326,6 +352,11 @@ function PreviewTable({ rows }: { rows: ImportRowResult[] }) {
                 <TableCell className="whitespace-nowrap text-muted-foreground">
                   {row.student.instructor}
                 </TableCell>
+                {showBalance && (
+                  <TableCell className="text-right">
+                    <BalanceCell cents={row.student.balanceCents} />
+                  </TableCell>
+                )}
                 <TableCell className="whitespace-normal">
                   <Notes row={row} />
                 </TableCell>
@@ -365,7 +396,9 @@ function ImportDone({
         </EmptyTitle>
         <EmptyDescription className="tabular-nums">
           {rest.length > 0 ? `${rest.join(", ")}.` : "Alle Zeilen wurden übernommen."}{" "}
-          Salden bitte separat in der Buchhaltung buchen.
+          {result.openingBalances > 0
+            ? `${result.openingBalances} Saldenvorträge gebucht (Buchhaltung → Journal).`
+            : "Salden können in der Buchhaltung als Saldovortrag gebucht werden."}
         </EmptyDescription>
       </EmptyHeader>
       <EmptyContent className="flex-row justify-center gap-2">
@@ -392,6 +425,13 @@ export function Datenimport() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [result, setResult] = useState<ImportCommitResult | null>(null);
+  const [balanceDate, setBalanceDate] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+      now.getDate(),
+    ).padStart(2, "0")}`;
+  });
+  const balanceMapped = Object.values(mapping).includes("balance");
 
   const width = useMemo(
     () => (file ? Math.max(0, ...file.rows.map((row) => row.length)) : 0),
@@ -415,10 +455,13 @@ export function Datenimport() {
         ? {
             rows: file.rows,
             mapping: Object.fromEntries(Object.entries(mapping)),
-            options: { hasHeader },
+            options: {
+              hasHeader,
+              ...(balanceMapped ? { openingBalanceDate: balanceDate } : {}),
+            },
           }
         : null,
-    [file, mapping, hasHeader],
+    [file, mapping, hasHeader, balanceMapped, balanceDate],
   );
 
   // Server-side check of every row, debounced while the mapping changes.
@@ -508,7 +551,15 @@ export function Datenimport() {
   };
 
   const importable = preview?.summary.importable ?? 0;
-  const canImport = !!request && !!preview && importable > 0 && !checking && !committing;
+  const balances = preview?.openingBalances ?? null;
+  const missingBalanceDate = balanceMapped && (balances?.count ?? 0) > 0 && !balanceDate;
+  const canImport =
+    !!request &&
+    !!preview &&
+    importable > 0 &&
+    !checking &&
+    !committing &&
+    !missingBalanceDate;
 
   const runImport = async () => {
     if (!request) return;
@@ -583,11 +634,16 @@ export function Datenimport() {
               >
                 <Alert>
                   <Info />
-                  <AlertTitle>Salden werden nicht übernommen</AlertTitle>
+                  <AlertTitle>
+                    Salden nur nach Absprache mit der Steuerberatung
+                  </AlertTitle>
                   <AlertDescription className="text-pretty">
-                    Offene Beträge und Guthaben aus dem bisherigen Programm bitte separat
-                    als Saldenvortrag in der Buchhaltung buchen – in Abstimmung mit Ihrer
-                    Steuerberatung.
+                    Eine Spalte „Saldo“ (positiv = Guthaben, negativ = offener Betrag)
+                    wird je Fahrschüler als Saldovortrag gebucht: 9000 Saldenvorträge an
+                    3272 Erhaltene Anzahlungen bzw. umgekehrt, ohne
+                    Umsatzsteuer-Aufteilung. Wie Eröffnungssalden und die Umsatzsteuer auf
+                    alte Anzahlungen zu behandeln sind, bitte vorher mit Ihrer
+                    Steuerberatung abstimmen.
                   </AlertDescription>
                 </Alert>
 
@@ -670,6 +726,24 @@ export function Datenimport() {
                     mapping={mapping}
                     onChange={changeMapping}
                   />
+                  {balanceMapped && (
+                    <div className="flex flex-col gap-1.5 rounded-lg border p-4">
+                      <Label htmlFor="balance-date">
+                        Buchungsdatum der Saldenvorträge
+                      </Label>
+                      <Input
+                        id="balance-date"
+                        type="date"
+                        className="w-44"
+                        value={balanceDate}
+                        onChange={(event) => setBalanceDate(event.target.value)}
+                      />
+                      <span className="text-xs text-pretty text-muted-foreground">
+                        Üblich ist der Stichtag der Datenübernahme. Jeder Saldo wird als
+                        eigener Beleg gebucht und kann nur per Storno korrigiert werden.
+                      </span>
+                    </div>
+                  )}
                 </Section>
               )}
 
@@ -699,6 +773,12 @@ export function Datenimport() {
                             <span className="size-1.5 rounded-full bg-red-500" />
                             {preview.summary.failed} mit Fehlern
                           </span>
+                          {balances && balances.count > 0 && (
+                            <span className="text-muted-foreground">
+                              {balances.count} Salden · {formatEuro(balances.creditCents)}{" "}
+                              Guthaben · {formatEuro(balances.debitCents)} offen
+                            </span>
+                          )}
                           {checking && (
                             <span className="text-muted-foreground">Prüfe …</span>
                           )}
@@ -719,7 +799,7 @@ export function Datenimport() {
                           <ToggleGroupItem value="issues">Mit Hinweisen</ToggleGroupItem>
                         </ToggleGroup>
                       </div>
-                      <PreviewTable rows={visibleRows} />
+                      <PreviewTable rows={visibleRows} showBalance={balanceMapped} />
                     </>
                   ) : (
                     <p className="text-sm text-muted-foreground">Prüfe Zeilen …</p>
@@ -740,6 +820,12 @@ export function Datenimport() {
             <AlertDialogDescription>
               Übersprungene und fehlerhafte Zeilen werden nicht übernommen. Der Import
               erfolgt vollständig oder gar nicht.
+              {balances && balances.count > 0
+                ? ` Dabei werden ${balances.count} Saldenvorträge zum ${balanceDate
+                    .split("-")
+                    .reverse()
+                    .join(".")} gebucht.`
+                : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
