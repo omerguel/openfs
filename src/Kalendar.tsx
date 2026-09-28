@@ -656,6 +656,12 @@ export function Kalendar() {
   /* Drag & resize                                                    */
   /* ---------------------------------------------------------------- */
 
+  // The drag effect reads geometry through refs: the grid range is derived
+  // from the (moving) events, and re-running the effect mid-drag would
+  // drop the drag result.
+  const geometryRef = useRef({ days, grid });
+  geometryRef.current = { days, grid };
+
   useEffect(() => {
     if (!dragging) return;
     dragResultRef.current = null;
@@ -685,19 +691,21 @@ export function Kalendar() {
       }
       const dayGrid = dayGridRef.current;
       if (!dayGrid) return;
+      const { days: currentDays, grid: currentGrid } = geometryRef.current;
       dragResultRef.current = computeDragPosition(
         dragging,
         event.clientX,
         event.clientY,
         dayGrid.getBoundingClientRect(),
-        days,
-        grid,
+        currentDays,
+        currentGrid,
       );
       if (rafId === null) rafId = requestAnimationFrame(applyPendingDragResult);
     };
 
     const stopDragging = () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
+      const { grid } = geometryRef.current;
       const preview = dragResultRef.current;
       // Snap to a quarter-hour only on release so dragging feels fluid.
       if (preview && dragging.mode === "move") {
@@ -784,7 +792,7 @@ export function Kalendar() {
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);
     };
-  }, [dragging, days, grid, refreshEvents, refetchConflicts]);
+  }, [dragging, refreshEvents, refetchConflicts]);
 
   const selectedEvent = useMemo(
     () =>
