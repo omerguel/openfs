@@ -78,6 +78,8 @@ type Server = { proc: ReturnType<typeof Bun.spawn>; port: number; base: string }
 
 let serverRuns = 0;
 let lastLog = "";
+/* Servers still running — stopped in the final block even on failure. */
+const running = new Set<Server>();
 
 async function startServer(env: Env): Promise<Server> {
   const port = Number(env.PORT);
@@ -91,7 +93,11 @@ async function startServer(env: Env): Promise<Server> {
     const ok = await fetch(`${base}/api/health`)
       .then((r) => r.ok)
       .catch(() => false);
-    if (ok) return { proc, port, base };
+    if (ok) {
+      const server = { proc, port, base };
+      running.add(server);
+      return server;
+    }
     if (proc.exitCode !== null) break;
     await Bun.sleep(100);
   }
@@ -102,6 +108,7 @@ async function startServer(env: Env): Promise<Server> {
 async function stopServer(server: Server) {
   server.proc.kill("SIGTERM");
   await server.proc.exited;
+  running.delete(server);
 }
 
 async function runRestore(env: Env, args: string[]) {
@@ -656,6 +663,7 @@ try {
     );
   }
 } finally {
+  for (const server of [...running]) await stopServer(server);
   if (keep || failed) console.log(`\nArbeitsverzeichnis bleibt erhalten: ${root}`);
   else await rm(root, { recursive: true, force: true });
 }
