@@ -65,6 +65,7 @@ function filterFromUrl(url: string): ListFilter {
     from: params.get("from") ?? undefined,
     to: params.get("to") ?? undefined,
     q: params.get("q")?.trim() || undefined,
+    customerNo: params.get("customerNo")?.trim() || undefined,
     status: status === "active" || status === "storniert" ? status : "all",
   };
 }

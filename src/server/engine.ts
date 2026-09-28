@@ -586,10 +586,13 @@ export type ListFilter = {
   from?: string;
   to?: string;
   q?: string;
+  /** Exact student customer number (the booking's student snapshot). */
+  customerNo?: string;
   status?: "all" | "active" | "storniert";
 };
 
 function matchesFilter(tx: TransactionRow, filter: ListFilter): boolean {
+  if (filter.customerNo && tx.student_customer_no !== filter.customerNo) return false;
   if (filter.from && tx.date < filter.from) return false;
   if (filter.to && tx.date > filter.to) return false;
   if (filter.status === "active" && (tx.storniert_by != null || tx.storno_of != null)) {

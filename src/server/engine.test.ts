@@ -665,3 +665,23 @@ describe("Quittung payload", () => {
     expect(quittung.lines[0]!.netCents + quittung.lines[0]!.vatCents).toBe(40983);
   });
 });
+
+describe("ledger customer filter", () => {
+  test("customerNo matches the booking's student snapshot exactly", () => {
+    const other = { ...STUDENT, customerNo: "10052", name: "Aylin Demir" };
+    for (const student of [STUDENT, other]) {
+      createTransaction(db, {
+        type: "zahlung_guthaben",
+        date: "2026-06-09",
+        amountCents: 1000,
+        geldkonto: "1600",
+        paymentMethod: "bar",
+        student,
+      });
+    }
+    const rows = listLedger(db, { customerNo: STUDENT.customerNo }).rows;
+    expect(rows).toHaveLength(1);
+    // A name search cannot tell the namesakes apart.
+    expect(listLedger(db, { q: "Aylin Demir" }).rows).toHaveLength(2);
+  });
+});
