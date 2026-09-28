@@ -10,10 +10,15 @@ import {
   createReview,
   deleteReview,
   ensureReviewTables,
+  getGoogleReviewSummary,
   getReview,
+  importGoogleReviews,
   listReviews,
+  PLACES_ENDPOINT,
+  PLACES_FIELD_MASK,
   updateReview,
 } from "./reviews";
+import { DEFAULT_SCHOOL_PROFILE, setSchoolProfile } from "./school-profile";
 import { ValidationError } from "./engine";
 
 let db: Database;
@@ -190,5 +195,144 @@ describe("deleteReview", () => {
 
   test("delete on missing id → ValidationError", () => {
     expect(() => deleteReview(db, 999999)).toThrow("Bewertung nicht gefunden.");
+  });
+});
+
+/* ------------------------- Google import -------------------------- */
+
+const PLACE_ID = "ChIJN1t_tDeuEmsRUsoyG83frY4";
+
+const PLACES_BODY = {
+  rating: 4.6,
+  userRatingCount: 128,
+  reviews: [
+    {
+      name: `places/${PLACE_ID}/reviews/AAA`,
+      rating: 5,
+      text: { text: "Super Fahrschule!", languageCode: "de" },
+      originalText: { text: "Super Fahrschule!", languageCode: "de" },
+      authorAttribution: { displayName: "Paula Gruber" },
+      publishTime: "2026-09-01T10:15:00Z",
+    },
+    {
+      name: `places/${PLACE_ID}/reviews/BBB`,
+      rating: 3,
+      text: { text: "Ganz ok" },
+      authorAttribution: { displayName: "Kai Ost" },
+      publishTime: "2026-08-20T08:00:00.123456Z",
+    },
+  ],
+};
+
+function placesFetch(body: unknown, status = 200) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fetchImpl = async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return Response.json(body, { status });
+  };
+  return { fetchImpl, calls };
+}
+
+describe("importGoogleReviews", () => {
+  beforeEach(() => {
+    setSchoolProfile(db, { ...DEFAULT_SCHOOL_PROFILE, google_place_id: PLACE_ID });
+  });
+
+  test("calls Places API (New) with key and field mask", async () => {
+    const { fetchImpl, calls } = placesFetch(PLACES_BODY);
+    await importGoogleReviews(db, { apiKey: "k", fetch: fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url.startsWith(`${PLACES_ENDPOINT}${PLACE_ID}`)).toBe(true);
+    const headers = calls[0]!.init!.headers as Record<string, string>;
+    expect(headers["X-Goog-Api-Key"]).toBe("k");
+    expect(headers["X-Goog-FieldMask"]).toBe(PLACES_FIELD_MASK);
+  });
+
+  test("inserts new reviews as 'neu' and stores the overall rating", async () => {
+    const before = listReviews(db).length;
+    const { fetchImpl } = placesFetch(PLACES_BODY);
+    const result = await importGoogleReviews(db, {
+      apiKey: "k",
+      fetch: fetchImpl,
+      now: new Date("2026-09-28T12:00:00Z"),
+    });
+    expect(result).toMatchObject({
+      imported: 2,
+      updated: 0,
+      rating: 4.6,
+      userRatingCount: 128,
+      importedAt: "2026-09-28T12:00:00.000Z",
+    });
+    const reviews = listReviews(db);
+    expect(reviews).toHaveLength(before + 2);
+    const paula = reviews.find((r) => r.author === "Paula Gruber")!;
+    expect(paula).toMatchObject({
+      source: "Google",
+      rating: 5,
+      status: "neu",
+      date: "2026-09-01",
+      externalId: `places/${PLACE_ID}/reviews/AAA`,
+    });
+    expect(getGoogleReviewSummary(db, "k")).toMatchObject({
+      configured: true,
+      rating: 4.6,
+      userRatingCount: 128,
+    });
+  });
+
+  test("re-import updates by external id and keeps the reply", async () => {
+    const { fetchImpl } = placesFetch(PLACES_BODY);
+    await importGoogleReviews(db, { apiKey: "k", fetch: fetchImpl });
+    const paula = listReviews(db).find((r) => r.author === "Paula Gruber")!;
+    updateReview(db, paula.id, { reply: "Danke!", status: "beantwortet" });
+
+    const changed = structuredClone(PLACES_BODY);
+    changed.reviews[0]!.rating = 4;
+    changed.reviews[0]!.originalText = { text: "Gut!", languageCode: "de" };
+    const second = placesFetch(changed);
+    const result = await importGoogleReviews(db, {
+      apiKey: "k",
+      fetch: second.fetchImpl,
+    });
+    expect(result).toMatchObject({ imported: 0, updated: 2 });
+    expect(getReview(db, paula.id)).toMatchObject({
+      rating: 4,
+      text: "Gut!",
+      reply: "Danke!",
+      status: "beantwortet",
+    });
+  });
+
+  test("a hand-typed Google review with same author/date/text is adopted", async () => {
+    const manual = createReview(db, {
+      author: "Kai Ost",
+      rating: 3,
+      source: "Google",
+      text: "Ganz ok",
+      date: "2026-08-20",
+    });
+    const { fetchImpl } = placesFetch(PLACES_BODY);
+    const result = await importGoogleReviews(db, { apiKey: "k", fetch: fetchImpl });
+    expect(result).toMatchObject({ imported: 1, updated: 1 });
+    expect(getReview(db, manual.id).externalId).toBe(`places/${PLACE_ID}/reviews/BBB`);
+  });
+
+  test("missing key, missing place id and Google errors are German errors", async () => {
+    const { fetchImpl, calls } = placesFetch(PLACES_BODY);
+    await expect(importGoogleReviews(db, { fetch: fetchImpl })).rejects.toThrow(
+      "GOOGLE_PLACES_API_KEY",
+    );
+    setSchoolProfile(db, { ...DEFAULT_SCHOOL_PROFILE, google_place_id: "" });
+    await expect(
+      importGoogleReviews(db, { apiKey: "k", fetch: fetchImpl }),
+    ).rejects.toThrow("Place ID");
+    expect(calls).toHaveLength(0);
+
+    setSchoolProfile(db, { ...DEFAULT_SCHOOL_PROFILE, google_place_id: PLACE_ID });
+    const denied = placesFetch({ error: { message: "API key not valid" } }, 403);
+    await expect(
+      importGoogleReviews(db, { apiKey: "k", fetch: denied.fetchImpl }),
+    ).rejects.toThrow(ValidationError);
+    expect(getGoogleReviewSummary(db, "k").rating).toBeNull();
   });
 });

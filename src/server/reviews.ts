@@ -10,6 +10,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { getSchoolProfile } from "./school-profile";
 
 export const REVIEW_SOURCES = ["Google", "Facebook", "Webseite", "Intern"] as const;
 export type ReviewSource = (typeof REVIEW_SOURCES)[number];
@@ -26,11 +27,19 @@ export type Review = {
   reply: string;
   status: ReviewStatus;
   date: string; // ISO "YYYY-MM-DD"
+  /** Provider id of an imported review (Google: `places/…/reviews/…`);
+   *  null for reviews entered by hand. */
+  externalId: string | null;
 };
 
-export type ReviewInput = Omit<Review, "id">;
+export type ReviewInput = Omit<Review, "id" | "externalId">;
 
-type ReviewRow = Review;
+type ReviewRow = Omit<Review, "externalId"> & { external_id: string | null };
+
+const toReview = ({ external_id, ...row }: ReviewRow): Review => ({
+  ...row,
+  externalId: external_id,
+});
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS reviews (
@@ -131,6 +140,21 @@ const REVIEW_SEED: ReviewSeed[] = [
 /** Creates the reviews table and seeds demo data — only when empty. */
 export function ensureReviewTables(db: Database) {
   db.exec(DDL);
+  // Imported reviews (Google) carry the provider's id for de-duplication.
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(reviews)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("external_id")) {
+    db.exec("ALTER TABLE reviews ADD COLUMN external_id TEXT");
+  }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_external ON reviews(external_id) WHERE external_id IS NOT NULL",
+  );
+  // settings is part of db.ts; repeated so bare test schemas work too.
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
 
   const count = db.query<{ n: number }, []>("SELECT count(*) AS n FROM reviews").get()!.n;
   if (count > 0) return;
@@ -153,16 +177,19 @@ export function ensureReviewTables(db: Database) {
 }
 
 const SELECT =
-  "SELECT id, author, rating, source, text, reply, status, date FROM reviews";
+  "SELECT id, author, rating, source, text, reply, status, date, external_id FROM reviews";
 
 export function listReviews(db: Database): Review[] {
-  return db.query<ReviewRow, []>(`${SELECT} ORDER BY date DESC, id DESC`).all();
+  return db
+    .query<ReviewRow, []>(`${SELECT} ORDER BY date DESC, id DESC`)
+    .all()
+    .map(toReview);
 }
 
 export function getReview(db: Database, id: number): Review {
   const row = db.query<ReviewRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
   if (!row) throw new ValidationError("Bewertung nicht gefunden.");
-  return row;
+  return toReview(row);
 }
 
 function normalizeRating(value: unknown, current: number): number {
@@ -218,6 +245,7 @@ function normalize(input: Partial<ReviewInput>, current: Review): Review {
 
   const next: Review = {
     id: current.id,
+    externalId: current.externalId,
     author: str("author"),
     rating: normalizeRating(input.rating, current.rating),
     source: normalizeSource(input.source, current.source),
@@ -242,6 +270,7 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 /* `rating: 0` fails the final 1–5 check, so creating without a rating
    throws — rating is effectively a Pflichtfeld on create. */
 const EMPTY = (): Omit<Review, "id"> => ({
+  externalId: null,
   author: "",
   rating: 0,
   source: "Intern",
@@ -300,14 +329,237 @@ export function deleteReview(db: Database, id: number): void {
 }
 
 /* ------------------------------------------------------------------ */
+/* Google-Bewertungen — Places API (New), API key only.                */
+/*                                                                     */
+/* GET places/{placeId} with the field mask rating,userRatingCount,    */
+/* reviews returns the overall rating and at most five reviews         */
+/* (Google's choice, "most relevant"). They are upserted by their      */
+/* `name` (external_id): text/rating refresh, reply + status stay.     */
+/* Replying on Google needs the Business Profile API (OAuth + Google's */
+/* approval of the project) — replies therefore stay internal.         */
+/* ------------------------------------------------------------------ */
+
+export const PLACES_ENDPOINT = "https://places.googleapis.com/v1/places/";
+export const PLACES_FIELD_MASK = "rating,userRatingCount,reviews";
+
+export type GoogleReviewSummary = {
+  /** GOOGLE_PLACES_API_KEY is set. */
+  configured: boolean;
+  placeId: string;
+  rating: number | null;
+  userRatingCount: number | null;
+  /** ISO timestamp of the last successful import. */
+  importedAt: string | null;
+};
+
+export type GoogleImportResult = GoogleReviewSummary & {
+  imported: number;
+  updated: number;
+};
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+type PlacesReview = {
+  name?: string;
+  rating?: number;
+  text?: { text?: string };
+  originalText?: { text?: string };
+  authorAttribution?: { displayName?: string };
+  publishTime?: string;
+};
+
+type PlacesResponse = {
+  rating?: number;
+  userRatingCount?: number;
+  reviews?: PlacesReview[];
+  error?: { message?: string; status?: string };
+};
+
+const GOOGLE_SETTINGS_KEY = "google_reviews";
+
+type StoredGoogleSummary = Pick<
+  GoogleReviewSummary,
+  "rating" | "userRatingCount" | "importedAt"
+> & { placeId: string };
+
+function readGoogleSummary(db: Database): StoredGoogleSummary | null {
+  const row = db
+    .query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?")
+    .get(GOOGLE_SETTINGS_KEY);
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as StoredGoogleSummary;
+  } catch {
+    return null;
+  }
+}
+
+function currentPlaceId(db: Database): string {
+  try {
+    return getSchoolProfile(db).google_place_id;
+  } catch {
+    return "";
+  }
+}
+
+export function getGoogleReviewSummary(
+  db: Database,
+  apiKey: string | undefined,
+): GoogleReviewSummary {
+  const placeId = currentPlaceId(db);
+  const stored = readGoogleSummary(db);
+  // A summary of a different place (Place ID changed) is stale.
+  const own = stored && stored.placeId === placeId ? stored : null;
+  return {
+    configured: Boolean(apiKey),
+    placeId,
+    rating: own?.rating ?? null,
+    userRatingCount: own?.userRatingCount ?? null,
+    importedAt: own?.importedAt ?? null,
+  };
+}
+
+function placesError(status: number, body: PlacesResponse | null): string {
+  const detail = body?.error?.message ? ` (${body.error.message})` : "";
+  if (status === 400) return `Google lehnt die Anfrage ab — Place ID prüfen${detail}.`;
+  if (status === 403 || status === 401) {
+    return `Google verweigert den Zugriff — API-Schlüssel und freigeschaltete Places API (New) prüfen${detail}.`;
+  }
+  if (status === 404) return `Place ID wurde bei Google nicht gefunden${detail}.`;
+  if (status === 429)
+    return "Google-Kontingent erschöpft — bitte später erneut versuchen.";
+  return `Google-Abruf fehlgeschlagen (HTTP ${status})${detail}.`;
+}
+
+export async function importGoogleReviews(
+  db: Database,
+  options: { apiKey?: string; fetch?: FetchLike; now?: Date } = {},
+): Promise<GoogleImportResult> {
+  const apiKey = options.apiKey ?? "";
+  if (!apiKey) {
+    throw new ValidationError(
+      "Kein Google-API-Schlüssel hinterlegt (Umgebungsvariable GOOGLE_PLACES_API_KEY).",
+    );
+  }
+  const placeId = currentPlaceId(db);
+  if (!placeId) {
+    throw new ValidationError(
+      "Bitte zuerst die Google Place ID im Schulprofil hinterlegen.",
+    );
+  }
+  const fetchImpl = options.fetch ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${PLACES_ENDPOINT}${encodeURIComponent(placeId)}?languageCode=de`,
+      {
+        method: "GET",
+        headers: {
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": PLACES_FIELD_MASK,
+        },
+      },
+    );
+  } catch {
+    throw new ValidationError(
+      "Google ist nicht erreichbar — bitte später erneut versuchen.",
+    );
+  }
+  const body = (await response.json().catch(() => null)) as PlacesResponse | null;
+  if (!response.ok || !body) {
+    throw new ValidationError(placesError(response.status, body));
+  }
+
+  const findExisting = db.query<{ id: number }, [string]>(
+    "SELECT id FROM reviews WHERE external_id = ?",
+  );
+  // Reviews imported before an external id existed (or typed in by
+  // hand) are matched on author + date + text instead of duplicated.
+  const findManual = db.query<{ id: number }, [string, string, string]>(
+    `SELECT id FROM reviews WHERE external_id IS NULL AND source = 'Google'
+       AND author = ? AND date = ? AND text = ?`,
+  );
+  const update = db.prepare(
+    "UPDATE reviews SET author = ?, rating = ?, text = ?, date = ?, external_id = ? WHERE id = ?",
+  );
+  const insert = db.prepare(
+    `INSERT INTO reviews (author, rating, source, text, reply, status, date, external_id)
+     VALUES (?, ?, 'Google', ?, '', 'neu', ?, ?)`,
+  );
+
+  const now = options.now ?? new Date();
+  const run = db.transaction(() => {
+    let imported = 0;
+    let updated = 0;
+    for (const review of body.reviews ?? []) {
+      const rating = Math.round(Number(review.rating));
+      if (!review.name || !Number.isInteger(rating) || rating < 1 || rating > 5) continue;
+      const author = review.authorAttribution?.displayName?.trim() || "Google-Nutzer/in";
+      const text = (review.originalText?.text ?? review.text?.text ?? "").trim();
+      const date = /^\d{4}-\d{2}-\d{2}/.test(review.publishTime ?? "")
+        ? review.publishTime!.slice(0, 10)
+        : now.toISOString().slice(0, 10);
+      const existing =
+        findExisting.get(review.name) ?? findManual.get(author, date, text);
+      if (existing) {
+        update.run(author, rating, text, date, review.name, existing.id);
+        updated += 1;
+      } else {
+        insert.run(author, rating, text, date, review.name);
+        imported += 1;
+      }
+    }
+    const summary: StoredGoogleSummary = {
+      placeId,
+      rating: typeof body.rating === "number" ? body.rating : null,
+      userRatingCount:
+        typeof body.userRatingCount === "number" ? body.userRatingCount : null,
+      importedAt: now.toISOString(),
+    };
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(GOOGLE_SETTINGS_KEY, JSON.stringify(summary));
+    return { imported, updated };
+  });
+  const counts = run();
+  return { ...getGoogleReviewSummary(db, apiKey), ...counts };
+}
+
+/* ------------------------------------------------------------------ */
 /* HTTP layer — same shape as the factories in routes.ts. Local        */
 /* json/handle helpers because routes.ts must stay untouched.          */
 /* ------------------------------------------------------------------ */
 
-export function reviewRoutes(db: Database) {
+export type ReviewRouteOptions = {
+  /** Places API key; defaults to GOOGLE_PLACES_API_KEY. */
+  googleApiKey?: string;
+  /** Injected fetch for tests. */
+  fetch?: FetchLike;
+};
+
+export function reviewRoutes(db: Database, options: ReviewRouteOptions = {}) {
   ensureReviewTables(db);
+  const googleApiKey =
+    options.googleApiKey ?? process.env.GOOGLE_PLACES_API_KEY?.trim() ?? "";
 
   return {
+    "/api/reviews/google": {
+      GET: () => handle(() => json(getGoogleReviewSummary(db, googleApiKey)))(),
+    },
+
+    "/api/reviews/import/google": {
+      POST: () =>
+        handle(async () =>
+          json(
+            await importGoogleReviews(db, {
+              apiKey: googleApiKey,
+              fetch: options.fetch,
+            }),
+          ),
+        )(),
+    },
+
     "/api/reviews": {
       GET: (req: BunRequest) => handle(() => json({ reviews: listReviews(db) }))(),
       POST: (req: BunRequest) =>
