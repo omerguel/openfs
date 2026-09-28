@@ -200,7 +200,7 @@ describe("routes", () => {
       const created = await fetch(new URL("/api/appointment-requests", server.url), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...REQUEST, campaign: "abi27" }),
+        body: JSON.stringify({ ...REQUEST, campaign: "abi27", consent: true }),
       });
       expect(created.status).toBe(201);
       const request = (await created.json()) as { id: number; campaignId: number };
