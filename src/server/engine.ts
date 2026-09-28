@@ -715,6 +715,9 @@ export function listLedger(db: Database, filter: ListFilter): LedgerResponse {
   );
   const bookingMap = bookingsByTransaction(db);
   const transactions = allTransactions(db);
+  const guthabenKonto = [...accounts.values()].find(
+    (a) => a.kind === "anzahlung",
+  )?.number;
 
   const openingBase = [...accounts.values()]
     .filter((a) => a.kind === "geldkonto")
@@ -739,6 +742,18 @@ export function listLedger(db: Database, filter: ListFilter): LedgerResponse {
     if (!matchesFilter(tx, filter)) continue;
 
     const isTransfer = tx.type === "transfer";
+    let credit = 0;
+    let debit = 0;
+    for (const booking of bookings) {
+      if (booking.haben_account === guthabenKonto) credit += booking.amount_cents;
+      if (booking.soll_account === guthabenKonto) debit += booking.amount_cents;
+    }
+    // Direktzahlung: paid and consumed at once — the Guthaben stays as is.
+    if (tx.type === "direktzahlung") {
+      credit += Math.abs(net);
+      debit += Math.abs(net);
+    }
+    const hasStudent = Boolean(tx.student_customer_no);
     rows.push({
       id: tx.id,
       date: tx.date,
@@ -750,6 +765,8 @@ export function listLedger(db: Database, filter: ListFilter): LedgerResponse {
       vatLabel: transactionVatLabel(tx, bookings, accounts),
       incomeCents: !isTransfer && inflow > 0 ? inflow : null,
       expenseCents: !isTransfer && outflow > 0 ? outflow : null,
+      studentCreditCents: hasStudent && credit > 0 ? credit : null,
+      studentDebitCents: hasStudent && debit > 0 ? debit : null,
       storniert: tx.storniert_by != null,
       isStorno: tx.storno_of != null,
       stornoReason:
