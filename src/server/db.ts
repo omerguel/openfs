@@ -210,6 +210,68 @@ CREATE TABLE IF NOT EXISTS invoice_reminders (
   UNIQUE (invoice_id, level)
 );
 
+-- SEPA-Lastschriftmandate. No FK on student_id: the mandate is a signed
+-- document that stays on record even if the student is deleted.
+CREATE TABLE IF NOT EXISTS sepa_mandates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  mandate_ref TEXT NOT NULL UNIQUE,
+  account_holder TEXT NOT NULL,
+  iban TEXT NOT NULL,
+  bic TEXT NOT NULL DEFAULT '',
+  signed_on TEXT NOT NULL,
+  revoked_on TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sepa_mandates_student ON sepa_mandates(student_id);
+
+-- Ratenpläne: expected Anzahlungen with due dates. A paid rate links
+-- the zahlung_guthaben transaction that settled it.
+CREATE TABLE IF NOT EXISTS instalment_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  customer_no TEXT NOT NULL,
+  title TEXT NOT NULL,
+  total_cents INTEGER NOT NULL CHECK (total_cents > 0),
+  cancelled_on TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS instalments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL REFERENCES instalment_plans(id),
+  seq INTEGER NOT NULL,
+  due_date TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  payment_transaction_id INTEGER REFERENCES transactions(id),
+  UNIQUE (plan_id, seq)
+);
+
+-- SEPA-Lastschrift-Sammler (pain.008.001.02). The generated XML is kept
+-- verbatim as the record of what was submitted to the bank.
+CREATE TABLE IF NOT EXISTS sepa_collections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  msg_id TEXT NOT NULL UNIQUE,
+  collection_date TEXT NOT NULL,
+  total_cents INTEGER NOT NULL,
+  xml TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sepa_collection_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  collection_id INTEGER NOT NULL REFERENCES sepa_collections(id),
+  mandate_id INTEGER NOT NULL REFERENCES sepa_mandates(id),
+  source_type TEXT NOT NULL CHECK (source_type IN ('invoice', 'instalment')),
+  source_id INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  sequence_type TEXT NOT NULL CHECK (sequence_type IN ('FRST', 'RCUR')),
+  end_to_end_id TEXT NOT NULL UNIQUE,
+  remittance TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'exportiert'
+    CHECK (status IN ('exportiert', 'gebucht', 'zurueckgegeben')),
+  payment_transaction_id INTEGER REFERENCES transactions(id),
+  return_reason TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_customer ON transactions(student_customer_no);
 CREATE INDEX IF NOT EXISTS idx_bookings_transaction ON bookings(transaction_id);
