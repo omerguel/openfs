@@ -45,11 +45,12 @@ export type TransactionType =
   | "ausgabe"
   | "saldovortrag";
 
+/* Human labels — explanations live in src/lib/account-labels.ts. */
 export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
-  zahlung_guthaben: "Zahlung auf Guthaben",
-  direktzahlung: "Direktzahlung",
-  guthaben_uebertragung: "Guthabenübertragung auf Kosten",
-  transfer: "Transfer",
+  zahlung_guthaben: "Einzahlung Ausbildungskonto",
+  direktzahlung: "Sofort bezahlte Leistung",
+  guthaben_uebertragung: "Leistung abgerechnet",
+  transfer: "Umbuchung Kasse/Bank",
   ausgabe: "Ausgabe",
   saldovortrag: "Saldovortrag",
 };

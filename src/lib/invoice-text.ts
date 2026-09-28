@@ -7,6 +7,9 @@
 /* keep what they were issued with (GoBD).                             */
 /* ------------------------------------------------------------------ */
 
+import type { Invoice } from "./invoice-types";
+import { formatCents } from "./money";
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -29,6 +32,9 @@ export function cleanPositionText(
   return text.trim() || description.trim();
 }
 
+const euroText = (cents: number) => `${formatCents(cents)} €`;
+const isoToGerman = (iso: string) => iso.split("-").reverse().join(".");
+
 /* ------------------------------------------------------------------ */
 /* Letter texts shared by the on-screen sheets and the PDF renderer.   */
 /* The student record has no Anrede, so a named letter opens with the  */
@@ -49,3 +55,54 @@ export function reminderIntro(level: 1 | 2 | 3, subject: string): string {
 }
 
 export const LETTER_CLOSING = "Mit freundlichen Grüßen";
+
+/** "Zahlungserinnerung-R-2026-00002" / "1-Mahnung-R-2026-00002" — the PDF
+ *  file name (server) and the print title (browser "Als PDF speichern"). */
+export function reminderFileStem(label: string, stem: string): string {
+  return `${label.replace(/[. ]+/g, "-").replace(/^-|-$/g, "")}-${stem}`;
+}
+
+/* Invoice sheet texts — identical on screen, in print and in the PDF. */
+
+export const ENDRECHNUNG_NOTE =
+  "Endrechnung: Die erhaltenen Anzahlungen sind samt der darin enthaltenen Umsatzsteuer abgesetzt (§ 14 Abs. 5 UStG). Die Steuer richtet sich nach den Leistungen, auf die die Anzahlungen angerechnet wurden.";
+
+export function vatRateLabel(rate: number | null, invoice: Invoice): string {
+  if (rate == null) {
+    return invoice.lines.some((l) => l.durchlaufend) ? "ohne USt *" : "ohne USt";
+  }
+  return rate === 0 ? "0 % (steuerfrei)" : `${rate} %`;
+}
+
+export function prepaidVatLabel(row: { vatRate: number | null; vatCents: number }) {
+  return row.vatRate && row.vatRate > 0
+    ? `darin USt ${row.vatRate} %: ${euroText(row.vatCents)}`
+    : row.vatRate === 0
+      ? "darin steuerfreie Leistungen (0 %)"
+      : "darin ohne USt (durchlaufende Posten)";
+}
+
+export function paymentSentence(invoice: Invoice, due: number): string {
+  if (due <= 0)
+    return "Der Rechnungsbetrag ist durch Ihre Anzahlungen bereits beglichen.";
+  const target = invoice.issuer.iban
+    ? ` auf das unten genannte Konto (IBAN ${invoice.issuer.iban})`
+    : "";
+  return `Bitte überweisen Sie ${euroText(due)} bis zum ${isoToGerman(invoice.dueDate)}${target} unter Angabe der Rechnungsnummer ${invoice.invoiceNr}.`;
+}
+
+export function invoiceFootnotes(invoice: Invoice): string[] {
+  const notes: string[] = [];
+  if (invoice.lines.some((l) => l.durchlaufend)) {
+    notes.push(
+      "* Durchlaufender Posten (§ 10 Abs. 1 UStG) — im Namen und für Rechnung des Fahrschülers verauslagt, keine Umsatzsteuer.",
+    );
+  }
+  if (invoice.lines.some((l) => l.steuerfrei)) {
+    notes.push("** Steuerfreie Leistung nach § 4 Nr. 21 UStG.");
+  }
+  if (invoice.lines.some((l) => l.vatRate == null && !l.durchlaufend)) {
+    notes.push("*** Nicht steuerbar (kein Leistungsentgelt).");
+  }
+  return notes;
+}

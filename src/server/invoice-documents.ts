@@ -16,7 +16,17 @@ import {
   type OpeningBalanceReminder,
   REMINDER_LABELS,
 } from "../lib/invoice-types";
-import { LETTER_CLOSING, letterSalutation, reminderIntro } from "../lib/invoice-text";
+import {
+  ENDRECHNUNG_NOTE,
+  LETTER_CLOSING,
+  invoiceFootnotes,
+  letterSalutation,
+  paymentSentence,
+  prepaidVatLabel,
+  reminderFileStem,
+  reminderIntro,
+  vatRateLabel,
+} from "../lib/invoice-text";
 import { formatCents } from "../lib/money";
 import { ValidationError } from "./errors";
 import { getInvoice, getOpeningBalance } from "./invoices";
@@ -273,54 +283,11 @@ export function renderInvoicePdf(invoice: Invoice): Uint8Array {
     }
   }
   if (invoice.note) w.paragraph(invoice.note);
-  for (const note of footnotes(invoice))
+  for (const note of invoiceFootnotes(invoice))
     w.paragraph(note, { size: 8.5, gray: 0.4, gap: 2 });
   closing(w, invoice.issuer, invoice.date);
   w.drawFooter();
   return pdf.toBytes();
-}
-
-export const ENDRECHNUNG_NOTE =
-  "Endrechnung: Die erhaltenen Anzahlungen sind samt der darin enthaltenen Umsatzsteuer abgesetzt (§ 14 Abs. 5 UStG). Die Steuer richtet sich nach den Leistungen, auf die die Anzahlungen angerechnet wurden.";
-
-export function vatRateLabel(rate: number | null, invoice: Invoice): string {
-  if (rate == null) {
-    return invoice.lines.some((l) => l.durchlaufend) ? "ohne USt *" : "ohne USt";
-  }
-  return rate === 0 ? "0 % (steuerfrei)" : `${rate} %`;
-}
-
-export function prepaidVatLabel(row: { vatRate: number | null; vatCents: number }) {
-  return row.vatRate && row.vatRate > 0
-    ? `darin USt ${row.vatRate} %: ${euro(row.vatCents)}`
-    : row.vatRate === 0
-      ? "darin steuerfreie Leistungen (0 %)"
-      : "darin ohne USt (durchlaufende Posten)";
-}
-
-export function paymentSentence(invoice: Invoice, due: number): string {
-  if (due <= 0)
-    return "Der Rechnungsbetrag ist durch Ihre Anzahlungen bereits beglichen.";
-  const target = invoice.issuer.iban
-    ? ` auf das unten genannte Konto (IBAN ${invoice.issuer.iban})`
-    : "";
-  return `Bitte überweisen Sie ${euro(due)} bis zum ${date(invoice.dueDate)}${target} unter Angabe der Rechnungsnummer ${invoice.invoiceNr}.`;
-}
-
-function footnotes(invoice: Invoice): string[] {
-  const notes: string[] = [];
-  if (invoice.lines.some((l) => l.durchlaufend)) {
-    notes.push(
-      "* Durchlaufender Posten (§ 10 Abs. 1 UStG) — im Namen und für Rechnung des Fahrschülers verauslagt, keine Umsatzsteuer.",
-    );
-  }
-  if (invoice.lines.some((l) => l.steuerfrei)) {
-    notes.push("** Steuerfreie Leistung nach § 4 Nr. 21 UStG.");
-  }
-  if (invoice.lines.some((l) => l.vatRate == null && !l.durchlaufend)) {
-    notes.push("*** Nicht steuerbar (kein Leistungsentgelt).");
-  }
-  return notes;
 }
 
 /* ------------------------------ reminder ---------------------------- */
@@ -380,7 +347,7 @@ export function reminderFileName(
   subject: DunningSubject,
   reminder: Pick<InvoiceReminder, "level">,
 ): string {
-  return `${REMINDER_LABELS[reminder.level].replace(/[. ]+/g, "-").replace(/^-|-$/g, "")}-${subject.fileStem}.pdf`;
+  return `${reminderFileStem(REMINDER_LABELS[reminder.level], subject.fileStem)}.pdf`;
 }
 
 export function renderReminderPdf(
