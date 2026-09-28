@@ -9,6 +9,10 @@ import { Car, Check, Edit3, FileText, GraduationCap, User, X } from "lucide-reac
 import { toast } from "sonner";
 
 import type { StudentRecord } from "@/hooks/use-students";
+import { useCalendarEvents } from "@/hooks/use-calendar-events";
+import { type CalEvent, isCancelled } from "@/lib/calendar-data";
+import { formatGermanDate } from "@/lib/working-time";
+import type { ExamEventType } from "@/lib/exams";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,6 +63,25 @@ function formatAge(birthday: string): string {
   return age > 0 && age < 120 ? `${age} Jahre` : "";
 }
 
+/* The student's exam of one type from the calendar: a result, else the
+   next booked date; null when there is none. */
+function examStatus(
+  events: CalEvent[],
+  studentId: number,
+  type: ExamEventType,
+): string | null {
+  const own = events
+    .filter((e) => e.studentId === studentId && e.type === type && !isCancelled(e))
+    .toSorted((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+  const passed = own.find((e) => e.examResult === "bestanden");
+  if (passed) return `Bestanden am ${formatGermanDate(passed.date)}`;
+  const today = new Date().toLocaleDateString("sv-SE");
+  const next = own.find((e) => !e.examResult && e.date >= today);
+  if (next) return `${formatGermanDate(next.date)}, ${next.start} Uhr`;
+  const failed = own.findLast((e) => e.examResult === "nicht_bestanden");
+  return failed ? `Nicht bestanden am ${formatGermanDate(failed.date)}` : null;
+}
+
 export function UebersichtTab({
   student,
   instructorOptions,
@@ -80,6 +103,9 @@ export function UebersichtTab({
   const [draft, setDraft] = useState<StudentEdit | null>(null);
   const [saving, setSaving] = useState(false);
   const { files } = useStudentFiles(student.id);
+  const { events } = useCalendarEvents();
+  const practicalExam = examStatus(events, student.id, "Vorstellung zur prakt. Prüfung");
+  const theoryExam = examStatus(events, student.id, "Theorieprüfung");
 
   useEffect(() => {
     if (!editing) return;
@@ -394,15 +420,17 @@ export function UebersichtTab({
                       <TableCell className="font-medium">{editValue.classes}</TableCell>
                       <TableCell
                         className={
-                          student.theory.exam === "Nicht geplant"
+                          (theoryExam ?? student.theory.exam) === "Nicht geplant"
                             ? "text-muted-foreground"
                             : undefined
                         }
                       >
-                        {student.theory.exam}
+                        {theoryExam ?? student.theory.exam}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        Nicht geplant
+                      <TableCell
+                        className={practicalExam ? undefined : "text-muted-foreground"}
+                      >
+                        {practicalExam ?? "Nicht geplant"}
                       </TableCell>
                     </TableRow>
                   </TableBody>
