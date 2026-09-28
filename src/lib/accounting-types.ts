@@ -151,6 +151,13 @@ export type LedgerRow = {
   vatLabel: string;
   incomeCents: number | null;
   expenseCents: number | null;
+  /** From the student's point of view (Guthabenkonto 3272): what the
+      booking credited (payment, Guthaben-Vortrag) and what it charged
+      (Leistung, offener Saldovortrag). A Direktzahlung is both. Null for
+      bookings without a student. Sum(credit − debit) over active rows =
+      the student's balance. */
+  studentCreditCents: number | null;
+  studentDebitCents: number | null;
   storniert: boolean;
   isStorno: boolean;
   stornoReason: string | null;

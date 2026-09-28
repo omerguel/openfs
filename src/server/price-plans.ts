@@ -19,17 +19,28 @@ type PricePlanRow = {
   id: number;
   name: string;
   guaranteed_months: number;
+  classes: string;
   components: string;
 };
+
+function parseClasses(raw: string): string[] {
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 const toPlan = (row: PricePlanRow): PricePlanRecord => ({
   id: row.id,
   name: row.name,
   guaranteedMonths: row.guaranteed_months,
+  classes: parseClasses(row.classes),
   components: JSON.parse(row.components),
 });
 
-const SELECT = `SELECT id, name, guaranteed_months, components FROM price_plans`;
+const SELECT = `SELECT id, name, guaranteed_months, classes, components FROM price_plans`;
 
 export function listPricePlans(db: Database): PricePlanRecord[] {
   return db.query<PricePlanRow, []>(`${SELECT} ORDER BY id`).all().map(toPlan);
@@ -90,6 +101,24 @@ function normalizeComponents(db: Database, input: unknown): PriceComponent[] {
   });
 }
 
+function normalizeClasses(input: unknown): string[] {
+  if (input === null) return [];
+  if (!Array.isArray(input)) {
+    throw new ValidationError("Feld 'classes' muss eine Liste von Klassen sein.");
+  }
+  const classes: string[] = [];
+  for (const entry of input) {
+    if (typeof entry !== "string" || !entry.trim() || entry.trim().length > 10) {
+      throw new ValidationError("Ungültige Führerscheinklasse im Preisplan.");
+    }
+    const klass = entry.trim();
+    if (!classes.some((c) => c.toUpperCase() === klass.toUpperCase())) {
+      classes.push(klass);
+    }
+  }
+  return classes;
+}
+
 function normalize(
   db: Database,
   input: Partial<PricePlanInput>,
@@ -105,7 +134,9 @@ function normalize(
   }
 
   if (input.guaranteedMonths !== undefined) {
-    const months = Number(input.guaranteedMonths);
+    // Empty / null = no price guarantee.
+    const raw = input.guaranteedMonths as unknown;
+    const months = raw === null || raw === "" ? 0 : Number(raw);
     if (!Number.isInteger(months) || months < 0) {
       throw new ValidationError(
         "Garantierter Zeitraum muss eine Monatszahl (>= 0) sein.",
@@ -116,6 +147,10 @@ function normalize(
 
   if (input.components !== undefined) {
     next.components = normalizeComponents(db, input.components);
+  }
+
+  if (input.classes !== undefined) {
+    next.classes = normalizeClasses(input.classes);
   }
 
   if (!next.name) {
@@ -131,6 +166,7 @@ function normalize(
 const EMPTY: PricePlanInput = {
   name: "",
   guaranteedMonths: 0,
+  classes: [],
   components: [],
 };
 
@@ -140,11 +176,16 @@ export function createPricePlan(
 ): PricePlanRecord {
   const data = normalize(db, input, EMPTY);
   const row = db
-    .query<{ id: number }, [string, number, string]>(
-      `INSERT INTO price_plans (name, guaranteed_months, components)
-       VALUES (?, ?, ?) RETURNING id`,
+    .query<{ id: number }, [string, number, string, string]>(
+      `INSERT INTO price_plans (name, guaranteed_months, classes, components)
+       VALUES (?, ?, ?, ?) RETURNING id`,
     )
-    .get(data.name, data.guaranteedMonths, JSON.stringify(data.components))!;
+    .get(
+      data.name,
+      data.guaranteedMonths,
+      JSON.stringify(data.classes ?? []),
+      JSON.stringify(data.components),
+    )!;
   return getPricePlan(db, row.id);
 }
 
@@ -156,9 +197,15 @@ export function updatePricePlan(
   const current = getPricePlan(db, id);
   const data = normalize(db, input, current);
   db.prepare(
-    `UPDATE price_plans SET name = ?, guaranteed_months = ?, components = ?
+    `UPDATE price_plans SET name = ?, guaranteed_months = ?, classes = ?, components = ?
      WHERE id = ?`,
-  ).run(data.name, data.guaranteedMonths, JSON.stringify(data.components), id);
+  ).run(
+    data.name,
+    data.guaranteedMonths,
+    JSON.stringify(data.classes ?? []),
+    JSON.stringify(data.components),
+    id,
+  );
   return getPricePlan(db, id);
 }
 

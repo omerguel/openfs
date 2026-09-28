@@ -299,3 +299,60 @@ describe("component billing metadata", () => {
     ).toThrow(ValidationError);
   });
 });
+
+/* ================================================================== */
+/* classes + guaranteed period                                          */
+/* ================================================================== */
+
+describe("plan classes", () => {
+  test("stores the classes a plan is offered for (trimmed, deduplicated)", () => {
+    const plan = createPricePlan(db, makePlan({ classes: [" A ", "A2", "a", "A1"] }));
+    expect(plan.classes).toEqual(["A", "A2", "A1"]);
+    expect(getPricePlan(db, plan.id).classes).toEqual(["A", "A2", "A1"]);
+    expect(updatePricePlan(db, plan.id, { classes: [] }).classes).toEqual([]);
+  });
+
+  test("invalid classes are rejected", () => {
+    expect(() => createPricePlan(db, makePlan({ classes: "B" }))).toThrow(
+      ValidationError,
+    );
+    expect(() => createPricePlan(db, makePlan({ classes: [""] }))).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("demo seed: realistic 12-month guarantee, Rabatt only for B/B197", () => {
+    const [standard, rabatt] = listPricePlans(db);
+    expect(standard).toMatchObject({ guaranteedMonths: 12, classes: [] });
+    expect(rabatt).toMatchObject({ guaranteedMonths: 12, classes: ["B", "B197"] });
+  });
+
+  test("an empty guaranteed period means none (0)", () => {
+    const plan = createPricePlan(db, makePlan({ guaranteedMonths: "" }));
+    expect(plan.guaranteedMonths).toBe(0);
+    expect(
+      updatePricePlan(db, plan.id, { guaranteedMonths: null as never }).guaranteedMonths,
+    ).toBe(0);
+  });
+
+  test("a new student gets the first plan offered for the class", () => {
+    const motorrad = createPricePlan(db, makePlan({ name: "Motorrad", classes: ["A"] }));
+    const pkw = createPricePlan(db, makePlan({ name: "Pkw", classes: ["B"] }));
+    // The seeded Standard plan (all classes) comes first in list order.
+    const standard = listPricePlans(db)[0]!;
+    expect(createStudent(db, makeStudent({ classes: "A" })).pricePlanId).toBe(
+      standard.id,
+    );
+    updatePricePlan(db, standard.id, { classes: ["BE"] });
+    expect(createStudent(db, makeStudent({ classes: "A" })).pricePlanId).toBe(
+      motorrad.id,
+    );
+    expect(createStudent(db, makeStudent({ classes: "B" })).pricePlanId).not.toBe(
+      motorrad.id,
+    );
+    // An explicit choice wins over the default.
+    expect(
+      createStudent(db, makeStudent({ classes: "A", pricePlanId: pkw.id })).pricePlanId,
+    ).toBe(pkw.id);
+  });
+});

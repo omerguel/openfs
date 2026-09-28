@@ -8,6 +8,8 @@
 /* cents like everywhere else (src/lib/money.ts).                      */
 /* ------------------------------------------------------------------ */
 
+import { splitClassList } from "./license-classes";
+
 /** Calendar event types a price component can price (see calendar-data.ts). */
 export type BillableEventType =
   | "Praktisch"
@@ -79,12 +81,55 @@ export function resolveEventCharges(
 
 export type PricePlanInput = {
   name: string;
-  /** Guaranteed price period in months. */
+  /** Guaranteed price period in months — 0 = no guarantee. */
   guaranteedMonths: number;
+  /** Führerscheinklassen this plan is offered for ("B", "A", …).
+      Empty/omitted = valid for every class. */
+  classes?: string[];
   components: PriceComponent[];
 };
 
 export type PricePlanRecord = PricePlanInput & { id: number };
+
+/** True when `plan` is offered for any of the student's classes
+    ("B, A1"); a plan without classes fits everyone. */
+export function planMatchesClasses(
+  plan: PricePlanRecord,
+  studentClasses: string,
+): boolean {
+  const planClasses = (plan.classes ?? []).map((klass) => klass.toUpperCase());
+  if (planClasses.length === 0) return true;
+  return splitClassList(studentClasses).some((klass) =>
+    planClasses.includes(klass.toUpperCase()),
+  );
+}
+
+/** Default plan for a new student: the first plan (in list order)
+    offered for one of the student's classes, else the first plan. */
+export function defaultPlanForClasses(
+  plans: PricePlanRecord[],
+  studentClasses: string,
+): PricePlanRecord | undefined {
+  return plans.find((plan) => planMatchesClasses(plan, studentClasses)) ?? plans[0];
+}
+
+/** The plan that applies to a student: the assigned one, else the
+    class default (students created before plans were assigned). */
+export function resolveStudentPlan(
+  plans: PricePlanRecord[],
+  student: { pricePlanId?: number | null; classes: string },
+): PricePlanRecord | undefined {
+  return (
+    plans.find((plan) => plan.id === student.pricePlanId) ??
+    defaultPlanForClasses(plans, student.classes)
+  );
+}
+
+/** "Garantierter Zeitraum 12 Monate" / "1 Monat"; null when there is none. */
+export function formatGuaranteedPeriod(months: number | null | undefined): string | null {
+  if (!months || months <= 0) return null;
+  return `Preisgarantie ${months} ${months === 1 ? "Monat" : "Monate"}`;
+}
 
 /**
  * Resolve the price for a practical lesson component from a student's
@@ -109,7 +154,8 @@ export function resolveLessonPrice(
 export const PRICE_PLAN_SEED: PricePlanInput[] = [
   {
     name: "Standard Tarif",
-    guaranteedMonths: 240,
+    guaranteedMonths: 12,
+    classes: [],
     components: [
       { label: "Grundbetrag", priceCents: 100_00 },
       { label: "Nachtfahrt", durationMin: 45, priceCents: 75_00 },
@@ -151,7 +197,8 @@ export const PRICE_PLAN_SEED: PricePlanInput[] = [
   },
   {
     name: "Rabatt Tarif",
-    guaranteedMonths: 240,
+    guaranteedMonths: 12,
+    classes: ["B", "B197"],
     components: [
       { label: "Grundbetrag", priceCents: 89_00 },
       { label: "Nachtfahrt", durationMin: 45, priceCents: 69_00 },

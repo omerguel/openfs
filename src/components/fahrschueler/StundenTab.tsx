@@ -26,9 +26,12 @@ import {
   type BillableEventType,
   resolveEventCharges,
   resolveLessonPrice,
+  resolveStudentPlan,
 } from "@/lib/price-plan";
 import { billCalendarEvent, useCalendarEvents } from "@/hooks/use-calendar-events";
 import { usePricePlans } from "@/hooks/use-price-plans";
+import { invalidateStudentMoney } from "@/hooks/use-finance-access";
+import { hasClassBSpecialDrives } from "@/lib/license-classes";
 import { useStudents } from "@/hooks/use-students";
 import type { StudentRecord } from "@/hooks/use-students";
 import { accountingApi, useApi } from "@/components/buchhaltung/api";
@@ -38,7 +41,6 @@ import { BatchBillDialog } from "@/components/fahrschueler/BatchBillDialog";
 import { ChargeDialog } from "@/components/fahrschueler/ChargeDialog";
 import { SignaturePad } from "@/components/SignaturePad";
 import type { SignaturePadHandle } from "@/components/SignaturePad";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -292,7 +294,21 @@ function NachweisViewDialog({ open, attestation, onClose }: NachweisViewDialogPr
 /* Main StundenTab                                                     */
 /* ------------------------------------------------------------------ */
 
-export function StundenTab({ student }: { student: StudentRecord }) {
+/** Has the lesson already ended? Future lessons cannot be billed yet. */
+function hasEnded(event: CalEvent, now: Date): boolean {
+  const today = toISODate(now);
+  if (event.date !== today) return event.date < today;
+  return toMinutes(event.end) <= now.getHours() * 60 + now.getMinutes();
+}
+
+export function StundenTab({
+  student,
+  canSeeMoney,
+}: {
+  student: StudentRecord;
+  /** false for Fahrlehrer/innen — no billing, no finance requests. */
+  canSeeMoney: boolean;
+}) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("alle");
   const [billTarget, setBillTarget] = useState<CalEvent | null>(null);
   /* Exams bill through the multi-line ChargeDialog (service + Prüfgebühr). */
@@ -312,12 +328,15 @@ export function StundenTab({ student }: { student: StudentRecord }) {
   const { events: allEvents, refresh: refreshEvents } = useCalendarEvents();
   const { plans } = usePricePlans();
   const { students } = useStudents();
-  const accounts = useApi(accountingApi.accounts, []);
-
-  const studentPlan = useMemo(
-    () => plans.find((p) => p.id === student.pricePlanId),
-    [plans, student.pricePlanId],
+  // Finance endpoints are forbidden for Fahrlehrer/innen — don't ask.
+  const accounts = useApi(
+    () => (canSeeMoney ? accountingApi.accounts() : Promise.resolve({ accounts: [] })),
+    [canSeeMoney],
   );
+  const now = new Date();
+
+  // Assigned plan, else the class default — same rule as the Preise tab.
+  const studentPlan = useMemo(() => resolveStudentPlan(plans, student), [plans, student]);
 
   const studentEvents = useMemo(
     () =>
@@ -347,13 +366,14 @@ export function StundenTab({ student }: { student: StudentRecord }) {
         (event) =>
           isFahrstunde(event) &&
           billingState(event) === "open" &&
-          event.studentId != null,
+          event.studentId != null &&
+          hasEnded(event, new Date()),
       ),
     [studentEvents],
   );
 
   /* Sonderfahrten (class B minimums) — completed, non-cancelled lessons. */
-  const showSpecialDrives = /\bB/.test(student.classes);
+  const showSpecialDrives = hasClassBSpecialDrives(student.classes);
   const specialDrives = useMemo(
     () => computeSpecialDriveProgress(studentEvents, toISODate(new Date())),
     [studentEvents],
@@ -417,6 +437,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
     if (!billTarget) return;
     await billCalendarEvent(billTarget.id, input);
     await refreshEvents();
+    void invalidateStudentMoney();
     setBillTarget(null);
   };
 
@@ -462,13 +483,16 @@ export function StundenTab({ student }: { student: StudentRecord }) {
       }
     }
     await refreshEvents();
+    void invalidateStudentMoney();
     setBatchBillOpen(false);
     if (failure) {
       toast.error(
         `${billed} von ${lessons.length} abgerechnet — Fehler bei ${formatDate(failure.date)}: ${failure.message}`,
       );
     } else {
-      toast.success(`${billed} Fahrstunden abgerechnet.`);
+      toast.success(
+        `${billed} ${billed === 1 ? "Fahrstunde" : "Fahrstunden"} abgerechnet.`,
+      );
     }
   };
 
@@ -511,29 +535,51 @@ export function StundenTab({ student }: { student: StudentRecord }) {
             </SelectContent>
           </Select>
 
-          <div className="ml-auto flex items-center gap-2">
-            {openLessons.length >= 2 && (
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {canSeeMoney && openLessons.length >= 2 && (
               <Button variant="outline" size="sm" onClick={() => setBatchBillOpen(true)}>
                 <Receipt className="mr-1 size-3.5" />
                 Alle offenen abrechnen ({openLessons.length})
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={attestationCount === 0}
-              onClick={() => setNachweisPrintOpen(true)}
-            >
-              <Printer className="mr-1 size-3.5" />
-              Ausbildungsnachweis drucken
-            </Button>
+            {attestationCount === 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* aria-disabled instead of disabled: a disabled button
+                      fires no hover/focus, so the reason could not show. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-disabled="true"
+                    className="cursor-not-allowed opacity-50"
+                    onClick={(event) => event.preventDefault()}
+                  >
+                    <Printer className="mr-1 size-3.5" />
+                    Ausbildungsnachweis drucken
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-64 text-pretty">
+                  Noch keine unterschriebenen Fahrstunden. Erfassen Sie zuerst einen
+                  Nachweis in der Spalte „Nachweis" einer vergangenen Fahrstunde.
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setNachweisPrintOpen(true)}
+              >
+                <Printer className="mr-1 size-3.5" />
+                Ausbildungsnachweis drucken
+              </Button>
+            )}
           </div>
         </div>
 
         {showSpecialDrives && (
           <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border px-4 py-2.5">
             <dt className="text-[11px] font-medium text-muted-foreground">
-              Sonderfahrten Klasse B
+              Sonderfahrten (Mindestumfang Klasse B)
             </dt>
             {specialDrives.map((row) => (
               <div key={row.kind} className="flex items-baseline gap-1.5 text-sm">
@@ -565,19 +611,16 @@ export function StundenTab({ student }: { student: StudentRecord }) {
             </EmptyHeader>
           </Empty>
         ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table className="text-xs">
+          <div className="overflow-x-auto rounded-lg border">
+            <Table className="min-w-[46rem] text-xs">
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
                   <TableHead className="pl-4">Datum/Zeit</TableHead>
                   <TableHead>Dauer</TableHead>
-                  <TableHead>Klasse</TableHead>
-                  <TableHead className="min-w-64">Kursname</TableHead>
-                  <TableHead>Typ</TableHead>
-                  <TableHead>Fahrschule</TableHead>
-                  <TableHead>Fahrlehrer</TableHead>
+                  <TableHead className="min-w-44">Termin</TableHead>
+                  <TableHead>Fahrlehrer/in</TableHead>
                   <TableHead>Fahrzeug</TableHead>
-                  <TableHead>Abrechnung</TableHead>
+                  <TableHead>{canSeeMoney ? "Abrechnung" : "Status"}</TableHead>
                   <TableHead className="pr-4">Nachweis</TableHead>
                 </TableRow>
               </TableHeader>
@@ -588,6 +631,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                   const isBillable = isPraktisch || isExam;
                   const cancelled = isCancelled(event);
                   const state = isBillable ? billingState(event) : null;
+                  const ended = hasEnded(event, now);
                   const canCancel =
                     !cancelled &&
                     !(event.billedTransactionId != null && event.billedActive);
@@ -623,31 +667,22 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                           </span>
                         </div>
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
+                      <TableCell className="whitespace-nowrap text-muted-foreground">
                         {formatDuration(event.start, event.end)}
                       </TableCell>
-                      <TableCell>{student.classes}</TableCell>
-                      <TableCell
-                        className={
-                          cancelled
-                            ? "whitespace-normal line-through"
-                            : "whitespace-normal"
-                        }
-                      >
-                        {event.title}
-                        {event.lessonKind && event.lessonKind !== "Übungsfahrt" && (
-                          <span className="ml-1.5 text-muted-foreground">
-                            · {event.lessonKind}
+                      <TableCell className="whitespace-normal">
+                        <div className="flex flex-col gap-0.5">
+                          <span className={cancelled ? "line-through" : undefined}>
+                            {event.title}
                           </span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary">
-                          {eventTypeShortLabel[event.type]}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {event.location ?? student.drivingSchool}
+                          <span className="text-[11px] text-muted-foreground">
+                            {eventTypeShortLabel[event.type]}
+                            {event.lessonKind && event.lessonKind !== "Übungsfahrt"
+                              ? ` · ${event.lessonKind}`
+                              : ""}
+                            {event.location ? ` · ${event.location}` : ""}
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {event.instructor}
@@ -668,12 +703,17 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                             }
                             {event.cancellationFeeActive && " · Gebühr gebucht"}
                           </span>
-                        ) : !isBillable ? (
+                        ) : !isBillable || !canSeeMoney ? (
                           cancelButton
                         ) : state === "billed" ? (
                           <span className="text-muted-foreground text-xs">
                             Abgerechnet
                           </span>
+                        ) : !ended ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">Geplant</span>
+                            {cancelButton}
+                          </div>
                         ) : billDisabledReason ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -772,6 +812,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
             if (!examBillTarget) return;
             await billCalendarEvent(examBillTarget.id, input);
             await refreshEvents();
+            void invalidateStudentMoney();
             setExamBillTarget(null);
             toast.success("Prüfung abgerechnet.");
           }}

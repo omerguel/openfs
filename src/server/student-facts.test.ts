@@ -128,12 +128,12 @@ describe("theory from attendance", () => {
     expect(requiredTheoryUnits("")).toBe(14);
   });
 
-  test("no attendance: 0 %, Pausiert, no last session", () => {
+  test("no attendance: 0 %, Nicht begonnen, no last session", () => {
     expect(theoryOf()).toMatchObject({
       attendedUnits: 0,
       requiredUnits: 14,
       progress: 0,
-      status: "Pausiert",
+      status: "Noch nicht begonnen",
       lastSession: "Noch keine",
       lastSessionDate: null,
       exam: null,
@@ -183,7 +183,7 @@ describe("theory from attendance", () => {
     });
     expect(updated.theory).toMatchObject({
       preExams: "2 bestanden",
-      status: "Pausiert",
+      status: "Noch nicht begonnen",
       progress: 0,
     });
     const stored = db

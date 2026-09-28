@@ -23,16 +23,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { AccountSelect } from "@/components/preise/AccountSelect";
 
 type LineDraft = { description: string; amount: string; habenKonto: string };
-
-const KONTO_OPTIONS: { value: string; label: string }[] = [
-  { value: "4400", label: "4400 · Erlöse 19 %" },
-  { value: "4300", label: "4300 · Erlöse 7 %" },
-  { value: "4100", label: "4100 · steuerfrei" },
-  { value: "1370", label: "1370 · durchlaufend" },
-];
 
 /** "2026-06-09" → "09.06.2026" */
 function formatDate(iso: string): string {
@@ -132,21 +125,28 @@ export function ChargeDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-2">
-          <div className="grid grid-cols-[1fr_7rem_11rem_2rem] gap-2 text-xs font-medium text-muted-foreground">
+          {proposals.length === 0 && event && (
+            <p className="text-xs text-muted-foreground text-pretty">
+              Im Preisplan ist für diesen Termin kein Preis hinterlegt — bitte Betrag
+              eintragen oder den Preisplan unter „Preise" ergänzen.
+            </p>
+          )}
+          <div className="hidden grid-cols-[1fr_7rem_12rem_2rem] gap-2 text-xs font-medium text-muted-foreground sm:grid">
             <span>Position</span>
             <span>Betrag, EUR</span>
-            <span>Konto</span>
+            <span>Art</span>
             <span />
           </div>
           {lines.map((line, index) => (
             <div
               key={index}
-              className="grid grid-cols-[1fr_7rem_11rem_2rem] items-center gap-2"
+              className="grid grid-cols-[6.5rem_1fr_2rem] items-center gap-2 max-sm:border-b max-sm:pb-2 sm:grid-cols-[1fr_7rem_12rem_2rem]"
             >
               <Input
                 value={line.description}
                 onChange={(e) => update(index, { description: e.target.value })}
                 aria-label={`Beschreibung Position ${index + 1}`}
+                className="col-span-3 sm:col-span-1"
               />
               <Input
                 inputMode="decimal"
@@ -154,18 +154,11 @@ export function ChargeDialog({
                 onChange={(e) => update(index, { amount: e.target.value })}
                 aria-label={`Betrag Position ${index + 1}`}
               />
-              <NativeSelect
+              <AccountSelect
                 value={line.habenKonto}
-                onChange={(e) => update(index, { habenKonto: e.target.value })}
-                aria-label={`Konto Position ${index + 1}`}
-                className="w-full"
-              >
-                {KONTO_OPTIONS.map((option) => (
-                  <NativeSelectOption key={option.value} value={option.value}>
-                    {option.label}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
+                onChange={(habenKonto) => update(index, { habenKonto })}
+                ariaLabel={`Konto Position ${index + 1}`}
+              />
               <Button
                 type="button"
                 variant="ghost"
@@ -198,12 +191,13 @@ export function ChargeDialog({
           <div className="flex items-center justify-between border-t pt-2 text-sm font-medium">
             <span>Summe</span>
             <span className="tabular-nums">
-              {total != null ? `${formatCents(total)} €` : "–"}
+              {total != null ? `${formatCents(total)} EUR` : "–"}
             </span>
           </div>
           {lines.some((l) => l.habenKonto === "1370") && (
             <p className="text-xs text-muted-foreground">
-              Konto 1370: durchlaufender Posten (§ 10 Abs. 1 UStG) — ohne Umsatzsteuer.
+              TÜV/DEKRA-Gebühren sind durchlaufende Posten (Konto 1370, § 10 Abs. 1 UStG)
+              und werden ohne Umsatzsteuer weitergereicht.
             </p>
           )}
           {!student && (

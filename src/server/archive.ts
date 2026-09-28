@@ -59,6 +59,8 @@ export function tableExists(db: Database, name: string): boolean {
 type ArchivePayload = {
   row: Record<string, unknown>;
   links?: ArchiveLinks;
+  /** Why the record was archived (students: Ausbildung abgeschlossen, …). */
+  reason?: string;
 };
 
 export type ArchiveRecord = {
@@ -155,6 +157,7 @@ export function archiveRow(
   id: number,
   label: string,
   links?: ArchiveLinks,
+  reason?: string,
 ): void {
   const row = db
     .query<Record<string, unknown>, [number]>(
@@ -166,6 +169,7 @@ export function archiveRow(
   if (links && Object.values(links).some((ids) => ids?.length)) {
     payload.links = links;
   }
+  if (reason) payload.reason = reason;
   ensureArchiveColumns(db);
   db.prepare(
     "INSERT INTO archive (entity, label, payload, deleted_by) VALUES (?, ?, ?, ?)",
@@ -180,6 +184,61 @@ export function listArchive(db: Database): ArchiveRecord[] {
     )
     .all()
     .map(toRecord);
+}
+
+/** Contract data of archived students — the Verträge page keeps them
+    visible under "Archiviert" (restorable from the Archiv). */
+export type ArchivedContract = {
+  archiveId: number;
+  deletedAt: string;
+  reason: string | null;
+  studentId: number;
+  firstName: string;
+  lastName: string;
+  contractNumber: string;
+  customerNumber: string;
+  classes: string;
+  registrationDate: string;
+  pricePlanId: number | null;
+};
+
+export function listArchivedContracts(db: Database): ArchivedContract[] {
+  const rows = db
+    .query<ArchiveRow, []>(
+      `SELECT id, entity, label, payload, deleted_at FROM archive
+       WHERE entity = 'student' ORDER BY deleted_at DESC, id DESC`,
+    )
+    .all();
+  const contracts: ArchivedContract[] = [];
+  for (const row of rows) {
+    let payload: Partial<ArchivePayload> & Record<string, unknown>;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      continue;
+    }
+    // Early snapshots stored the bare row without the { row, links } wrapper.
+    const snapshot = (
+      payload.row && typeof payload.row === "object" ? payload.row : payload
+    ) as Record<string, unknown>;
+    const text = (key: string) =>
+      typeof snapshot[key] === "string" ? (snapshot[key] as string) : "";
+    contracts.push({
+      archiveId: row.id,
+      deletedAt: toRecord(row).deletedAt,
+      reason: typeof payload.reason === "string" ? payload.reason : null,
+      studentId: Number(snapshot.id),
+      firstName: text("first_name"),
+      lastName: text("last_name"),
+      contractNumber: text("contract_number"),
+      customerNumber: text("customer_number"),
+      classes: text("classes"),
+      registrationDate: text("registration_date"),
+      pricePlanId:
+        typeof snapshot.price_plan_id === "number" ? snapshot.price_plan_id : null,
+    });
+  }
+  return contracts;
 }
 
 function getArchiveRow(db: Database, id: number): ArchiveRow {

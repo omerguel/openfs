@@ -4,8 +4,10 @@
 /* Vorstellungsentgelte) und den branchenüblichen Vertragsbedingungen  */
 /* (Kündigungsstaffel, Ausfallentschädigung, FahrschAusbO, DSGVO).     */
 /*                                                                     */
-/* VertragSheet renders the A4 document. The dialog shows a preview    */
-/* plus editable Preise (persisted in localStorage) and portals a copy */
+/* VertragSheet renders the A4 document. The prices come from the      */
+/* student's Preisplan; single values can be overridden per student    */
+/* and are stored on the server (students.contract_prices), so every   */
+/* workstation prints the same contract. The dialog portals a copy     */
 /* into <div id="print-root"> so window.print() emits only the         */
 /* contract — same pattern as QuittungDialog.                          */
 /* ------------------------------------------------------------------ */
@@ -13,7 +15,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
-import { Printer, TriangleAlert } from "lucide-react";
+import { Printer, RotateCcw, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -27,54 +29,38 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import type { StudentRecord } from "@/hooks/use-students";
+import { ScaledPreview } from "@/components/ScaledPreview";
+import { usePricePlans } from "@/hooks/use-price-plans";
+import { type StudentRecord, updateStudent } from "@/hooks/use-students";
+import {
+  CONTRACT_PRICE_KEYS,
+  CONTRACT_PRICE_LABELS,
+  type ContractPriceKey,
+  type ContractPriceOverrides,
+  type ContractPriceValue,
+  missingContractPrices,
+  type ResolvedContractPrice,
+  resolveContractPrices,
+} from "@/lib/contract-prices";
+import { formatCents, formatEuro, parseEuroToCents } from "@/lib/money";
+import { resolveStudentPlan } from "@/lib/price-plan";
+import { queryClient } from "@/lib/query-client";
 import type { CompanyProfile } from "@/lib/accounting-types";
 
-type VertragPreise = {
-  grundbetrag: string;
-  fahrstunde: string;
-  sonderfahrt: string;
-  theoriePruefung: string;
-  praxisPruefung: string;
-  lernmaterial: string;
-};
+/** window event (detail = student id): open that student's contract. */
+export const OPEN_CONTRACT_EVENT = "openfs:open-contract";
 
-const PREISE_STORAGE_KEY = "fahrschule.vertrag.preise";
+/* Earlier versions kept one global price set in the browser. Prices now
+   come from the plan (+ per-student overrides on the server). */
+const LEGACY_STORAGE_KEY = "fahrschule.vertrag.preise";
 
-const EMPTY_PREISE: VertragPreise = {
-  grundbetrag: "",
-  fahrstunde: "",
-  sonderfahrt: "",
-  theoriePruefung: "",
-  praxisPruefung: "",
-  lernmaterial: "",
-};
+type VertragPreise = Record<ContractPriceKey, ContractPriceValue>;
 
-const PREIS_LABELS: Record<keyof VertragPreise, string> = {
-  grundbetrag: "Grundbetrag",
-  fahrstunde: "Fahrstunde (45 Min.)",
-  sonderfahrt: "Sonderfahrt (45 Min.)",
-  theoriePruefung: "Vorstellung theor. Prüfung",
-  praxisPruefung: "Vorstellung prakt. Prüfung",
-  lernmaterial: "Lernmaterial (optional)",
-};
-
-function loadPreise(): VertragPreise {
-  try {
-    const raw = localStorage.getItem(PREISE_STORAGE_KEY);
-    if (!raw) return EMPTY_PREISE;
-    return { ...EMPTY_PREISE, ...(JSON.parse(raw) as Partial<VertragPreise>) };
-  } catch {
-    return EMPTY_PREISE;
-  }
-}
-
-/** "450" / "450,00 €" / "450,00 EUR" → "450,00 EUR"; leer → null */
-function formatPreis(value: string): string | null {
-  const cleaned = value.replace(/€|eur/gi, "").trim();
-  if (!cleaned) return null;
-  const normalized = /,\d{1,2}$/.test(cleaned) ? cleaned : `${cleaned},00`;
-  return `${normalized} EUR`;
+/** 45000 → "450,00 EUR"; "inklusive" stays; unknown → null (blank line). */
+function formatPreis(value: ContractPriceValue): string | null {
+  if (value == null) return null;
+  if (value === "inklusive") return "inklusive";
+  return formatEuro(value);
 }
 
 /** "Lorscher Straße 6, 60489 Frankfurt am Main" → "Frankfurt am Main" */
@@ -145,7 +131,7 @@ function VertragSheet({
     },
   ];
   const lernmaterial = formatPreis(preise.lernmaterial);
-  if (lernmaterial) {
+  if (lernmaterial && lernmaterial !== "inklusive") {
     preisRows.push({ label: "Lernmaterial / Lehrmittel", value: lernmaterial });
   }
 
@@ -211,6 +197,13 @@ function VertragSheet({
             <span className="text-black/60">Bei Minderjährigen vertreten durch:</span>{" "}
             ________________________________
           </span>
+          {student.companion?.name && (
+            <span>
+              <span className="text-black/60">Begleitperson (BF17):</span>{" "}
+              {student.companion.name}
+              {student.companion.phone ? `, ${student.companion.phone}` : ""}
+            </span>
+          )}
         </div>
         <span className="text-black/60">
           — nachfolgend „Fahrschüler/in" — wird folgender Ausbildungsvertrag geschlossen:
@@ -404,6 +397,78 @@ function VertragSheet({
   );
 }
 
+function PriceField({
+  priceKey,
+  price,
+  disabled,
+  onCommit,
+}: {
+  priceKey: ContractPriceKey;
+  price: ResolvedContractPrice;
+  disabled: boolean;
+  /** cents, or null = back to the plan's price */
+  onCommit: (cents: number | null) => void;
+}) {
+  const shown =
+    price.value == null
+      ? ""
+      : price.value === "inklusive"
+        ? ""
+        : formatCents(price.value);
+  const [text, setText] = useState(shown);
+  const [error, setError] = useState(false);
+
+  // Follow saved values (plan switch, reset) while not typing.
+  useEffect(() => setText(shown), [shown]);
+
+  const commit = () => {
+    if (text.trim() === shown) return;
+    if (!text.trim()) {
+      setError(false);
+      onCommit(null);
+      return;
+    }
+    const cents = parseEuroToCents(text);
+    if (cents == null) {
+      setError(true);
+      return;
+    }
+    setError(false);
+    onCommit(cents);
+  };
+
+  return (
+    <Field>
+      <FieldLabel htmlFor={`vertrag-preis-${priceKey}`}>
+        {CONTRACT_PRICE_LABELS[priceKey]}
+      </FieldLabel>
+      <Input
+        id={`vertrag-preis-${priceKey}`}
+        value={text}
+        inputMode="decimal"
+        disabled={disabled}
+        aria-invalid={error || undefined}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+        }}
+        placeholder={price.value === "inklusive" ? "inklusive" : "z. B. 65,00"}
+        className="tabular-nums"
+      />
+      <span className="text-[11px] text-muted-foreground">
+        {error
+          ? "Ungültiger Betrag (z. B. 65,00)"
+          : price.source === "override"
+            ? "Angepasst für diesen Vertrag"
+            : price.source === "plan"
+              ? "Aus dem Preisplan"
+              : "Nicht im Preisplan"}
+      </span>
+    </Field>
+  );
+}
+
 export function VertragDialog({
   student,
   onClose,
@@ -412,7 +477,22 @@ export function VertragDialog({
   onClose: () => void;
 }) {
   const [issuer, setIssuer] = useState<CompanyProfile | null>(null);
-  const [preise, setPreise] = useState<VertragPreise>(loadPreise);
+  const { plans } = usePricePlans();
+  const [overrides, setOverrides] = useState<ContractPriceOverrides>({});
+  const [saving, setSaving] = useState(false);
+
+  // Fresh overrides whenever the dialog opens for a student.
+  useEffect(() => {
+    if (student) setOverrides(student.contractPrices ?? {});
+  }, [student]);
+
+  // Drop the old browser-wide price set — it applied one student's
+  // prices to every contract.
+  useEffect(() => {
+    try {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     if (student == null || issuer != null) return;
@@ -434,20 +514,44 @@ export function VertragDialog({
     };
   }, [student, issuer]);
 
-  const updatePreis = (key: keyof VertragPreise, value: string) => {
-    setPreise((current) => {
-      const next = { ...current, [key]: value };
-      try {
-        localStorage.setItem(PREISE_STORAGE_KEY, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+  const plan = student ? resolveStudentPlan(plans, student) : undefined;
+  const resolved = resolveContractPrices(plan, overrides);
+  const preise = Object.fromEntries(
+    CONTRACT_PRICE_KEYS.map((key) => [key, resolved[key].value]),
+  ) as VertragPreise;
+  const missingPreise = missingContractPrices(resolved);
+  const hasOverrides = Object.keys(overrides).length > 0;
+
+  const saveOverrides = async (next: ContractPriceOverrides) => {
+    if (!student) return;
+    const previous = overrides;
+    setOverrides(next);
+    setSaving(true);
+    try {
+      await updateStudent(student.id, { contractPrices: next });
+      await queryClient.invalidateQueries({ queryKey: ["students"] });
+    } catch (error) {
+      setOverrides(previous);
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Preise konnten nicht gespeichert werden.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commitPrice = (key: ContractPriceKey, cents: number | null) => {
+    const next = { ...overrides };
+    const planValue = resolveContractPrices(plan, {})[key].value;
+    // Same as the plan (or cleared) = no override.
+    if (cents == null || cents === planValue) delete next[key];
+    else next[key] = cents;
+    void saveOverrides(next);
   };
 
   const printRoot = document.getElementById("print-root");
-  const missingPreise = (Object.keys(PREIS_LABELS) as (keyof VertragPreise)[]).filter(
-    (key) => key !== "lernmaterial" && !preise[key].trim(),
-  );
 
   return (
     <Dialog
@@ -468,19 +572,35 @@ export function VertragDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>
+            Entgelte aus Preisplan{" "}
+            <span className="font-medium text-foreground">{plan?.name ?? "—"}</span>
+            {saving ? " · wird gespeichert…" : ""}
+          </span>
+          {hasOverrides && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={saving}
+              onClick={() => void saveOverrides({})}
+            >
+              <RotateCcw data-icon="inline-start" />
+              Auf Preisplan zurücksetzen
+            </Button>
+          )}
+        </div>
+
         <FieldGroup className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {(Object.keys(PREIS_LABELS) as (keyof VertragPreise)[]).map((key) => (
-            <Field key={key}>
-              <FieldLabel htmlFor={`vertrag-preis-${key}`}>
-                {PREIS_LABELS[key]}
-              </FieldLabel>
-              <Input
-                id={`vertrag-preis-${key}`}
-                value={preise[key]}
-                onChange={(event) => updatePreis(key, event.target.value)}
-                placeholder="z. B. 65,00"
-              />
-            </Field>
+          {CONTRACT_PRICE_KEYS.map((key) => (
+            <PriceField
+              key={`${student?.id}-${key}`}
+              priceKey={key}
+              price={resolved[key]}
+              disabled={saving || student == null}
+              onCommit={(cents) => commitPrice(key, cents)}
+            />
           ))}
         </FieldGroup>
 
@@ -488,10 +608,10 @@ export function VertragDialog({
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             <span>
-              Es fehlen Preise ({missingPreise.map((key) => PREIS_LABELS[key]).join(", ")}
-              ). Ohne vollständige Entgeltangaben nach § 32 FahrlG ist der Vertrag nicht
-              vollständig — die fehlenden Beträge erscheinen als Leerfelder zum
-              handschriftlichen Ausfüllen.
+              Es fehlen Preise (
+              {missingPreise.map((key) => CONTRACT_PRICE_LABELS[key]).join(", ")}). Tragen
+              Sie sie oben ein oder ergänzen Sie den Preisplan — sonst erscheinen sie als
+              Leerfelder zum handschriftlichen Ausfüllen (§ 32 FahrlG).
             </span>
           </div>
         )}
@@ -502,9 +622,9 @@ export function VertragDialog({
           </div>
         ) : (
           <>
-            <div className="max-h-[55vh] overflow-auto rounded-lg border shadow-sm">
+            <ScaledPreview className="max-h-[55vh] overflow-y-auto rounded-lg border shadow-sm">
               <VertragSheet student={student} issuer={issuer} preise={preise} />
-            </div>
+            </ScaledPreview>
             {/* Print copy outside the app root — the only thing printed. */}
             {printRoot &&
               createPortal(

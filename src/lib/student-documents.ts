@@ -21,7 +21,72 @@ export type StudentFile = {
   sha256: string;
   uploadedAt: string;
   url: string;
+  /** Dokumentart ("Sehtest", …); "" = not classified. */
+  docType: string;
 };
+
+/** Unterlagen a Fahrschule collects for the Führerscheinantrag — offered
+ *  as Dokumentart for uploads and as the default checklist. */
+export const STUDENT_DOCUMENT_TYPES = [
+  "Personalausweis",
+  "Passbild",
+  "Sehtest",
+  "Erste-Hilfe-Nachweis",
+  "Führerscheinantrag",
+  "Ausbildungsvertrag",
+  "Einverständniserklärung (BF17)",
+] as const;
+
+/** Checklist shown for every student (entries can be ticked off). */
+export const DEFAULT_CHECKLIST = [
+  "Personalausweis",
+  "Passbild",
+  "Sehtest",
+  "Erste-Hilfe-Nachweis",
+  "Führerscheinantrag",
+];
+
+export type ChecklistEntry = { name: string; done: boolean; custom: boolean };
+
+/** The checklist to display: default entries plus custom ones, each
+ *  done when it is in `documents` (handed in). */
+export function buildChecklist(
+  documents: string[],
+  openDocuments: string[] = [],
+): ChecklistEntry[] {
+  const has = (list: string[], name: string) => hasStudentDocumentNamed(list, name);
+  const entries: ChecklistEntry[] = DEFAULT_CHECKLIST.map((name) => ({
+    name,
+    done: has(documents, name),
+    custom: false,
+  }));
+  for (const name of [...documents, ...openDocuments]) {
+    if (entries.some((entry) => has([entry.name], name))) continue;
+    entries.push({ name, done: has(documents, name), custom: true });
+  }
+  return entries;
+}
+
+/** Tick or untick `name`: moves it between handed-in and open. */
+export function toggleChecklistEntry(
+  documents: string[],
+  openDocuments: string[],
+  name: string,
+  done: boolean,
+): { documents: string[]; openDocuments: string[] } {
+  const without = (list: string[]) =>
+    list.filter((entry) => !hasStudentDocumentNamed([entry], name));
+  const isDefault = hasStudentDocumentNamed(DEFAULT_CHECKLIST, name);
+  return done
+    ? { documents: [...without(documents), name], openDocuments: without(openDocuments) }
+    : {
+        documents: without(documents),
+        // Default entries are open implicitly; custom ones stay listed.
+        openDocuments: isDefault
+          ? without(openDocuments)
+          : [...without(openDocuments), name],
+      };
+}
 
 const byteFormatter = new Intl.NumberFormat("de-DE", {
   maximumFractionDigits: 1,

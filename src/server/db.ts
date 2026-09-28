@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS price_plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   guaranteed_months INTEGER NOT NULL DEFAULT 0,
+  classes TEXT NOT NULL DEFAULT '[]',
   components TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -552,6 +553,7 @@ export function openDb(
   const demo = demoDataEnabled(db);
   migrateSkr03ToSkr04(db);
   migrateStudentPricePlan(db);
+  migrateStudentContractFields(db);
   migrateCalendarEventBilling(db);
   // student_id is added by migrateCalendarEventBilling, so this index can
   // only be created after that migration — not in the base DDL string.
@@ -642,6 +644,24 @@ export function migrateStudentPricePlan(db: Database) {
   db.exec(
     "ALTER TABLE students ADD COLUMN price_plan_id INTEGER REFERENCES price_plans(id)",
   );
+}
+
+/* Columns added to price_plans / students after their tables shipped:
+   the classes a plan is offered for, the per-student contract price
+   overrides (§ 32 FahrlG), the Begleitperson (BF17) and the open
+   checklist entries. */
+export function migrateStudentContractFields(db: Database) {
+  const addMissing = (table: string, column: string, ddl: string) => {
+    const columns = db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c) => c.name);
+    if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addMissing("price_plans", "classes", "classes TEXT NOT NULL DEFAULT '[]'");
+  addMissing("students", "contract_prices", "contract_prices TEXT NOT NULL DEFAULT '{}'");
+  addMissing("students", "companion", "companion TEXT");
+  addMissing("students", "open_documents", "open_documents TEXT NOT NULL DEFAULT '[]'");
 }
 
 /* Databases created before lesson-billing existed lack the student_id
@@ -780,11 +800,16 @@ function initPricePlans(db: Database) {
     .get()!.n;
   if (count > 0) return;
   const insert = db.prepare(
-    `INSERT INTO price_plans (name, guaranteed_months, components)
-     VALUES (?, ?, ?)`,
+    `INSERT INTO price_plans (name, guaranteed_months, classes, components)
+     VALUES (?, ?, ?, ?)`,
   );
   for (const plan of PRICE_PLAN_SEED) {
-    insert.run(plan.name, plan.guaranteedMonths, JSON.stringify(plan.components));
+    insert.run(
+      plan.name,
+      plan.guaranteedMonths,
+      JSON.stringify(plan.classes ?? []),
+      JSON.stringify(plan.components),
+    );
   }
 }
 

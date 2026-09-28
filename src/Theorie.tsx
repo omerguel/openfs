@@ -50,6 +50,7 @@ const statusDot: Record<TheoryStatus, string> = {
   "In Prüfung": "bg-amber-500",
   Bereit: "bg-green-500",
   Pausiert: "bg-muted-foreground/50",
+  "Noch nicht begonnen": "bg-muted-foreground/30",
 };
 
 const statusOptions: Array<{ value: StatusFilter; label: string }> = [
@@ -58,6 +59,7 @@ const statusOptions: Array<{ value: StatusFilter; label: string }> = [
   { value: "Bereit", label: "Bereit" },
   { value: "In Prüfung", label: "In Prüfung" },
   { value: "Pausiert", label: "Pausiert" },
+  { value: "Noch nicht begonnen", label: "Noch nicht begonnen" },
 ];
 
 type Learner = ReturnType<typeof toLearner>;

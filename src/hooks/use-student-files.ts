@@ -29,11 +29,26 @@ export function useStudentFiles(studentId: number) {
 export async function uploadStudentFile(
   studentId: number,
   file: File,
+  docType = "",
 ): Promise<StudentFile> {
   const body = new FormData();
   body.append("file", file, file.name);
+  if (docType) body.append("docType", docType);
   return parseOrThrow<StudentFile>(
     await fetch(filesPath(studentId), { method: "POST", body }),
+  );
+}
+
+export async function setStudentFileType(
+  id: number,
+  docType: string,
+): Promise<StudentFile> {
+  return parseOrThrow<StudentFile>(
+    await fetch(`/api/files/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docType }),
+    }),
   );
 }
 
