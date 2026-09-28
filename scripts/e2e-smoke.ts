@@ -17,6 +17,9 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const PORT = 4100 + Math.floor(Math.random() * 800);
 const BASE = `http://127.0.0.1:${PORT}`;
 
+/* Pages meant to be reachable without signing in. */
+const PUBLIC_PAGES = ["/anfrage", "/portal/", "/impressum", "/datenschutz"];
+
 /* Tabs worth clicking per page (visible button/tab labels). */
 const CLICK_THROUGH: Record<string, string[]> = {
   "/fahrlehrer": ["Arbeitszeiten"],
@@ -34,10 +37,21 @@ async function routesFromRouter(): Promise<string[]> {
   return [...source.matchAll(/path: "([^"]+)"/g)].map((match) => match[1]!);
 }
 
+/* Demo mode seeds this Inhaber login (src/index.ts). */
+const DEMO_LOGIN = { email: "demo@openfs.de", password: "openfs-demo" };
+let cookie = "";
+
+async function api(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", cookie, ...init.headers },
+  });
+}
+
 async function waitForServer(): Promise<void> {
   for (let i = 0; i < 100; i++) {
     try {
-      const res = await fetch(`${BASE}/api/students`);
+      const res = await fetch(`${BASE}/api/auth/status`);
       if (res.ok) return;
     } catch {
       // not up yet
@@ -49,16 +63,16 @@ async function waitForServer(): Promise<void> {
 
 async function resolveParams(path: string): Promise<string> {
   if (path.includes("$studentId")) {
-    const { students } = (await (await fetch(`${BASE}/api/students`)).json()) as {
+    const { students } = (await (await api("/api/students")).json()) as {
       students: { id: number }[];
     };
     return path.replace("$studentId", String(students[0]!.id));
   }
   if (path.includes("$token")) {
-    const { students } = (await (await fetch(`${BASE}/api/students`)).json()) as {
+    const { students } = (await (await api("/api/students")).json()) as {
       students: { id: number }[];
     };
-    const res = await fetch(`${BASE}/api/students/${students[0]!.id}/portal-link`, {
+    const res = await api(`/api/students/${students[0]!.id}/portal-link`, {
       method: "POST",
     });
     const body = (await res.json()) as { token?: string };
@@ -112,8 +126,17 @@ const server = Bun.spawn(["bun", "src/index.ts"], {
 let failed = 0;
 try {
   await waitForServer();
+  const login = await api("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(DEMO_LOGIN),
+  });
+  if (!login.ok) throw new Error(`Demo login failed: ${login.status}`);
+  cookie = login.headers.get("set-cookie")!.split(";")[0]!;
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const [name, value] = cookie.split("=") as [string, string];
+  await context.addCookies([{ name, value, url: BASE }]);
+  const page = await context.newPage();
   for (const route of await routesFromRouter()) {
     const path = await resolveParams(route);
     const problems = await check(page, `${BASE}${path}`, CLICK_THROUGH[route] ?? []);
@@ -125,6 +148,25 @@ try {
       console.log(`✓ ${route}`);
     }
   }
+  // Signed out: public pages still work, staff pages show the sign-in form.
+  const anonymous = await (await browser.newContext()).newPage();
+  for (const route of await routesFromRouter()) {
+    const path = await resolveParams(route);
+    const isPublicPage = PUBLIC_PAGES.some((prefix) => route.startsWith(prefix));
+    const problems = isPublicPage ? await check(anonymous, `${BASE}${path}`, []) : [];
+    if (!isPublicPage) {
+      await anonymous.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      const text = await anonymous.locator("body").innerText();
+      if (!text.includes("Anmelden"))
+        problems.push("staff page visible without signing in");
+    }
+    if (problems.length) {
+      failed += 1;
+      console.log(`✗ ${route} (abgemeldet)`);
+      for (const problem of problems) console.log(`    ${problem}`);
+    }
+  }
+  console.log("✓ abgemeldet: öffentliche Seiten erreichbar, interne Seiten geschützt");
   await browser.close();
 } finally {
   server.kill();
