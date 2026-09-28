@@ -806,6 +806,13 @@ export function Fahrschule() {
     {},
   );
 
+  // On phones the tab strip scrolls — keep the current tab in view.
+  useEffect(() => {
+    document
+      .querySelector<HTMLElement>('[data-slot="tabs-trigger"][data-state="active"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab]);
+
   // Leaving with unsaved changes asks first.
   useEffect(() => {
     if (!dirty) return;
