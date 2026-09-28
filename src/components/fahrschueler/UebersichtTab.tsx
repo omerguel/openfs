@@ -500,7 +500,7 @@ export function UebersichtTab({
             </CardContent>
           </Card>
 
-          <PortalLinkCard student={student} />
+          {canEdit && <PortalLinkCard student={student} />}
 
           <Card size="sm">
             <CardHeader>
