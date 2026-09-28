@@ -309,32 +309,74 @@ export function listMessages(db: Database, conversationId: number): ChatMessage[
 /* Writes                                                               */
 /* ------------------------------------------------------------------ */
 
-/** Inserts a 'schule' message, bumps last_message_at and clears unread. */
-export function sendMessage(
+/* Shared insert: bumps last_message_at; a student message raises the
+   unread counter (shown in /plaudern), a school reply clears it. */
+function insertMessage(
   db: Database,
   conversationId: number,
+  sender: ChatSender,
   text: unknown,
+  maxLength?: number,
 ): ChatMessage {
   getConversation(db, conversationId); // throws when missing
   if (typeof text !== "string" || !text.trim()) {
     throw new ValidationError("Nachricht darf nicht leer sein.");
   }
   const body = text.trim();
+  if (maxLength !== undefined && body.length > maxLength) {
+    throw new ValidationError(`Nachricht darf maximal ${maxLength} Zeichen lang sein.`);
+  }
 
   const send = db.transaction(() => {
     const row = db
-      .query<MessageRow, [number, string]>(
+      .query<MessageRow, [number, string, string]>(
         `INSERT INTO chat_messages (conversation_id, sender, text)
-         VALUES (?, 'schule', ?)
+         VALUES (?, ?, ?)
          RETURNING id, conversation_id, sender, text, sent_at`,
       )
-      .get(conversationId, body)!;
+      .get(conversationId, sender, body)!;
     db.prepare(
-      "UPDATE conversations SET last_message_at = ?, unread = 0 WHERE id = ?",
+      sender === "schule"
+        ? "UPDATE conversations SET last_message_at = ?, unread = 0 WHERE id = ?"
+        : "UPDATE conversations SET last_message_at = ?, unread = unread + 1 WHERE id = ?",
     ).run(row.sent_at, conversationId);
     return row;
   });
   return toMessage(send());
+}
+
+/** Inserts a 'schule' message, bumps last_message_at and clears unread. */
+export function sendMessage(
+  db: Database,
+  conversationId: number,
+  text: unknown,
+): ChatMessage {
+  return insertMessage(db, conversationId, "schule", text);
+}
+
+/** Cap for messages arriving through the public Schülerportal. */
+export const STUDENT_MESSAGE_MAX_LEN = 2000;
+
+/** Inserts a 'schueler' message (Schülerportal) and bumps unread. */
+export function sendStudentMessage(
+  db: Database,
+  conversationId: number,
+  text: unknown,
+): ChatMessage {
+  return insertMessage(db, conversationId, "schueler", text, STUDENT_MESSAGE_MAX_LEN);
+}
+
+/** The live (non-orphaned) thread of a student, or null. */
+export function findStudentConversation(
+  db: Database,
+  studentId: number,
+): Conversation | null {
+  const row = db
+    .query<{ id: number }, [number]>(
+      "SELECT id FROM conversations WHERE student_id = ? AND orphaned = 0 ORDER BY id LIMIT 1",
+    )
+    .get(studentId);
+  return row ? getConversation(db, row.id) : null;
 }
 
 export function markRead(db: Database, conversationId: number): Conversation {

@@ -23,3 +23,42 @@ export function handle<A extends unknown[]>(
     }
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Per-IP rate limiting for the deliberately public endpoints.         */
+/* In-memory and per-process (same caveat as appointment-requests.ts): */
+/* a load-balanced deployment would need a shared store.               */
+/* ------------------------------------------------------------------ */
+
+export type RateLimit = { max: number; windowMs: number };
+
+/** Structural subset of Bun's Server — keeps handlers assignable to
+ *  Bun.serve()'s generic route-handler type. */
+export type RequestIPSource = {
+  requestIP(req: Request): { address: string } | null;
+};
+
+export function clientIp(req: Request, server?: RequestIPSource): string {
+  return server?.requestIP(req)?.address ?? "unknown";
+}
+
+/** Returns `limited(key)`: true once `key` exceeded `max` hits within
+ *  `windowMs`. `false` disables limiting (tests). */
+export function createRateLimiter(limit: RateLimit | false) {
+  const hits = new Map<string, number[]>();
+  return (key: string, now = Date.now()): boolean => {
+    if (!limit) return false;
+    const cutoff = now - limit.windowMs;
+    // Keep the map bounded under many distinct clients.
+    if (hits.size > 10_000) {
+      for (const [k, times] of hits) {
+        if (!times.some((t) => t > cutoff)) hits.delete(k);
+      }
+    }
+    const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
+    const limited = recent.length >= limit.max;
+    if (!limited) recent.push(now);
+    hits.set(key, recent);
+    return limited;
+  };
+}

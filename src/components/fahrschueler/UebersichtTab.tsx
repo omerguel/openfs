@@ -37,6 +37,7 @@ import {
   EditableSelectField,
   type StudentEdit,
 } from "./fields";
+import { PortalLinkCard } from "./PortalLinkCard";
 import {
   getStudentDocumentKey,
   getStudentDocumentMeta,
@@ -445,6 +446,8 @@ export function UebersichtTab({
               </p>
             </CardContent>
           </Card>
+
+          <PortalLinkCard student={student} />
 
           <Card size="sm">
             <CardHeader>

@@ -412,6 +412,11 @@ export function deleteStudent(db: Database, id: number): void {
     if (tableExists(db, "theory_attendance")) {
       db.prepare("DELETE FROM theory_attendance WHERE student_id = ?").run(id);
     }
+    // Schülerportal links die with the student — a restore from the
+    // Archiv does not bring them back (the office issues a new one).
+    if (tableExists(db, "portal_tokens")) {
+      db.prepare("DELETE FROM portal_tokens WHERE student_id = ?").run(id);
+    }
     // lesson_attestations are deliberately untouched: retained compliance
     // records (FahrSchAusbO) — no UPDATE, no DELETE.
     db.prepare("DELETE FROM students WHERE id = ?").run(id);
