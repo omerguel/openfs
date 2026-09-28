@@ -6,6 +6,11 @@ import { useEffect, useState } from "react";
 import type { DateRange } from "react-day-picker";
 
 import type {
+  Cashbook,
+  GeldkontoBalance,
+  VatReport,
+} from "@/lib/accounting-report-types";
+import type {
   Account,
   CreateTransactionInput,
   JournalRow,
@@ -99,7 +104,46 @@ export const accountingApi = {
       date,
     }),
   quittung: (id: number) => request<QuittungData>(`/api/accounting/quittung/${id}`),
+  balances: () =>
+    request<{ balances: GeldkontoBalance[] }>("/api/accounting/balances").then(
+      (body) => body.balances,
+    ),
+  cashbook: (account: string, query: string) =>
+    request<Cashbook>(`/api/accounting/cashbook/${account}${query}`),
+  vatReport: (year: number, period: "month" | "quarter") =>
+    request<VatReport>(`/api/accounting/vat-report?year=${year}&period=${period}`),
 };
+
+/** Download a server-generated file (CSV, PDF) under its own file name. */
+export async function downloadFile(url: string, fallbackName: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new ApiError(body?.error ?? "Download fehlgeschlagen.");
+  }
+  const filename =
+    res.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] ??
+    fallbackName;
+  const href = URL.createObjectURL(await res.blob());
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+  return filename;
+}
+
+/** Past-month / future checks for a booking or document date. */
+export function dateWarnings(iso: string, today = toIsoDate(new Date())): string[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return [];
+  if (iso > today) return [`Das Datum ${formatIsoDate(iso)} liegt in der Zukunft.`];
+  if (iso.slice(0, 7) < today.slice(0, 7)) {
+    return [
+      `Das Datum ${formatIsoDate(iso)} liegt in einem vergangenen Monat — die Umsatzsteuer-Voranmeldung für diesen Monat ist womöglich schon abgegeben.`,
+    ];
+  }
+  return [];
+}
 
 /* ------------------------------- hook ------------------------------ */
 
