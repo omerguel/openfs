@@ -9,6 +9,7 @@ import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
 import { calendarSeriesRoutes } from "./calendar-series";
+import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { theoryGroupRoutes } from "./theory-groups";
@@ -32,6 +33,7 @@ export function buildApiRoutes(db: Database) {
     ...archiveRoutes(db),
     ...calendarEventRoutes(db),
     ...calendarSeriesRoutes(db),
+    ...cancellationRoutes(db),
     ...instructorRoutes(db),
     ...pricePlanRoutes(db),
     ...studentRoutes(db),

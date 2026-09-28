@@ -5,6 +5,7 @@
 
 import type { Database } from "./sqlite";
 
+import type { CancellationKind } from "../lib/cancellation";
 import { isLessonKind, type LessonKind } from "../lib/special-drives";
 import {
   formatGermanDate,
@@ -21,7 +22,7 @@ import {
   vehicleNameSql,
 } from "./refs";
 
-export type CancellationKind = "abgesagt" | "nicht_erschienen";
+export type { CancellationKind };
 
 export type CalendarEventType =
   | "Praktisch"
