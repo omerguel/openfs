@@ -171,16 +171,9 @@ function LearnerListItem({
       onClick={onSelect}
       className={cn(
         "group relative w-full px-4 py-3.5 text-left outline-none transition-colors focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:bg-accent",
-        selected ? "bg-primary/5 dark:bg-primary/10" : "hover:bg-muted/60",
+        selected ? "bg-muted" : "hover:bg-muted/60",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "absolute inset-y-3 left-0 w-0.5 rounded-r-full bg-primary transition-opacity",
-          selected ? "opacity-100" : "opacity-0",
-        )}
-      />
       <div className="flex items-start gap-3">
         <span
           aria-hidden
