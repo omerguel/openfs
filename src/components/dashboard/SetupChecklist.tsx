@@ -28,6 +28,11 @@ import { cn } from "@/lib/utils";
 const DISMISSED_KEY = "openfs:setup-checklist-dismissed";
 const PRICES_KEY = "openfs:setup-prices-reviewed";
 
+/** Called by the Preise page: opening it counts as "Preise prüfen". */
+export function markPricesReviewed() {
+  writeFlag(PRICES_KEY);
+}
+
 function readFlag(key: string): boolean {
   try {
     return window.localStorage.getItem(key) === "1";

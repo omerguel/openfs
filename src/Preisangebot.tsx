@@ -4,10 +4,11 @@
 /* /api/price-plans and editable through PricePlanDialog.              */
 /* ------------------------------------------------------------------ */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Edit3, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { markPricesReviewed } from "@/components/dashboard/SetupChecklist";
 import { PageHeader } from "./components/PageHeader.tsx";
 import { PricePlanDialog } from "./components/preise/PricePlanDialog";
 import { deletePricePlan, usePricePlans } from "@/hooks/use-price-plans";
@@ -126,6 +127,8 @@ function PlanCard({
 }
 
 export function Preisangebot() {
+  // Opening the page ticks "Preise prüfen" on the dashboard checklist.
+  useEffect(() => markPricesReviewed(), []);
   const { plans, loading, refresh } = usePricePlans();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editPlan, setEditPlan] = useState<PricePlanRecord | null>(null);

@@ -50,7 +50,11 @@ export function setupChecklist(
       id: "fahrschule",
       label: "Fahrschuldaten vervollständigen",
       description: missing.length
-        ? `Es fehlt: ${missing.join(", ")} — nötig für Rechnungen und Impressum.`
+        ? `Es fehlt: ${missing.join(", ")} — nötig für Rechnungen und Impressum.${
+            role === "buero" && missing.some((m) => m === "Steuernummer" || m === "IBAN")
+              ? " Steuernummer und IBAN kann nur die Inhaberin/der Inhaber eintragen."
+              : ""
+          }`
         : "Anschrift, Steuernummer und Bankverbindung sind hinterlegt.",
       href: "/fahrschule?tab=stammdaten",
       done: facts.company !== null && missing.length === 0,
