@@ -20,6 +20,9 @@
 /*    (4400, 4300, 3272, …) calculate USt themselves and must NOT get  */
 /*    a BU-Schlüssel; non-automatic Aufwandskonten get Vorsteuer keys  */
 /*    (9 = 19 %, 8 = 7 %).                                             */
+/*  - Saldenvorträge (9000 ↔ 3272) always carry Konto 9000 and BU 40   */
+/*    ("Aufhebung der Automatik") on the Automatikkonto 3272, so DATEV */
+/*    does not compute USt on an opening balance a second time.        */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -251,12 +254,18 @@ export function generateDatevExport(
     // Gegenkonto. Steht das steuerrelevante (nicht-automatische)
     // Konto im Soll, wird die Buchung gedreht, damit der Schlüssel
     // am Gegenkonto landet (z. B. Ausgabe: 1800 "H" an 6530 BU 9).
-    const flip =
-      buSchluessel(soll, row.vatRate) !== "" && buSchluessel(haben, row.vatRate) === "";
+    const vortrag = soll?.kind === "vortrag" || haben?.kind === "vortrag";
+    const flip = vortrag
+      ? haben?.kind === "vortrag"
+      : buSchluessel(soll, row.vatRate) !== "" && buSchluessel(haben, row.vatRate) === "";
     const konto = flip ? row.habenKonto : row.sollKonto;
     const gegenkonto = flip ? row.sollKonto : row.habenKonto;
     const kennzeichen = flip ? '"H"' : '"S"';
-    const bu = buSchluessel(flip ? soll : haben, row.vatRate);
+    const bu = vortrag
+      ? AUTOMATIK_KONTEN.has(gegenkonto)
+        ? '"40"'
+        : ""
+      : buSchluessel(flip ? soll : haben, row.vatRate);
 
     const fields = new Array<string>(DATEV_COLUMN_COUNT).fill("");
     fields[COL.umsatz] = datevAmount(row.amountCents);
