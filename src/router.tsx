@@ -12,6 +12,7 @@ import { Archiv } from "./Archiv";
 import { Bewertungen } from "./Bewertungen";
 import { Buchhaltung } from "./Buchhaltung";
 import { Dashboard } from "./Dashboard";
+import { Datenimport } from "./Datenimport";
 import { Fahrlehrer } from "./Fahrlehrer";
 import { Fahrschule } from "./Fahrschule";
 import { Fahrschueler } from "./Fahrschueler";
@@ -200,6 +201,12 @@ const invoicesRoute = createRoute({
   component: Rechnungen,
 });
 
+const importRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/import",
+  component: Datenimport,
+});
+
 const appointmentRequestRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/anfrage",
@@ -230,6 +237,7 @@ const portalRouteTree = portalRoute.addChildren([
   contractsRoute,
   archiveRoute,
   invoicesRoute,
+  importRoute,
 ]);
 
 const routeTree = rootRoute.addChildren([portalRouteTree, appointmentRequestRoute]);

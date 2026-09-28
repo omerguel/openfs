@@ -15,6 +15,7 @@ import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
 import { statisticsRoutes } from "./statistics";
+import { importRoutes } from "./student-import";
 import {
   accountingRoutes,
   archiveRoutes,
@@ -46,5 +47,6 @@ export function buildApiRoutes(db: Database) {
     ...statisticsRoutes(db),
     ...attestationRoutes(db),
     ...invoiceRoutes(db),
+    ...importRoutes(db),
   };
 }
