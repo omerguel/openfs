@@ -87,7 +87,8 @@ export function UebersichtTab({
   }, [editing]);
 
   const editValue = draft ?? student;
-  const hasDebt = editValue.balance.startsWith("-");
+  // Balance and lessons are derived by the server (ledger + calendar).
+  const hasDebt = student.balance.startsWith("-");
   const age = formatAge(editValue.birthday);
 
   const updateDraft = (key: Exclude<keyof StudentEdit, "documents">, value: string) => {
@@ -99,13 +100,10 @@ export function UebersichtTab({
       firstName: student.firstName,
       lastName: student.lastName,
       classes: student.classes,
-      balance: student.balance,
       phone: student.phone,
       email: student.email,
       address: student.address,
       birthday: student.birthday,
-      lastLesson: student.lastLesson,
-      nextLesson: student.nextLesson,
       drivingSchool: student.drivingSchool,
       registrationDate: student.registrationDate,
       instructor: student.instructor,
@@ -417,30 +415,21 @@ export function UebersichtTab({
               <CardTitle>Beträge</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
-              {editing ? (
-                <EditableField
-                  id="student-balance"
-                  label="Bilanz"
-                  value={editValue.balance}
-                  editing
-                  onChange={(value) => updateDraft("balance", value)}
-                />
-              ) : (
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Bilanz
-                  </span>
-                  <span
-                    className={
-                      hasDebt
-                        ? "text-lg font-semibold tabular-nums text-destructive"
-                        : "text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                    }
-                  >
-                    {editValue.balance}
-                  </span>
-                </div>
-              )}
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Bilanz</span>
+                <span
+                  className={
+                    hasDebt
+                      ? "text-lg font-semibold tabular-nums text-destructive"
+                      : "text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+                  }
+                >
+                  {student.balance}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Aus der Buchhaltung (Zahlungen abzgl. abgerechneter Leistungen).
+              </p>
               <p className="text-xs text-muted-foreground">
                 Letzte Stunde {student.lastLesson} · Nächste Stunde {student.nextLesson}
               </p>

@@ -73,7 +73,7 @@ function getSortValue(student: Student, sortKey: SortKey) {
   }
 
   if (sortKey === "balance") {
-    return parseBalance(student.balance);
+    return student.balanceCents ?? parseBalance(student.balance);
   }
 
   return student[sortKey];

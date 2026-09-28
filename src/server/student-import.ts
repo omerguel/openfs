@@ -23,7 +23,7 @@ import {
   type ImportRowResult,
   type ImportSummary,
 } from "../lib/student-import";
-import { initialLessons, studentNumberSequence } from "../lib/student-numbers";
+import { studentNumberSequence } from "../lib/student-numbers";
 import { tableExists } from "./archive";
 import { getCompany } from "./db";
 import { ValidationError } from "./engine";
@@ -279,7 +279,6 @@ export function commitStudentImport(
           instructorId,
           vehicleId,
           progress: 0,
-          lessons: initialLessons(),
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);

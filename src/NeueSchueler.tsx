@@ -41,11 +41,8 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import {
-  initialLessons,
-  nextStudentNumbers,
-  REQUIRED_LESSONS,
-} from "@/lib/student-numbers";
+import { nextStudentNumbers } from "@/lib/student-numbers";
+import { SPECIAL_DRIVE_REQUIREMENTS_B } from "@/lib/special-drives";
 import { cn } from "@/lib/utils";
 
 const classOptions = ["A", "B", "B197", "BE"];
@@ -85,7 +82,6 @@ type FormState = {
   registrationDate: string;
   contractNumber: string;
   drivingSchool: string;
-  balance: string;
   status: Status;
   documents: string[];
 };
@@ -104,7 +100,6 @@ const initialForm: FormState = {
   registrationDate: TODAY,
   contractNumber: "",
   drivingSchool: "Fahrschule Demo",
-  balance: "0,00 EUR",
   status: "aktiv",
   documents: [],
 };
@@ -179,7 +174,6 @@ export function NeueSchueler() {
       await createStudent({
         ...form,
         progress: 0,
-        lessons: initialLessons(),
       });
       toast.success("Schüler/in angelegt", {
         description: `${form.firstName} ${form.lastName} wurde zur Fahrschule hinzugefügt.`,
@@ -414,7 +408,7 @@ export function NeueSchueler() {
             <Section
               id="ausbildung"
               title="Ausbildung"
-              description="Pflichtstunden zum Start der Ausbildung."
+              description="Pflichtstunden (Klasse B). Der Stand wird aus den Fahrstunden im Kalender berechnet."
             >
               <div className="overflow-hidden rounded-lg border">
                 <Table>
@@ -425,14 +419,16 @@ export function NeueSchueler() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {REQUIRED_LESSONS.map((lesson) => (
-                      <TableRow key={lesson.label}>
-                        <TableCell>{lesson.label}</TableCell>
-                        <TableCell className="text-right tabular-nums text-muted-foreground">
-                          {lesson.target}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {Object.entries(SPECIAL_DRIVE_REQUIREMENTS_B).map(
+                      ([kind, minutes]) => (
+                        <TableRow key={kind}>
+                          <TableCell>{kind}</TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">
+                            0/{minutes} min
+                          </TableCell>
+                        </TableRow>
+                      ),
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -490,15 +486,6 @@ export function NeueSchueler() {
                       onChange={(event) => update("drivingSchool", event.target.value)}
                     />
                   </div>
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="balance">Bilanz</FieldLabel>
-                  <Input
-                    id="balance"
-                    className="tabular-nums"
-                    value={form.balance}
-                    onChange={(event) => update("balance", event.target.value)}
-                  />
                 </Field>
                 <Field>
                   <FieldLabel>Status</FieldLabel>

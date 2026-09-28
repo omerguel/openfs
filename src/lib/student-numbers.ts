@@ -4,8 +4,6 @@
 /* (server) so both continue the same numbering range.                 */
 /* ------------------------------------------------------------------ */
 
-import type { Lesson } from "./student-data";
-
 type Numbered = { customerNumber: string; contractNumber: string };
 
 const CUSTOMER_FLOOR = 10058;
@@ -39,16 +37,4 @@ export function nextStudentNumbers(existing: Numbered[]): Numbered {
     customerNumber: sequence.nextCustomerNumber(),
     contractNumber: sequence.nextContractNumber(),
   };
-}
-
-/* Pflichtstunden (Sonderfahrten) — feste Vorgaben, Stand bei Anmeldung 0. */
-export const REQUIRED_LESSONS: { label: string; target: string }[] = [
-  { label: "Nachtfahrt", target: "0/135 min" },
-  { label: "Autobahnfahrt", target: "0/180 min" },
-  { label: "Überlandfahrt", target: "0/225 min" },
-  { label: "Theorieunterricht", target: "0/14 Einheiten" },
-];
-
-export function initialLessons(): Lesson[] {
-  return REQUIRED_LESSONS.map((lesson) => ({ label: lesson.label, done: lesson.target }));
 }
