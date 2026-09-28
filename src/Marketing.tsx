@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Copy,
   Megaphone,
   Pause,
   Pencil,
@@ -15,6 +16,7 @@ import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
 import {
+  campaignTrackingUrl,
   createCampaign,
   deleteCampaign,
   updateCampaign,
@@ -58,7 +60,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -132,6 +134,15 @@ function formatDate(iso: string): string {
 function budgetPercent(campaign: Campaign): number {
   if (campaign.budgetCents <= 0) return 0;
   return Math.min(100, Math.round((campaign.spentCents / campaign.budgetCents) * 100));
+}
+
+async function copyTrackingLink(campaign: Campaign) {
+  try {
+    await navigator.clipboard.writeText(campaignTrackingUrl(campaign.trackingCode));
+    toast.success("Tracking-Link kopiert.");
+  } catch {
+    toast.error("Kopieren nicht möglich.");
+  }
 }
 
 function costPerLeadCents(spentCents: number, leads: number): number | null {
@@ -402,6 +413,7 @@ const ChannelChart = memo(function ChannelChart({
 type CampaignDraft = {
   name: string;
   channel: CampaignChannel;
+  trackingCode: string;
   budget: string;
   spent: string;
   leads: string;
@@ -417,6 +429,7 @@ function campaignToDraft(campaign: Campaign | null): CampaignDraft {
     return {
       name: "",
       channel: "Google Ads",
+      trackingCode: "",
       budget: "",
       spent: "",
       leads: "0",
@@ -430,10 +443,11 @@ function campaignToDraft(campaign: Campaign | null): CampaignDraft {
   return {
     name: campaign.name,
     channel: campaign.channel,
+    trackingCode: campaign.trackingCode,
     budget: formatCents(campaign.budgetCents),
     spent: formatCents(campaign.spentCents),
-    leads: String(campaign.leads),
-    signups: String(campaign.signups),
+    leads: String(campaign.manualLeads),
+    signups: String(campaign.manualSignups),
     startDate: campaign.startDate,
     endDate: campaign.endDate,
     status: campaign.status,
@@ -464,10 +478,11 @@ function draftToPayload(draft: CampaignDraft): Partial<CampaignInput> {
   return {
     name: draft.name,
     channel: draft.channel,
+    trackingCode: draft.trackingCode.trim(),
     budgetCents: money(draft.budget, "Budget"),
     spentCents: money(draft.spent, "Ausgegeben"),
-    leads: count(draft.leads, "Leads"),
-    signups: count(draft.signups, "Anmeldungen"),
+    manualLeads: count(draft.leads, "Leads"),
+    manualSignups: count(draft.signups, "Anmeldungen"),
     startDate: draft.startDate,
     endDate: draft.endDate,
     status: draft.status,
@@ -570,6 +585,25 @@ function CampaignEditDialog({
               </SelectContent>
             </Select>
           </Field>
+          <Field className="sm:col-span-2">
+            <FieldLabel htmlFor="campaign-code">Tracking-Code</FieldLabel>
+            <Input
+              id="campaign-code"
+              className="font-mono"
+              placeholder="wird aus dem Namen erzeugt"
+              spellCheck={false}
+              value={draft.trackingCode}
+              onChange={(event) => update("trackingCode", event.target.value)}
+            />
+            <FieldDescription>
+              Anfragen über{" "}
+              <span className="font-mono">
+                /anfrage?kampagne={draft.trackingCode.trim() || "…"}
+              </span>{" "}
+              zählen automatisch als Leads dieser Kampagne; wird die Person als
+              Fahrschüler/in angelegt, als Anmeldung.
+            </FieldDescription>
+          </Field>
           <Field>
             <FieldLabel htmlFor="campaign-budget">Budget (EUR)</FieldLabel>
             <Input
@@ -581,7 +615,7 @@ function CampaignEditDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="campaign-spent">Ausgegeben (EUR)</FieldLabel>
+            <FieldLabel htmlFor="campaign-spent">Ausgegeben (EUR, manuell)</FieldLabel>
             <Input
               id="campaign-spent"
               inputMode="decimal"
@@ -591,7 +625,7 @@ function CampaignEditDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="campaign-leads">Leads</FieldLabel>
+            <FieldLabel htmlFor="campaign-leads">Leads offline (manuell)</FieldLabel>
             <Input
               id="campaign-leads"
               inputMode="numeric"
@@ -600,7 +634,9 @@ function CampaignEditDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="campaign-signups">Anmeldungen</FieldLabel>
+            <FieldLabel htmlFor="campaign-signups">
+              Anmeldungen offline (manuell)
+            </FieldLabel>
             <Input
               id="campaign-signups"
               inputMode="numeric"
@@ -634,6 +670,12 @@ function CampaignEditDialog({
               onChange={(event) => update("notes", event.target.value)}
             />
           </Field>
+          <p className="text-xs text-pretty text-muted-foreground sm:col-span-2">
+            Offline-Leads (Flyer, Telefon, Empfehlung) werden zu den Anfragen über den
+            Tracking-Link addiert. Werbeausgaben bitte von Hand eintragen: Die Google-Ads-
+            und Meta-Schnittstellen verlangen einen Entwickler-Token bzw. eine App-Prüfung
+            und sind deshalb nicht angebunden.
+          </p>
         </FieldGroup>
 
         <DialogFooter>
@@ -910,6 +952,21 @@ function CampaignsTable({
                             {campaign.notes}
                           </span>
                         )}
+                        <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                          <span className="truncate font-mono">
+                            /anfrage?kampagne={campaign.trackingCode}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label={`Tracking-Link von ${campaign.name} kopieren`}
+                            title="Tracking-Link kopieren"
+                            onClick={() => void copyTrackingLink(campaign)}
+                          >
+                            <Copy />
+                          </Button>
+                        </span>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -942,6 +999,12 @@ function CampaignsTable({
                         <span className="text-xs text-muted-foreground">
                           {campaign.signups} Anmeldungen
                         </span>
+                        {campaign.trackedLeads > 0 && (
+                          <span className="text-[11px] text-muted-foreground">
+                            davon {campaign.trackedLeads} / {campaign.trackedSignups} über
+                            Link
+                          </span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="text-right text-sm tabular-nums">
