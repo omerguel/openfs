@@ -1,7 +1,8 @@
 /* ------------------------------------------------------------------ */
-/* Invoice table + its row actions (Anzeigen/Drucken, Mahnen,          */
+/* Invoice table + its row actions (Anzeigen/PDF/E-Mail, Mahnen,       */
 /* Stornieren). Shared by the /rechnungen page and the student         */
-/* Zahlung tab so both behave identically.                             */
+/* Zahlung tab so both behave identically. On phones the table turns   */
+/* into a card list so amounts and actions stay visible.               */
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
@@ -48,9 +49,22 @@ const STATUS_META: Record<InvoiceStatus, { label: string; dot: string }> = {
   storno: { label: "Stornorechnung", dot: "bg-muted-foreground/50" },
 };
 
+/** "Mahnung ab 16.09." / "Mahnen möglich" / null when nothing is open. */
+export function nextReminderHint(
+  nextReminderOn: string | null,
+  lastLevel: number,
+  today = toIsoDate(new Date()),
+): string | null {
+  if (!nextReminderOn) return null;
+  const next = REMINDER_LABELS[(lastLevel + 1) as 1 | 2 | 3];
+  if (nextReminderOn <= today) return `${next} möglich`;
+  return `${next} ab ${formatIsoDate(nextReminderOn)}`;
+}
+
 export function InvoiceStatusBadge({ invoice }: { invoice: Invoice }) {
   const meta = STATUS_META[invoice.status];
   const lastReminder = invoice.reminders.at(-1);
+  const hint = nextReminderHint(invoice.nextReminderOn ?? null, lastReminder?.level ?? 0);
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Badge variant="outline" className="gap-1.5 font-normal">
@@ -59,7 +73,7 @@ export function InvoiceStatusBadge({ invoice }: { invoice: Invoice }) {
       </Badge>
       {invoice.overdueDays > 0 && (
         <Badge variant="outline" className="font-normal text-destructive">
-          {invoice.overdueDays} Tage überfällig
+          {invoice.overdueDays} {invoice.overdueDays === 1 ? "Tag" : "Tage"} überfällig
         </Badge>
       )}
       {lastReminder && invoice.openCents > 0 && (
@@ -67,6 +81,7 @@ export function InvoiceStatusBadge({ invoice }: { invoice: Invoice }) {
           {REMINDER_LABELS[lastReminder.level]}
         </Badge>
       )}
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
     </div>
   );
 }
@@ -82,11 +97,12 @@ function StornoInvoiceDialog({
   const [date, setDate] = useState(() => toIsoDate(new Date()));
   const [stornoCharges, setStornoCharges] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
     if (!invoice) return;
     if (!reason.trim()) {
-      toast.error("Bitte einen Stornogrund angeben.");
+      setError("Bitte einen Stornogrund angeben.");
       return;
     }
     setSubmitting(true);
@@ -100,8 +116,8 @@ function StornoInvoiceDialog({
       setReason("");
       setStornoCharges(false);
       onClose();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Storno fehlgeschlagen.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Storno fehlgeschlagen.");
     } finally {
       setSubmitting(false);
     }
@@ -117,9 +133,9 @@ function StornoInvoiceDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Rechnung {invoice?.invoiceNr} stornieren</DialogTitle>
-          <DialogDescription>
-            Rechnungen werden nie gelöscht: Es entsteht eine Stornorechnung mit eigener
-            Nummer.
+          <DialogDescription className="text-pretty">
+            Rechnungen werden nie gelöscht oder geändert: Es entsteht eine Stornorechnung
+            mit eigener Nummer. Danach können die Leistungen neu abgerechnet werden.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -128,9 +144,14 @@ function StornoInvoiceDialog({
             <Input
               id="storno-reason"
               value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              aria-invalid={error ? true : undefined}
+              onChange={(e) => {
+                setReason(e.target.value);
+                setError(null);
+              }}
               placeholder="z. B. falscher Rechnungsempfänger"
             />
+            {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="storno-date">Datum</Label>
@@ -173,36 +194,44 @@ function StornoInvoiceDialog({
   );
 }
 
-function ReminderDialog({
-  invoice,
+/* Next Mahnstufe for an invoice or an opening debt. The fee is booked on
+   the student's Ausbildungskonto as a nicht steuerbarer Ertrag (4830). */
+export function ReminderDialog({
+  subject,
   onClose,
+  onCreate,
   onCreated,
 }: {
-  invoice: Invoice | null;
+  subject: { title: string; openCents: number; lastLevel: number } | null;
   onClose: () => void;
+  /** Creates the reminder; returns the document to show afterwards. */
+  onCreate: (input: { date: string; feeCents: number }) => Promise<PrintTarget>;
+  /** Receives the new document (with autoPrint for "Erstellen und drucken"). */
   onCreated: (target: PrintTarget) => void;
 }) {
   const settings = useInvoicingSettings();
-  const level = ((invoice?.reminders.at(-1)?.level ?? 0) + 1) as 1 | 2 | 3;
+  const level = Math.min((subject?.lastLevel ?? 0) + 1, 3) as 1 | 2 | 3;
   const defaultFee = settings.data?.reminderFeeCents[level - 1] ?? 0;
   const [date, setDate] = useState(() => toIsoDate(new Date()));
   const [fee, setFee] = useState<string | null>(null);
+  const [feeError, setFeeError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const submit = async () => {
-    if (!invoice) return;
+  const submit = async (print: boolean) => {
+    if (!subject) return;
     const feeCents =
       fee == null || fee.trim() === "" ? defaultFee : parseEuroToCents(fee);
     if (feeCents == null) {
-      toast.error("Mahngebühr ist ungültig (z. B. 5,00).");
+      setFeeError(true);
       return;
     }
     setSubmitting(true);
     try {
-      const reminder = await createReminder(invoice.id, { date, feeCents });
-      toast.success(`${REMINDER_LABELS[reminder.level]} erstellt.`);
+      const target = await onCreate({ date, feeCents });
+      toast.success(`${REMINDER_LABELS[level]} erstellt.`);
       setFee(null);
-      onCreated({ kind: "reminder", invoice, reminder });
+      onClose();
+      onCreated({ ...target, autoPrint: print });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Mahnung fehlgeschlagen.");
     } finally {
@@ -212,7 +241,7 @@ function ReminderDialog({
 
   return (
     <Dialog
-      open={invoice != null}
+      open={subject != null}
       onOpenChange={(open) => {
         if (!open && !submitting) onClose();
       }}
@@ -220,11 +249,11 @@ function ReminderDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {level <= 3 ? REMINDER_LABELS[level] : "Mahnung"} · {invoice?.invoiceNr}
+            {REMINDER_LABELS[level]} · {subject?.title}
           </DialogTitle>
-          <DialogDescription>
-            Offen: {invoice ? formatCents(invoice.openCents) : "–"} €. Die Mahngebühr wird
-            als nicht steuerbarer Ertrag (4830) vom Guthaben gebucht.
+          <DialogDescription className="text-pretty">
+            Offen: {subject ? formatCents(subject.openCents) : "–"} €. Die Mahngebühr wird
+            dem Ausbildungskonto belastet (nicht steuerbarer Ertrag, Konto 4830).
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -242,21 +271,94 @@ function ReminderDialog({
             <Input
               id="reminder-fee"
               inputMode="decimal"
+              aria-invalid={feeError ? true : undefined}
               value={fee ?? formatCents(defaultFee)}
-              onChange={(e) => setFee(e.target.value)}
+              onChange={(e) => {
+                setFee(e.target.value);
+                setFeeError(false);
+              }}
             />
+            {feeError && (
+              <p className="text-xs text-destructive">Ungültiger Betrag (z. B. 5,00).</p>
+            )}
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={submitting}>
             Abbrechen
           </Button>
-          <Button onClick={() => void submit()} disabled={submitting}>
+          <Button
+            variant="outline"
+            onClick={() => void submit(false)}
+            disabled={submitting}
+          >
+            Erstellen
+          </Button>
+          <Button onClick={() => void submit(true)} disabled={submitting}>
             Erstellen und drucken
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function InvoiceActions({
+  invoice,
+  onShow,
+  onRemind,
+  onStorno,
+}: {
+  invoice: Invoice;
+  onShow: (target: PrintTarget) => void;
+  onRemind: () => void;
+  onStorno: () => void;
+}) {
+  const canAct = invoice.kind === "rechnung" && invoice.status !== "storniert";
+  const today = toIsoDate(new Date());
+  const canRemind =
+    canAct &&
+    invoice.openCents > 0 &&
+    invoice.nextReminderOn != null &&
+    invoice.nextReminderOn <= today;
+  return (
+    <div className="flex flex-wrap justify-end gap-1 lg:flex-nowrap">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onShow({ kind: "invoice", invoice })}
+      >
+        <FileText data-icon="inline-start" />
+        Anzeigen
+      </Button>
+      {invoice.reminders.map((reminder) => (
+        <Button
+          key={reminder.id}
+          variant="ghost"
+          size="sm"
+          onClick={() => onShow({ kind: "reminder", invoice, reminder })}
+        >
+          {REMINDER_LABELS[reminder.level]}
+        </Button>
+      ))}
+      {canRemind && (
+        <Button variant="outline" size="sm" onClick={onRemind}>
+          <BellRing data-icon="inline-start" />
+          Mahnen
+        </Button>
+      )}
+      {canAct && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Rechnung ${invoice.invoiceNr} stornieren`}
+          onClick={onStorno}
+        >
+          <Undo2 data-icon="inline-start" />
+          Stornieren
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -277,9 +379,43 @@ export function InvoiceList({
     return <p className="py-6 text-center text-sm text-muted-foreground">{emptyText}</p>;
   }
 
+  const openCell = (invoice: Invoice) =>
+    invoice.kind === "rechnung" && invoice.status !== "storniert"
+      ? `${formatCents(invoice.openCents)} €`
+      : "–";
+
   return (
     <>
-      <div className="overflow-x-auto rounded-lg border">
+      <ul className="flex flex-col gap-2 sm:hidden">
+        {invoices.map((invoice) => (
+          <li
+            key={invoice.id}
+            className="flex flex-col gap-2 rounded-lg border p-3 text-sm"
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="font-medium tabular-nums">{invoice.invoiceNr}</span>
+              <span className="font-medium tabular-nums">
+                {formatCents(invoice.totalCents)} €
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3 text-muted-foreground">
+              <span className="min-w-0 truncate">
+                {formatIsoDate(invoice.date)}
+                {showStudent && ` · ${invoice.recipient.name}`}
+              </span>
+              <span className="shrink-0 tabular-nums">offen {openCell(invoice)}</span>
+            </div>
+            <InvoiceStatusBadge invoice={invoice} />
+            <InvoiceActions
+              invoice={invoice}
+              onShow={setPrintTarget}
+              onRemind={() => setRemindTarget(invoice)}
+              onStorno={() => setStornoTarget(invoice)}
+            />
+          </li>
+        ))}
+      </ul>
+      <div className="hidden overflow-x-auto rounded-lg border sm:block">
         <Table>
           <TableHeader>
             <TableRow>
@@ -293,82 +429,34 @@ export function InvoiceList({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {invoices.map((invoice) => {
-              const canAct =
-                invoice.kind === "rechnung" && invoice.status !== "storniert";
-              const lastDue = invoice.reminders.at(-1)?.dueDate ?? invoice.dueDate;
-              const canRemind =
-                canAct &&
-                invoice.openCents > 0 &&
-                invoice.reminders.length < 3 &&
-                lastDue < toIsoDate(new Date());
-              return (
-                <TableRow key={invoice.id}>
-                  <TableCell className="pl-4 font-medium tabular-nums">
-                    {invoice.invoiceNr}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground tabular-nums">
-                    {formatIsoDate(invoice.date)}
-                  </TableCell>
-                  {showStudent && <TableCell>{invoice.recipient.name}</TableCell>}
-                  <TableCell className="text-right tabular-nums">
-                    {formatCents(invoice.totalCents)} €
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {invoice.kind === "rechnung" && invoice.status !== "storniert"
-                      ? `${formatCents(invoice.openCents)} €`
-                      : "–"}
-                  </TableCell>
-                  <TableCell>
-                    <InvoiceStatusBadge invoice={invoice} />
-                  </TableCell>
-                  <TableCell className="pr-4">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setPrintTarget({ kind: "invoice", invoice })}
-                      >
-                        <FileText data-icon="inline-start" />
-                        Anzeigen
-                      </Button>
-                      {invoice.reminders.map((reminder) => (
-                        <Button
-                          key={reminder.id}
-                          variant="ghost"
-                          size="sm"
-                          onClick={() =>
-                            setPrintTarget({ kind: "reminder", invoice, reminder })
-                          }
-                        >
-                          {REMINDER_LABELS[reminder.level]}
-                        </Button>
-                      ))}
-                      {canRemind && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setRemindTarget(invoice)}
-                        >
-                          <BellRing data-icon="inline-start" />
-                          Mahnen
-                        </Button>
-                      )}
-                      {canAct && (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`Rechnung ${invoice.invoiceNr} stornieren`}
-                          onClick={() => setStornoTarget(invoice)}
-                        >
-                          <Undo2 />
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+            {invoices.map((invoice) => (
+              <TableRow key={invoice.id}>
+                <TableCell className="pl-4 font-medium tabular-nums">
+                  {invoice.invoiceNr}
+                </TableCell>
+                <TableCell className="text-muted-foreground tabular-nums">
+                  {formatIsoDate(invoice.date)}
+                </TableCell>
+                {showStudent && <TableCell>{invoice.recipient.name}</TableCell>}
+                <TableCell className="text-right tabular-nums">
+                  {formatCents(invoice.totalCents)} €
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {openCell(invoice)}
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  <InvoiceStatusBadge invoice={invoice} />
+                </TableCell>
+                <TableCell className="pr-4">
+                  <InvoiceActions
+                    invoice={invoice}
+                    onShow={setPrintTarget}
+                    onRemind={() => setRemindTarget(invoice)}
+                    onStorno={() => setStornoTarget(invoice)}
+                  />
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </div>
@@ -376,12 +464,20 @@ export function InvoiceList({
       <InvoicePrintDialog target={printTarget} onClose={() => setPrintTarget(null)} />
       <StornoInvoiceDialog invoice={stornoTarget} onClose={() => setStornoTarget(null)} />
       <ReminderDialog
-        invoice={remindTarget}
+        subject={
+          remindTarget && {
+            title: remindTarget.invoiceNr,
+            openCents: remindTarget.openCents,
+            lastLevel: remindTarget.reminders.at(-1)?.level ?? 0,
+          }
+        }
         onClose={() => setRemindTarget(null)}
-        onCreated={(target) => {
-          setRemindTarget(null);
-          setPrintTarget(target);
+        onCreate={async (input) => {
+          const invoice = remindTarget!;
+          const reminder = await createReminder(invoice.id, input);
+          return { kind: "reminder", invoice, reminder };
         }}
+        onCreated={setPrintTarget}
       />
     </>
   );
