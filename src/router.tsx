@@ -15,6 +15,7 @@ import { Buchhaltung } from "./Buchhaltung";
 import { Dashboard } from "./Dashboard";
 import { Datenschutz } from "./Datenschutz";
 import { Datenimport } from "./Datenimport";
+import { Datensicherung } from "./Datensicherung";
 import { Fahrlehrer } from "./Fahrlehrer";
 import { Fahrschule } from "./Fahrschule";
 import { Fahrschueler } from "./Fahrschueler";
@@ -226,6 +227,12 @@ const importRoute = createRoute({
   component: Datenimport,
 });
 
+const backupRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/datensicherung",
+  component: Datensicherung,
+});
+
 const appointmentRequestRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/anfrage",
@@ -279,6 +286,7 @@ const portalRouteTree = portalRoute.addChildren([
   invoicesRoute,
   importRoute,
   usersRoute,
+  backupRoute,
 ]);
 
 const routeTree = rootRoute.addChildren([

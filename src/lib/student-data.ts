@@ -14,17 +14,9 @@ export type TheoryStatus = "Aktiv" | "In Prüfung" | "Bereit" | "Pausiert";
 
 export type Lesson = { label: string; done: string };
 
-export type UploadedStudentDocument = {
-  kind: "upload";
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  uploadedAt: string;
-  dataUrl: string;
-};
-
-export type StudentDocument = string | UploadedStudentDocument;
+/** Checklist entry ("Personalausweis", "Sehtest", …). Uploaded files are
+ *  not part of the student record — see /api/students/:id/files. */
+export type StudentDocument = string;
 
 export type TheoryProfile = {
   lastLogin: string;

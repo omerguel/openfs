@@ -55,6 +55,7 @@ import {
   ValidationError,
   type ListFilter,
 } from "./engine";
+import type { FileStore } from "./file-store";
 import { handle, json } from "./http";
 import { listVehicleLabels } from "./refs";
 
@@ -337,7 +338,7 @@ export function calendarEventRoutes(db: Database) {
   };
 }
 
-export function archiveRoutes(db: Database) {
+export function archiveRoutes(db: Database, fileStore?: FileStore) {
   const parseId = (raw: string): number => {
     const id = Number(raw);
     if (!Number.isInteger(id)) {
@@ -358,8 +359,8 @@ export function archiveRoutes(db: Database) {
 
     "/api/archive/:id": {
       DELETE: (req: BunRequest<"/api/archive/:id">) =>
-        handle(() => {
-          purgeArchived(db, parseId(req.params.id));
+        handle(async () => {
+          await purgeArchived(db, parseId(req.params.id), fileStore);
           return json({ ok: true });
         })(),
     },

@@ -180,7 +180,20 @@ function normalize(db: Database, input: StudentInput, current: StudentData): Stu
     if (!Array.isArray(input.documents)) {
       throw new ValidationError("Feld 'documents' muss eine Liste sein.");
     }
-    next.documents = input.documents;
+    // Only checklist entries live here; uploaded files go through
+    // POST /api/students/:id/files (student-files.ts).
+    for (const entry of input.documents as unknown[]) {
+      if (typeof entry === "string") continue;
+      if (typeof entry === "object" && entry !== null && "kind" in entry) {
+        throw new ValidationError(
+          "Dateien werden nicht mehr in 'documents' gespeichert. Bitte über POST /api/students/:id/files hochladen.",
+        );
+      }
+      throw new ValidationError("Feld 'documents' darf nur Texte enthalten.");
+    }
+    next.documents = (input.documents as string[])
+      .map((entry) => entry.trim())
+      .filter(Boolean);
   }
 
   if (input.theory !== undefined) {

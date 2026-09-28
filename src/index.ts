@@ -13,6 +13,9 @@ import { localIsoDate, queueLessonReminders } from "./server/notifications";
 import { ensurePortalTables } from "./server/portal";
 import { countUsers, createUser } from "./server/auth";
 import { applySetup } from "./server/setup";
+import { createFileStoreFromEnv } from "./server/file-store";
+import { migrateInlineDocuments } from "./server/student-files";
+import { backupConfigFromEnv, startBackupScheduler } from "./server/backups";
 
 // Demo mode keeps the full persistence layer intact but points it at an
 // in-memory database, so every visitor starts from the freshly seeded state
@@ -41,6 +44,26 @@ const DEMO_LOGIN = { email: "demo@openfs.de", password: "openfs-demo" };
 if (demoMode && countUsers(db) === 0) {
   await createUser(db, { ...DEMO_LOGIN, name: "Demo Inhaber/in", role: "inhaber" });
 }
+
+/* Uploaded documents: S3 when configured, else data/files (memory in
+   demo mode). Older databases kept uploads as base64 inside
+   students.documents — move them out once (idempotent). */
+const { store: fileStore, kind: fileStoreKind } = createFileStoreFromEnv({ demoMode });
+const migratedFiles = await migrateInlineDocuments(db, fileStore);
+if (migratedFiles > 0) {
+  console.log(
+    `📎 ${migratedFiles} Dokument(e) in den Dateispeicher (${fileStoreKind}) verschoben.`,
+  );
+}
+
+/* Datensicherung: check at startup and hourly; back up when the newest
+   backup is older than BACKUP_INTERVAL_HOURS. Off in demo mode. */
+const backupConfig = demoMode ? null : backupConfigFromEnv();
+const hotBackup = globalThis as { __openfsStopBackupScheduler?: () => void };
+hotBackup.__openfsStopBackupScheduler?.();
+hotBackup.__openfsStopBackupScheduler = backupConfig
+  ? startBackupScheduler(db, backupConfig)
+  : undefined;
 
 /* E-Mail: every minute queue tomorrow's lesson reminders (from 09:00
    local time on, so nobody gets a mail at midnight) and deliver the
@@ -74,6 +97,8 @@ const server = serve({
         demo: demoMode ? DEMO_LOGIN : null,
         onSetup: (setupDb, body) => applySetup(setupDb, body),
       },
+      fileStore,
+      backups: backupConfig,
     }),
   },
 
