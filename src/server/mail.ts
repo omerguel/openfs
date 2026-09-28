@@ -194,7 +194,10 @@ const STORED_SECRET = /(\/(?:portal|einladung)\/)[A-Za-z0-9_-]{20,}/g;
 
 function redactStoredSecrets(db: Database): void {
   const rows = db
-    .query<{ id: number; body_text: string; kind: string; related_type: string | null }, []>(
+    .query<
+      { id: number; body_text: string; kind: string; related_type: string | null },
+      []
+    >(
       `SELECT id, body_text, kind, related_type FROM outbox
        WHERE body_text LIKE '%/portal/%' OR body_text LIKE '%/einladung/%'`,
     )

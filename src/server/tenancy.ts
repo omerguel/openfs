@@ -585,7 +585,6 @@ export function buildTenantApiRoutes(manager: TenantManager, options: TenantApiO
       signup: options.signup,
       rateLimit: options.signupRateLimit,
       globalRateLimit: options.signupGlobalRateLimit,
-
     }),
   };
 }

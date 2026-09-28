@@ -94,9 +94,7 @@ describe("tokens", () => {
       )
       .all(student.id)
       .map((row) => row.token_hash);
-    expect(stored).toEqual([
-      new Bun.CryptoHasher("sha256").update(token).digest("hex"),
-    ]);
+    expect(stored).toEqual([new Bun.CryptoHasher("sha256").update(token).digest("hex")]);
     expect(Buffer.from(db.serialize()).toString("latin1")).not.toContain(token);
   });
 
@@ -110,10 +108,9 @@ describe("tokens", () => {
     )`);
     const student = newStudent(old);
     const token = generatePortalToken();
-    old.prepare("INSERT INTO portal_tokens (token, student_id) VALUES (?, ?)").run(
-      token,
-      student.id,
-    );
+    old
+      .prepare("INSERT INTO portal_tokens (token, student_id) VALUES (?, ?)")
+      .run(token, student.id);
     expect(resolvePortalToken(old, token)).toBe(student.id);
     const rows = old
       .query<{ token_hash: string }, []>("SELECT token_hash FROM portal_tokens")
@@ -357,7 +354,6 @@ describe("portal routes", () => {
       link: Record<string, unknown>;
     };
     expect(Object.keys(current.link)).toEqual(["createdAt"]);
-
 
     const revoked = await fetch(url(path), { method: "DELETE" });
     expect(await revoked.json()).toEqual({ ok: true, revoked: 1 });

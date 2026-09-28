@@ -41,7 +41,6 @@ export function useFetchList<T>(
 ) {
   const query = useQuery({ queryKey, queryFn: fetcher, enabled });
 
-
   useEffect(() => {
     if (query.error) console.error(`${errorLabel}:`, query.error);
   }, [errorLabel, query.error]);

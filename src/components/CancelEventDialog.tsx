@@ -90,8 +90,7 @@ export function CancelEventDialog({
   const feeCents = parseEuroToCents(amount);
   const canSave =
     !saving &&
-    (!chargeFee ||
-      (hasStudent && (isInstructor || (feeCents != null && feeCents > 0))));
+    (!chargeFee || (hasStudent && (isInstructor || (feeCents != null && feeCents > 0))));
 
   const changeKind = (next: CancellationKind) => {
     setKind(next);
@@ -187,7 +186,6 @@ export function CancelEventDialog({
 
           {chargeFee && hasStudent && !isInstructor && (
             <Field>
-
               <FieldLabel htmlFor="cancel-fee">Betrag (EUR)</FieldLabel>
               {defaultFeeCents == null && (
                 <p className="text-xs text-muted-foreground">

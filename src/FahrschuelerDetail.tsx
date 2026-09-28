@@ -197,9 +197,7 @@ export function FahrschuelerDetail() {
 
   const student = students.find((entry) => entry.id === studentId) ?? null;
   const balance = describeBalance(student?.balanceCents);
-  const visibleTabs = tabs.filter(
-    (item) => canSeeMoney || !(item.money || item.office),
-  );
+  const visibleTabs = tabs.filter((item) => canSeeMoney || !(item.money || item.office));
   const activeTab = visibleTabs.some((item) => item.value === tab) ? tab : "uebersicht";
 
   if (!Number.isInteger(studentId) || studentId < 1) {

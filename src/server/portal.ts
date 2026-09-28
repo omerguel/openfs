@@ -74,7 +74,6 @@ export function ensurePortalTables(db: Database): void {
   migrated.add(db);
 }
 
-
 /* Databases from before hashing kept the token itself in a `token`
    column. Hash in place: the links already handed out keep working
    (the token is unchanged, only its storage is), but the database no
@@ -93,7 +92,9 @@ function migratePlaintextTokens(db: Database): void {
         "SELECT token_hash FROM portal_tokens WHERE length(token_hash) != 64",
       )
       .all();
-    const update = db.prepare("UPDATE portal_tokens SET token_hash = ? WHERE token_hash = ?");
+    const update = db.prepare(
+      "UPDATE portal_tokens SET token_hash = ? WHERE token_hash = ?",
+    );
     for (const row of rows) update.run(sha256(row.token_hash), row.token_hash);
   })();
 }
@@ -499,7 +500,10 @@ export function sendPortalLinkMail(
     throw new ValidationError("Ungültige Basis-URL für den Portal-Link.");
   }
   const mail = portalLinkMail(
-    { firstName: student.first_name, url: `${origin}/portal/${OUTBOX_SECRET_PLACEHOLDER}` },
+    {
+      firstName: student.first_name,
+      url: `${origin}/portal/${OUTBOX_SECRET_PLACEHOLDER}`,
+    },
     mailSchool(db),
   );
 

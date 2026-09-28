@@ -33,7 +33,6 @@ export function usePortalLink(studentId: number) {
           await fetch(linkPath(studentId)),
         )
       ).link,
-
   });
   return { link: query.data ?? null, loading: query.isPending, refresh: query.refetch };
 }

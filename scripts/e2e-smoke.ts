@@ -322,7 +322,6 @@ try {
   console.log("✓ abgemeldet: öffentliche Seiten erreichbar, interne Seiten geschützt");
   failed += await instructorPass(browser);
   await browser.close();
-
 } finally {
   server.kill();
 }

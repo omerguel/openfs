@@ -532,56 +532,58 @@ export function UebersichtTab({
           {canEdit && <PortalLinkCard student={student} />}
 
           {canEdit && (
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>Dokumente</CardTitle>
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>Dokumente</CardTitle>
 
-              <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {student.documents.length === 0 && files.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Noch keine Dokumente hinterlegt.
-                </p>
-              ) : (
-                <>
-                  {files.map((file) => (
-                    <div
-                      key={`file-${file.id}`}
-                      className="flex min-w-0 items-start gap-2 text-sm"
-                    >
-                      <FileText />
-                      <span className="flex min-w-0 flex-col">
-                        <a
-                          href={file.url}
-                          target="_blank"
-                          rel="noopener"
-                          className="truncate hover:underline"
-                        >
-                          {file.name}
-                        </a>
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          {getStudentFileMeta(file)}
+                <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                {student.documents.length === 0 && files.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Noch keine Dokumente hinterlegt.
+                  </p>
+                ) : (
+                  <>
+                    {files.map((file) => (
+                      <div
+                        key={`file-${file.id}`}
+                        className="flex min-w-0 items-start gap-2 text-sm"
+                      >
+                        <FileText />
+                        <span className="flex min-w-0 flex-col">
+                          <a
+                            href={file.url}
+                            target="_blank"
+                            rel="noopener"
+                            className="truncate hover:underline"
+                          >
+                            {file.name}
+                          </a>
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {getStudentFileMeta(file)}
+                          </span>
                         </span>
-                      </span>
-                    </div>
-                  ))}
-                  {student.documents.map((document, index) => (
-                    <div
-                      key={`checklist-${document}-${index}`}
-                      className="flex min-w-0 items-start gap-2 text-sm"
-                    >
-                      <FileText />
-                      <span className="flex min-w-0 flex-col">
-                        <span className="truncate">{document}</span>
-                        <span className="text-xs text-muted-foreground">Checkliste</span>
-                      </span>
-                    </div>
-                  ))}
-                </>
-              )}
-            </CardContent>
-          </Card>
+                      </div>
+                    ))}
+                    {student.documents.map((document, index) => (
+                      <div
+                        key={`checklist-${document}-${index}`}
+                        className="flex min-w-0 items-start gap-2 text-sm"
+                      >
+                        <FileText />
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate">{document}</span>
+                          <span className="text-xs text-muted-foreground">
+                            Checkliste
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           <Card size="sm">

@@ -42,7 +42,8 @@ export async function buildSpaRoutes(
     }
     const bytes = new Uint8Array(await output.arrayBuffer());
     const type = output.type;
-    routes[`/${name}`] = () => new Response(bytes, { headers: assetHeaders(type, options) });
+    routes[`/${name}`] = () =>
+      new Response(bytes, { headers: assetHeaders(type, options) });
   }
   if (html === null) throw new Error("index.html fehlt im Build.");
   const page = html;

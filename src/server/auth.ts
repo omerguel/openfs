@@ -227,10 +227,7 @@ export async function prepareUser(input: NewUserInput): Promise<PreparedUser> {
   return { email, name, role, hash, instructorId: input.instructorId };
 }
 
-export async function createUser(
-  db: Database,
-  input: NewUserInput,
-): Promise<UserRecord> {
+export async function createUser(db: Database, input: NewUserInput): Promise<UserRecord> {
   requireInstructorId(db, input.instructorId);
   return insertUser(db, await prepareUser(input));
 }
@@ -522,7 +519,6 @@ export async function verifyLogin(
   return (await verifyPassword(password, row.password_hash)) ? toUser(row) : null;
 }
 
-
 /* ------------------------------------------------------------------ */
 /* access policy                                                       */
 /* ------------------------------------------------------------------ */
@@ -584,7 +580,10 @@ export const FAHRLEHRER_ALLOWED: { methods: string[]; pattern: RegExp }[] = [
   { methods: READ, pattern: /^\/api\/absences$/ },
   // Ausbildungsnachweise
   { methods: READ, pattern: /^\/api\/attestations$/ },
-  { methods: READ_WRITE("POST"), pattern: /^\/api\/calendar-events\/[^/]+\/attestation$/ },
+  {
+    methods: READ_WRITE("POST"),
+    pattern: /^\/api\/calendar-events\/[^/]+\/attestation$/,
+  },
   // Fahrschüler (withoutMoney) — no edits, no files, no portal links
   { methods: READ, pattern: /^\/api\/students$/ },
   // Theorie
@@ -727,7 +726,6 @@ function guard(
         });
       } catch (error) {
         console.error("Protokoll konnte nicht geschrieben werden:", error);
-
       }
     }
     return response;
@@ -909,7 +907,10 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
           const body = (await req.json()) as { current?: unknown; next?: unknown };
           const limitKey = `${tenantKey()}|${current.id}`;
           if (passwordFailures.blocked(limitKey)) {
-            return err("Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.", 429);
+            return err(
+              "Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.",
+              429,
+            );
           }
           const ok = await verifyLogin(db, current.email, body.current);
           if (!ok) {

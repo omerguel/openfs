@@ -198,7 +198,6 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
               bisherigen Links (auch per E-Mail versandte) funktionieren danach nicht
               mehr. Per E-Mail geht ein eigener Link an die Schülerin bzw. den Schüler.
             </p>
-
           </>
         ) : (
           <Button
