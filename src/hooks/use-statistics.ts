@@ -96,11 +96,16 @@ export async function fetchStatistics(): Promise<Statistics> {
   return parseOrThrow<Statistics>(await fetch("/api/statistics"));
 }
 
-export function useStatistics() {
+/** `enabled: false` skips the request (roles without finance access). */
+export function useStatistics(enabled = true) {
   const [statistics, setStatistics] = useState<Statistics | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     try {
       setStatistics(await fetchStatistics());
     } catch (error) {
@@ -108,7 +113,7 @@ export function useStatistics() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     void refresh();
