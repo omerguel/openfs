@@ -2,7 +2,7 @@ import { serve } from "bun";
 import { mkdirSync } from "node:fs";
 import index from "./index.html";
 
-import { buildApiRoutes } from "./server/app-routes";
+import { API_NOT_FOUND, buildApiRoutes } from "./server/app-routes";
 import { backupConfigFromEnv } from "./server/backups";
 import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap";
 import { openDb } from "./server/db";
@@ -105,8 +105,10 @@ const server = serve({
   hostname: process.env.HOST ?? "127.0.0.1",
 
   routes: {
-    // Serve index.html for all unmatched routes.
+    // Serve index.html for all unmatched routes ...
     "/*": index,
+    // ... except unknown API paths: JSON 404 (single- and multi-tenant).
+    ...API_NOT_FOUND,
 
     ...apiRoutes,
   },

@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { serve } from "bun";
 
-import { buildApiRoutes } from "./app-routes";
+import { API_NOT_FOUND, buildApiRoutes } from "./app-routes";
 import { createUser, isAllowed, isPublic, updateUser } from "./auth";
 import { ensureChatTables } from "./chat";
 import { getCompany, openDb } from "./db";
@@ -168,6 +168,29 @@ describe("sessions", () => {
     expect((await attempt("falsch-falsch")).status).toBe(401);
     // Now blocked — even the right password waits for the window to pass.
     expect((await attempt("geheim-geheim")).status).toBe(429);
+  });
+});
+
+describe("unknown API paths", () => {
+  test("answer with a JSON 404 instead of the SPA page", async () => {
+    await seedUsers();
+    server = serve({
+      port: 0,
+      routes: {
+        "/*": new Response("<!doctype html>", { headers: { "Content-Type": "text/html" } }),
+        ...API_NOT_FOUND,
+        ...buildApiRoutes(db, { auth: { loginRateLimit: false } }),
+      },
+    });
+    base = `http://localhost:${server.port}`;
+    const cookie = await login("chefin@fs.de", "geheim-geheim");
+    const unknown = await fetch(`${base}/api/gibt-es-nicht`, as(cookie));
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("content-type")).toContain("application/json");
+    expect(((await unknown.json()) as { error: string }).error).toContain("API");
+    // Known endpoints and SPA pages are unaffected.
+    expect((await fetch(`${base}/api/students`, as(cookie))).status).toBe(200);
+    expect(await (await fetch(`${base}/fahrschueler`)).text()).toContain("doctype");
   });
 });
 
