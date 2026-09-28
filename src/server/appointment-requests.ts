@@ -17,6 +17,10 @@ import {
 } from "./calendar-events";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import {
+  notifyAppointmentRequestConfirmed,
+  notifyAppointmentRequestDeclined,
+} from "./notifications";
 
 export type AppointmentRequestStatus = "offen" | "bestätigt" | "abgelehnt";
 
@@ -518,6 +522,9 @@ export function acceptAppointmentRequest(
     db.prepare("UPDATE appointment_requests SET status = 'bestätigt' WHERE id = ?").run(
       id,
     );
+    // Confirmation mail (only with an e-mail address and the toggle on) —
+    // same transaction, so a failed accept never leaves a stray mail.
+    notifyAppointmentRequestConfirmed(db, request, event);
     return event;
   });
   const event = run();
@@ -525,8 +532,15 @@ export function acceptAppointmentRequest(
 }
 
 export function declineAppointmentRequest(db: Database, id: number): AppointmentRequest {
-  getAppointmentRequest(db, id); // 404 → ValidationError
-  db.prepare("UPDATE appointment_requests SET status = 'abgelehnt' WHERE id = ?").run(id);
+  const request = getAppointmentRequest(db, id); // 404 → ValidationError
+  const run = db.transaction(() => {
+    db.prepare("UPDATE appointment_requests SET status = 'abgelehnt' WHERE id = ?").run(
+      id,
+    );
+    // Declining twice must not mail the requester twice.
+    if (request.status !== "abgelehnt") notifyAppointmentRequestDeclined(db, request);
+  });
+  run();
   return getAppointmentRequest(db, id);
 }
 
