@@ -103,8 +103,8 @@ export function CalendarEventCard({
           }}
           style={style}
           className={cn(
-            "group absolute touch-none select-none overflow-hidden rounded-md border border-l-[3px] text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30",
-            "h-[var(--card-h)] border-[color-mix(in_oklab,var(--border)_60%,var(--ev))] border-l-[var(--ev)] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
+            "group absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            "h-[var(--card-h)] border-[color-mix(in_oklab,var(--border)_80%,var(--ev))] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
             "cursor-grab active:cursor-grabbing hover:z-30 focus-visible:z-30 data-[state=open]:z-30",
             event.tentative && "border-dashed",
             cancelled && "opacity-60",
