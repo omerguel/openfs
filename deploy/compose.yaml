@@ -6,7 +6,7 @@
 # Restore (see docs/operations.md):
 #   docker compose -f deploy/compose.yaml stop openfs
 #   docker compose -f deploy/compose.yaml run --rm openfs bun run restore list
-#   docker compose -f deploy/compose.yaml run --rm openfs bun run restore restore <name> --no-url-check
+#   docker compose -f deploy/compose.yaml run --rm openfs bun run restore restore <name>
 #   docker compose -f deploy/compose.yaml start openfs
 
 name: openfs
