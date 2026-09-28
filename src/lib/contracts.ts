@@ -9,9 +9,10 @@
 /* everything is unit-testable with bun:test.                          */
 /* ------------------------------------------------------------------ */
 
+import type { ArchivedContract } from "@/hooks/use-archive";
 import type { StudentRecord } from "@/hooks/use-students";
 import type { StudentStatus } from "@/lib/student-data";
-import type { PricePlanRecord } from "@/lib/price-plan";
+import { type PricePlanRecord, resolveStudentPlan } from "@/lib/price-plan";
 
 export type ContractRow = {
   /** students.id — row click navigates to /fahrschueler/:id. */
@@ -32,6 +33,8 @@ export type ContractRow = {
   status: StudentStatus;
   /** Real Guthaben from the ledger in cents; null = no ledger activity. */
   balanceCents: number | null;
+  /** Set for students that were archived (restorable from /archiv). */
+  archived?: { archiveId: number; reason: string | null; deletedAt: string };
 };
 
 export type ContractKpis = {
@@ -69,14 +72,13 @@ export function splitClasses(classes: string): string[] {
   ];
 }
 
-/** Mirrors PreiseTab: assigned plan, else the first plan as default. */
+/** Mirrors PreiseTab: assigned plan, else the class default. */
 export function resolvePlanName(
   pricePlanId: number | null | undefined,
   plans: PricePlanRecord[],
+  classes = "",
 ): string {
-  const plan =
-    plans.find((candidate) => candidate.id === pricePlanId) ?? plans[0] ?? null;
-  return plan?.name ?? "—";
+  return resolveStudentPlan(plans, { pricePlanId, classes })?.name ?? "—";
 }
 
 export function deriveContractRows(
@@ -93,13 +95,39 @@ export function deriveContractRows(
     lastName: student.lastName,
     name: `${student.lastName}, ${student.firstName}`,
     classes: splitClasses(student.classes),
-    planName: resolvePlanName(student.pricePlanId, plans),
+    planName: resolvePlanName(student.pricePlanId, plans, student.classes),
     registrationDate: student.registrationDate,
     registrationTime: parseGermanDate(student.registrationDate),
     status: student.status,
     balanceCents: balances.has(student.customerNumber)
       ? (balances.get(student.customerNumber) ?? null)
       : null,
+  }));
+}
+
+/** Contracts of archived students — kept visible under "Archiviert". */
+export function deriveArchivedContractRows(
+  contracts: ArchivedContract[],
+  plans: PricePlanRecord[],
+): ContractRow[] {
+  return contracts.map((contract) => ({
+    studentId: contract.studentId,
+    contractNumber: contract.contractNumber,
+    customerNumber: contract.customerNumber,
+    firstName: contract.firstName,
+    lastName: contract.lastName,
+    name: `${contract.lastName}, ${contract.firstName}`,
+    classes: splitClasses(contract.classes),
+    planName: resolvePlanName(contract.pricePlanId, plans, contract.classes),
+    registrationDate: contract.registrationDate,
+    registrationTime: parseGermanDate(contract.registrationDate),
+    status: "inaktiv",
+    balanceCents: null,
+    archived: {
+      archiveId: contract.archiveId,
+      reason: contract.reason,
+      deletedAt: contract.deletedAt,
+    },
   }));
 }
 
@@ -125,7 +153,7 @@ export function computeContractKpis(
   return { total: rows.length, active, inactive, thisMonth };
 }
 
-export type ContractStatusFilter = StudentStatus | "alle";
+export type ContractStatusFilter = StudentStatus | "alle" | "archiviert";
 
 /** Search by name / contract number / customer number, plus status filter. */
 export function filterContractRows(
@@ -135,7 +163,11 @@ export function filterContractRows(
 ): ContractRow[] {
   const normalizedQuery = query.trim().toLowerCase();
   return rows.filter((row) => {
-    const matchesStatus = status === "alle" || row.status === status;
+    // Archived contracts only show under their own filter.
+    const matchesStatus =
+      status === "archiviert"
+        ? row.archived != null
+        : row.archived == null && (status === "alle" || row.status === status);
     if (!matchesStatus) return false;
     if (normalizedQuery.length === 0) return true;
     return [row.firstName, row.lastName, row.name, row.contractNumber, row.customerNumber]
