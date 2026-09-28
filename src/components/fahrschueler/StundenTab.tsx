@@ -28,6 +28,7 @@ import {
   resolveLessonPrice,
 } from "@/lib/price-plan";
 import { billCalendarEvent, useCalendarEvents } from "@/hooks/use-calendar-events";
+import { useAuthStatus } from "@/hooks/use-auth";
 import { usePricePlans } from "@/hooks/use-price-plans";
 import { useStudents } from "@/hooks/use-students";
 import type { StudentRecord } from "@/hooks/use-students";
@@ -309,6 +310,10 @@ export function StundenTab({ student }: { student: StudentRecord }) {
   const [loadingAttestations, setLoadingAttestations] = useState(false);
 
   const fullName = `${student.firstName} ${student.lastName}`;
+  // Billing is office work — the Fahrlehrer role has no finance access
+  // (the server rejects it too), so the actions are not offered.
+  const { data: auth } = useAuthStatus();
+  const canBill = auth?.user?.role !== "fahrlehrer";
   const { events: allEvents, refresh: refreshEvents } = useCalendarEvents();
   const { plans } = usePricePlans();
   const { students } = useStudents();
@@ -512,7 +517,7 @@ export function StundenTab({ student }: { student: StudentRecord }) {
           </Select>
 
           <div className="ml-auto flex items-center gap-2">
-            {openLessons.length >= 2 && (
+            {canBill && openLessons.length >= 2 && (
               <Button variant="outline" size="sm" onClick={() => setBatchBillOpen(true)}>
                 <Receipt className="mr-1 size-3.5" />
                 Alle offenen abrechnen ({openLessons.length})
@@ -690,17 +695,19 @@ export function StundenTab({ student }: { student: StudentRecord }) {
                               <span className="size-1.5 rounded-full border border-current" />
                               Offen
                             </span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-xs"
-                              onClick={() =>
-                                isExam ? setExamBillTarget(event) : setBillTarget(event)
-                              }
-                            >
-                              <Receipt className="mr-1 size-3" />
-                              Abrechnen
-                            </Button>
+                            {canBill && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                onClick={() =>
+                                  isExam ? setExamBillTarget(event) : setBillTarget(event)
+                                }
+                              >
+                                <Receipt className="mr-1 size-3" />
+                                Abrechnen
+                              </Button>
+                            )}
                             {cancelButton}
                           </div>
                         )}
