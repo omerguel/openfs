@@ -11,7 +11,12 @@ import { toast } from "sonner";
 import type { StudentRecord } from "@/hooks/use-students";
 import { usePricePlans } from "@/hooks/use-price-plans";
 import type { Student } from "@/lib/student-data";
-import type { PricePlanRecord } from "@/lib/price-plan";
+import {
+  formatGuaranteedPeriod,
+  planMatchesClasses,
+  resolveStudentPlan,
+  type PricePlanRecord,
+} from "@/lib/price-plan";
 import { formatEuro } from "@/lib/money";
 import { PricePlanDialog } from "@/components/preise/PricePlanDialog";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +35,7 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -56,9 +62,14 @@ export function PreiseTab({
   const [editOpen, setEditOpen] = useState(false);
   const [assigning, setAssigning] = useState(false);
 
-  const assignedPlan: PricePlanRecord | null =
-    plans.find((plan) => plan.id === student.pricePlanId) ?? plans[0] ?? null;
+  const assignedPlan: PricePlanRecord | null = resolveStudentPlan(plans, student) ?? null;
   const isFallback = assignedPlan != null && assignedPlan.id !== student.pricePlanId;
+  // Plans for the student's class first; the others stay selectable.
+  const matching = plans.filter((plan) => planMatchesClasses(plan, student.classes));
+  const others = plans.filter((plan) => !planMatchesClasses(plan, student.classes));
+  const guarantee = assignedPlan
+    ? formatGuaranteedPeriod(assignedPlan.guaranteedMonths)
+    : null;
 
   const assignPlan = async (value: string) => {
     const id = Number(value);
@@ -118,17 +129,32 @@ export function PreiseTab({
             onValueChange={assignPlan}
             disabled={assigning}
           >
-            <SelectTrigger className="w-48" size="sm" aria-label="Preisplan wählen">
+            <SelectTrigger className="w-52" size="sm" aria-label="Preisplan wählen">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {plans.map((plan) => (
+                <SelectLabel>Für Klasse {student.classes || "—"}</SelectLabel>
+                {matching.map((plan) => (
                   <SelectItem key={plan.id} value={String(plan.id)}>
                     {plan.name}
                   </SelectItem>
                 ))}
               </SelectGroup>
+              {others.length > 0 && (
+                <SelectGroup>
+                  <SelectLabel>Andere Klassen</SelectLabel>
+                  {others.map((plan) => (
+                    <SelectItem key={plan.id} value={String(plan.id)}>
+                      {plan.name}
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {(plan.classes ?? []).join(", ")}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
             </SelectContent>
           </Select>
           <Button
@@ -145,8 +171,8 @@ export function PreiseTab({
 
       {isFallback && (
         <p className="text-xs text-muted-foreground">
-          Kein Preisplan zugewiesen — der Standardtarif wird angezeigt. Die Auswahl oben
-          weist ihn fest zu.
+          Kein Preisplan fest zugewiesen — es gilt der erste passende Preisplan für Klasse{" "}
+          {student.classes}. Die Auswahl oben weist einen Preisplan fest zu.
         </p>
       )}
 
@@ -154,7 +180,7 @@ export function PreiseTab({
         <CardHeader>
           <CardTitle>{assignedPlan.name}</CardTitle>
           <CardDescription>
-            Garantierter Zeitraum {assignedPlan.guaranteedMonths} Monate · Anfangsdatum{" "}
+            {guarantee ? `${guarantee} ab ` : "Gültig ab "}
             {student.registrationDate}
           </CardDescription>
           <CardAction>

@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { PageHeader } from "./components/PageHeader.tsx";
 import { PricePlanDialog } from "./components/preise/PricePlanDialog";
 import { deletePricePlan, usePricePlans } from "@/hooks/use-price-plans";
-import type { PricePlanRecord } from "@/lib/price-plan";
+import { formatGuaranteedPeriod, type PricePlanRecord } from "@/lib/price-plan";
 import { formatEuro } from "@/lib/money";
 import {
   AlertDialog,
@@ -57,7 +57,12 @@ function PlanCard({
       <CardHeader>
         <CardTitle>{plan.name}</CardTitle>
         <CardDescription>
-          Garantierter Zeitraum {plan.guaranteedMonths} Monate
+          {(plan.classes ?? []).length > 0
+            ? `Klasse ${(plan.classes ?? []).join(", ")}`
+            : "Alle Klassen"}
+          {formatGuaranteedPeriod(plan.guaranteedMonths)
+            ? ` · ${formatGuaranteedPeriod(plan.guaranteedMonths)}`
+            : ""}
         </CardDescription>
         <CardAction>
           <div className="flex items-center gap-1">
@@ -211,8 +216,8 @@ export function Preisangebot() {
           <AlertDialogHeader>
             <AlertDialogTitle>Preisplan „{deleteTarget?.name}" löschen?</AlertDialogTitle>
             <AlertDialogDescription>
-              Fahrschüler mit diesem Tarif fallen auf den Standardtarif zurück. Diese
-              Aktion kann nicht rückgängig gemacht werden.
+              Fahrschüler/innen mit diesem Tarif erhalten den ersten passenden Preisplan
+              ihrer Klasse. Der Preisplan kann unter „Archiv" wiederhergestellt werden.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
