@@ -13,8 +13,9 @@ import {
   purgeArchived,
   restoreArchived,
 } from "./archive";
-import { getCompany, setCompany } from "./db";
-import { getSchoolProfile, setSchoolProfile } from "./school-profile";
+import { updateCompanyProfile } from "./company-profile";
+import { getCompany } from "./db";
+import { currentUser } from "./request-context";
 import { generateDatevExport } from "./datev";
 import {
   createInstructor,
@@ -471,17 +472,7 @@ export function accountingRoutes(db: Database) {
       PUT: (req: BunRequest) =>
         handle(async () => {
           const body = (await req.json()) as Partial<CompanyProfile>;
-          const current = getCompany(db);
-          const next: CompanyProfile = { ...current };
-          for (const key of Object.keys(current) as (keyof CompanyProfile)[]) {
-            const value = body[key];
-            if (typeof value === "string") next[key] = value.trim();
-          }
-          setCompany(db, next);
-          if (next.website !== current.website) {
-            setSchoolProfile(db, { ...getSchoolProfile(db), website: next.website });
-          }
-          return json(next);
+          return json(updateCompanyProfile(db, body, currentUser()?.role));
         })(),
     },
   };

@@ -1,4 +1,4 @@
-import { ValidationError } from "./errors";
+import { ForbiddenError, ValidationError } from "./errors";
 
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -17,6 +17,9 @@ export function handle<A extends unknown[]>(
     } catch (error) {
       if (error instanceof ValidationError) {
         return err(error.message);
+      }
+      if (error instanceof ForbiddenError) {
+        return err(error.message, 403);
       }
       console.error(error);
       return err("Interner Fehler.", 500);
@@ -40,6 +43,32 @@ export type RequestIPSource = {
 
 export function clientIp(req: Request, server?: RequestIPSource): string {
   return server?.requestIP(req)?.address ?? "unknown";
+}
+
+/** Counts only failures (e.g. wrong passwords): `blocked(key)` is true
+ *  once `key` has `max` failures within `windowMs`; `fail(key)` records
+ *  one, `reset(key)` forgets them (successful login). `false` disables. */
+export function createFailureLimiter(limit: RateLimit | false) {
+  const failures = new Map<string, number[]>();
+  const recent = (key: string, now: number) =>
+    limit ? (failures.get(key) ?? []).filter((t) => t > now - limit.windowMs) : [];
+  return {
+    blocked(key: string, now = Date.now()): boolean {
+      return limit ? recent(key, now).length >= limit.max : false;
+    },
+    fail(key: string, now = Date.now()) {
+      if (!limit) return;
+      if (failures.size > 10_000) {
+        for (const k of failures.keys()) {
+          if (recent(k, now).length === 0) failures.delete(k);
+        }
+      }
+      failures.set(key, [...recent(key, now), now]);
+    },
+    reset(key: string) {
+      failures.delete(key);
+    },
+  };
 }
 
 /** Returns `limited(key)`: true once `key` exceeded `max` hits within

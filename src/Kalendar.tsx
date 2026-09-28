@@ -404,7 +404,7 @@ const DayColumn = memo(
 /* ------------------------------------------------------------------ */
 
 export function Kalendar() {
-  const { filter } = useSearch({ from: "/_portal/kalendar" });
+  const { filter } = useSearch({ from: "/_portal/kalender" });
   const initialTypeFilter = filter === "non-fahrstunde" ? nonFahrstundeTypes : undefined;
   const [view, setView] = useState<ViewMode>(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches

@@ -4,6 +4,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  redirect,
 } from "@tanstack/react-router";
 
 import { Anfrage } from "./Anfrage";
@@ -16,6 +17,7 @@ import { Dashboard } from "./Dashboard";
 import { Datenschutz } from "./Datenschutz";
 import { Datenimport } from "./Datenimport";
 import { Datensicherung } from "./Datensicherung";
+import { Einladung } from "./Einladung";
 import { Fahrlehrer } from "./Fahrlehrer";
 import { Fahrschule } from "./Fahrschule";
 import { Fahrschueler } from "./Fahrschueler";
@@ -29,11 +31,9 @@ import { Nachrichten } from "./Nachrichten";
 import { NeueSchueler } from "./NeueSchueler";
 import { Plaudern } from "./Plaudern";
 import { Preisangebot } from "./Preisangebot";
-import { Profil } from "./Profil";
 import { Rechnungen } from "./Rechnungen";
 import { Pruefungsplaner } from "./Pruefungsplaner";
 import { Schuelerportal } from "./Schuelerportal";
-import { Schulprofil } from "./Schulprofil";
 import { Statistik } from "./Statistik";
 import { Terminanfragen } from "./Terminanfragen";
 import { Theorie } from "./Theorie";
@@ -41,6 +41,7 @@ import { TheorieGruppen } from "./TheorieGruppen";
 import { Vertraege } from "./Vertraege";
 import { queryClient } from "@/lib/query-client";
 import { vehiclesQueryOptions } from "@/hooks/use-vehicles";
+import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings-tabs";
 
 type RouterContext = {
   queryClient: QueryClient;
@@ -72,10 +73,13 @@ const dashboardRoute = createRoute({
   component: Dashboard,
 });
 
+/* Profil + Schulprofil were merged into "Fahrschule & Einstellungen". */
 const profileRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/profil",
-  component: Profil,
+  beforeLoad: () => {
+    throw redirect({ to: "/fahrschule", search: { tab: "stammdaten" }, replace: true });
+  },
 });
 
 const theoryRoute = createRoute({
@@ -104,7 +108,7 @@ const accountingRoute = createRoute({
 
 const calendarRoute = createRoute({
   getParentRoute: () => portalRoute,
-  path: "/kalendar",
+  path: "/kalender",
   validateSearch: (search): { filter?: "non-fahrstunde" } => ({
     filter: search.filter === "non-fahrstunde" ? search.filter : undefined,
   }),
@@ -115,6 +119,15 @@ const myDayRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/mein-tag",
   component: MeinTag,
+});
+
+/* Old spelling — bookmarks and links keep working. */
+const legacyCalendarRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/kalendar",
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: "/kalender", search, replace: true });
+  },
 });
 
 const vehiclesRoute = createRoute({
@@ -176,7 +189,9 @@ const examPlannerRoute = createRoute({
 const schoolProfileRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/schulprofil",
-  component: Schulprofil,
+  beforeLoad: () => {
+    throw redirect({ to: "/fahrschule", search: { tab: "profil" }, replace: true });
+  },
 });
 
 const appointmentRequestsRoute = createRoute({
@@ -188,6 +203,12 @@ const appointmentRequestsRoute = createRoute({
 const schoolRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/fahrschule",
+  // ?tab=stammdaten|bank|profil|zeiten|standorte|recht|absagen
+  validateSearch: (search): { tab?: SettingsTab } => ({
+    tab: SETTINGS_TABS.includes(search.tab as SettingsTab)
+      ? (search.tab as SettingsTab)
+      : undefined,
+  }),
   component: Fahrschule,
 });
 
@@ -271,6 +292,13 @@ const datenschutzRoute = createRoute({
   component: Datenschutz,
 });
 
+/* Einladungslink — public: sets the password of an invited staff member. */
+const inviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/einladung/$inviteToken",
+  component: Einladung,
+});
+
 const portalRouteTree = portalRoute.addChildren([
   dashboardRoute,
   profileRoute,
@@ -280,6 +308,7 @@ const portalRouteTree = portalRoute.addChildren([
   accountingRoute,
   calendarRoute,
   myDayRoute,
+  legacyCalendarRoute,
   vehiclesRoute,
   instructorsRoute,
   newStudentRoute,
@@ -308,13 +337,17 @@ const routeTree = rootRoute.addChildren([
   studentPortalRoute,
   impressumRoute,
   datenschutzRoute,
+  inviteRoute,
 ]);
 
 export const router = createRouter({
   routeTree,
   context: { queryClient },
   defaultPreload: "intent",
-  scrollRestoration: true,
+  // Off on purpose: every page scrolls its own container, and the router's
+  // element restoration copied one page's scroll offset onto the next page
+  // (same DOM path). App.tsx resets the scroll on each navigation instead.
+  scrollRestoration: false,
 });
 
 declare module "@tanstack/react-router" {

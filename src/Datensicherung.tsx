@@ -1,12 +1,20 @@
 /* ------------------------------------------------------------------ */
 /* Datensicherung — automatische SQLite-Sicherungen (data/backups,     */
 /* optional offsite in S3), manuelles „Jetzt sichern", Downloads, der  */
-/* Gesamt-Export und eine kurze Anleitung zur Wiederherstellung.       */
+/* ZIP-Datenexport, die .db-Kopie und eine Anleitung zur Wiederherstel-*/
+/* lung mit dem echten Datenbankpfad. Nur für Inhaber (Route-Guard).   */
 /* Daten kommen aus /api/admin/backups (use-backups).                  */
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
-import { Cloud, DatabaseBackup, Download, HardDrive, Info } from "lucide-react";
+import {
+  Cloud,
+  DatabaseBackup,
+  Download,
+  FileArchive,
+  HardDrive,
+  Info,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
@@ -73,10 +81,18 @@ function BackupRow({ backup }: { backup: BackupItem }) {
   );
 }
 
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="font-mono text-[13px] break-all text-foreground">{children}</span>
+  );
+}
+
 export function Datensicherung() {
   const { overview, loading, refresh } = useBackups();
   const [creating, setCreating] = useState(false);
   const enabled = overview?.enabled === true;
+  const config = overview?.enabled ? overview.config : null;
+  const dbPath = config?.dbPath || "data/fahrschule.db";
 
   const backupNow = async () => {
     setCreating(true);
@@ -101,51 +117,51 @@ export function Datensicherung() {
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <>
-            <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex">
-              <a href="/api/export/database" download>
-                <Download data-icon="inline-start" />
-                Gesamt-Export
-              </a>
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!enabled || creating}
-              onClick={backupNow}
-            >
-              <DatabaseBackup data-icon="inline-start" />
-              {creating ? "Sichert …" : "Jetzt sichern"}
-            </Button>
-          </>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!enabled || creating}
+            title={
+              enabled
+                ? undefined
+                : overview?.enabled === false
+                  ? overview.message
+                  : undefined
+            }
+            onClick={backupNow}
+          >
+            <DatabaseBackup data-icon="inline-start" />
+            {creating ? "Sichert …" : "Jetzt sichern"}
+          </Button>
         }
       >
-        <span className="text-sm font-medium">Datensicherung</span>
+        <h1 className="text-sm font-medium">Datensicherung</h1>
       </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
-        <div className="stagger-in mx-auto flex w-full max-w-3xl flex-col gap-6">
+        <div className="stagger-in mx-auto flex w-full max-w-3xl flex-col gap-8">
           {overview && !overview.enabled ? (
             <Alert>
               <Info />
-              <AlertTitle>Sicherungen deaktiviert</AlertTitle>
+              <AlertTitle>Automatische Sicherungen sind aus</AlertTitle>
               <AlertDescription>{overview.message}</AlertDescription>
             </Alert>
-          ) : overview?.enabled ? (
+          ) : config ? (
             <p className="text-sm text-pretty text-muted-foreground">
-              Automatisch alle {overview.config.intervalHours} Stunden, die neuesten{" "}
-              {overview.config.keep} Sicherungen bleiben erhalten. Ablage:{" "}
-              <span className="font-mono text-[13px]">{overview.config.dir}</span>
-              {overview.config.offsite ? (
+              OpenFS sichert automatisch alle {config.intervalHours} Stunden; die neuesten{" "}
+              {config.keep} Sicherungen bleiben erhalten. Ablage auf dem Server:{" "}
+              <Code>{config.dir}</Code>
+              {config.offsite ? (
                 <>
-                  {" "}
-                  · offsite in{" "}
-                  <span className="font-mono text-[13px]">{overview.config.offsite}</span>
+                  , zusätzlich außer Haus in <Code>{config.offsite}</Code>
                 </>
               ) : (
-                " · keine Offsite-Kopie konfiguriert (S3_* Umgebungsvariablen)"
+                <>
+                  . Es ist keine Kopie außer Haus eingerichtet — laden Sie regelmäßig eine
+                  Sicherung herunter oder bitten Sie Ihren Betreuer, einen S3-Speicher
+                  einzurichten.
+                </>
               )}
-              .
             </p>
           ) : null}
 
@@ -166,7 +182,8 @@ export function Datensicherung() {
                   <EmptyDescription>
                     {enabled
                       ? "Die erste Sicherung entsteht automatisch – oder jetzt über „Jetzt sichern“."
-                      : "Im Demo-Modus werden keine Sicherungen angelegt."}
+                      : (overview?.enabled === false && overview.message) ||
+                        "Automatische Sicherungen sind nicht eingerichtet."}
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
@@ -177,23 +194,81 @@ export function Datensicherung() {
             )}
           </section>
 
+          <section className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-sm font-medium">Daten herunterladen</h2>
+              <p className="text-sm text-pretty text-muted-foreground">
+                Zwei Formate für zwei Zwecke:
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-2 rounded-lg border bg-card p-4">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  <FileArchive className="size-4" />
+                  Datenexport (ZIP mit CSV)
+                </span>
+                <p className="flex-1 text-xs text-pretty text-muted-foreground">
+                  Schüler, Rechnungen, Buchungen, Termine u. a. als Tabellen für Excel —
+                  plus alle hochgeladenen Dokumente. Zum Ansehen, Archivieren oder für den
+                  Steuerberater.
+                </p>
+                <Button asChild variant="outline" size="sm" className="w-fit">
+                  <a href="/api/export/zip" download>
+                    <Download data-icon="inline-start" />
+                    ZIP herunterladen
+                  </a>
+                </Button>
+              </div>
+              <div className="flex flex-col gap-2 rounded-lg border bg-card p-4">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  <HardDrive className="size-4" />
+                  Datenbank-Sicherung (.db)
+                </span>
+                <p className="flex-1 text-xs text-pretty text-muted-foreground">
+                  Eine vollständige Kopie der Datenbank in diesem Moment — die Datei, mit
+                  der sich OpenFS wiederherstellen lässt. Ohne Dokumente.
+                </p>
+                <Button asChild variant="outline" size="sm" className="w-fit">
+                  <a href="/api/export/database" download>
+                    <Download data-icon="inline-start" />
+                    .db herunterladen
+                  </a>
+                </Button>
+              </div>
+            </div>
+          </section>
+
           <section className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium">Wiederherstellen</h2>
-            <ol className="flex list-decimal flex-col gap-1 pl-5 text-sm text-pretty text-muted-foreground">
-              <li>Server beenden.</li>
+            <h2 className="text-sm font-medium">Wiederherstellen — so geht es</h2>
+            <p className="text-sm text-pretty text-muted-foreground">
+              Eine Wiederherstellung setzt OpenFS auf den Stand der gewählten Sicherung
+              zurück; alles, was danach eingegeben wurde, ist dann weg. Am besten erledigt
+              das die Person, die Ihren Server betreut:
+            </p>
+            <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm text-pretty text-muted-foreground">
+              <li>OpenFS (den Server) beenden.</li>
               <li>
-                Die gewünschte Sicherung herunterladen (oder aus dem Sicherungsordner
-                nehmen) und als{" "}
-                <span className="font-mono text-[13px]">data/fahrschule.db</span> ablegen
-                – vorher die aktuelle Datei samt{" "}
-                <span className="font-mono text-[13px]">-wal</span>/
-                <span className="font-mono text-[13px]">-shm</span> beiseitelegen.
+                Die aktuelle Datenbank-Datei <Code>{dbPath}</Code> samt der Dateien{" "}
+                <Code>{dbPath}-wal</Code> und <Code>{dbPath}-shm</Code> (falls vorhanden)
+                beiseitelegen — nicht löschen.
               </li>
-              <li>Server wieder starten.</li>
+              <li>
+                Die gewünschte Sicherung herunterladen (oder aus{" "}
+                <Code>{config?.dir ?? "data/backups"}</Code> nehmen) und unter genau
+                diesem Namen ablegen: <Code>{dbPath}</Code>.
+              </li>
+              <li>OpenFS wieder starten und kurz prüfen, ob die Daten stimmen.</li>
             </ol>
             <p className="text-xs text-pretty text-muted-foreground">
-              Hochgeladene Dokumente liegen nicht in der Datenbank, sondern im
-              Dateispeicher (data/files bzw. S3) und werden separat gesichert.
+              Hochgeladene Dokumente stecken nicht in der Datenbank, sondern im
+              Dateispeicher
+              {config?.files ? (
+                <>
+                  {" "}
+                  (<Code>{config.files}</Code>)
+                </>
+              ) : null}{" "}
+              — sichern Sie diesen Ordner zusätzlich, oder nutzen Sie den ZIP-Export.
             </p>
           </section>
         </div>

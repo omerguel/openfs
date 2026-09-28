@@ -1,604 +1,1025 @@
-import { useEffect, useState } from "react";
-import {
-  Building2,
-  Car,
-  Clock,
-  GraduationCap,
-  Globe,
-  Mail,
-  MapPin,
-  Pencil,
-  Phone,
-  Plus,
-  Star,
-  Trash2,
-  Users,
-} from "lucide-react";
+/* ------------------------------------------------------------------ */
+/* Fahrschule & Einstellungen — one place for the school's settings    */
+/* (formerly Profil, Schulprofil and Fahrschule):                      */
+/*   Stammdaten & Steuer · Bankverbindung · Öffentliches Profil ·      */
+/*   Öffnungszeiten · Standorte · Rechtliches · Terminabsagen          */
+/* /profil and /schulprofil redirect here (?tab=…).                    */
+/*                                                                     */
+/* Editing model: the server state comes from react-query; the page    */
+/* keeps a draft only once something was changed. "Ungespeichert" is   */
+/* draft ≠ server state (see lib/settings-form.ts) — never derived     */
+/* from input events, which used to swallow the first keystroke.       */
+/* Steuer- und Bankdaten: editable by the Inhaber only (server too).   */
+/* ------------------------------------------------------------------ */
+
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { AlertCircle, Check, ExternalLink, Lock } from "lucide-react";
 import { toast } from "sonner";
 
-import type { CompanyProfile } from "@/lib/accounting-types";
-
-import { PageHeader } from "./components/PageHeader.tsx";
-import {
-  createBranch,
-  deleteBranch,
-  updateBranch,
-  useBranches,
-  type Branch,
-  type BranchInput,
-} from "@/hooks/use-branches";
-import { useCompanyProfile } from "@/hooks/use-company-profile";
-import { useInstructors } from "@/hooks/use-instructors";
-import { useStudents } from "@/hooks/use-students";
-import { useVehicles } from "@/hooks/use-vehicles";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
+import { FormField, RequiredLegend } from "@/components/FormField";
+import { PageHeader } from "@/components/PageHeader";
+import { ChipSelect, HoursEditor, TagInput } from "@/components/fahrschule/editors";
+import { Standorte } from "@/components/fahrschule/Standorte";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuthStatus } from "@/hooks/use-auth";
+import {
+  fetchCancellationPolicy,
+  saveCancellationPolicy,
+} from "@/hooks/use-calendar-events";
+import {
+  companyProfileQueryOptions,
+  saveCompanyProfile,
+} from "@/hooks/use-company-profile";
+import {
+  type SchoolProfile,
+  saveSchoolProfile,
+  schoolProfileQueryOptions,
+} from "@/hooks/use-school-profile";
+import type { CompanyProfile } from "@/lib/accounting-types";
+import { toInstagramUrl } from "@/lib/instagram";
+import { parseEuroToCents } from "@/lib/money";
+import { formatIban } from "@/lib/sepa";
+import {
+  changedParts,
+  type FieldErrors,
+  policyToDraft,
+  type SettingsDraft,
+  tabOfField,
+  validateSettings,
+} from "@/lib/settings-form";
+import {
+  SETTINGS_TAB_LABELS,
+  SETTINGS_TABS,
+  type SettingsTab,
+} from "@/lib/settings-tabs";
 import { cn } from "@/lib/utils";
 
-type IconCmp = React.ComponentType<{ className?: string }>;
-
 /* ------------------------------------------------------------------ */
-/* School summary (read-only — edited on /profil)                      */
+/* Options                                                             */
 /* ------------------------------------------------------------------ */
 
-function SchoolSummaryCard({ profile }: { profile: CompanyProfile | null }) {
-  const details = profile
-    ? [
-        { Icon: MapPin, label: "Anschrift", value: profile.address },
-        { Icon: Phone, label: "Telefon", value: profile.phone },
-        { Icon: Mail, label: "E-Mail", value: profile.email },
-        { Icon: Globe, label: "Webseite", value: profile.website },
-      ].filter((detail) => detail.value)
-    : [];
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600">
-            <Building2 className="size-6" />
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <CardTitle className="text-base">{profile?.name || "Fahrschule"}</CardTitle>
-            <CardDescription>Stammdaten der Fahrschule</CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-      {details.length > 0 && (
-        <CardContent>
-          <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
-            {details.map(({ Icon, label, value }) => (
-              <div key={label} className="flex items-center gap-2.5">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                  <Icon className="size-4" />
-                </div>
-                <div className="flex min-w-0 flex-col">
-                  <dt className="text-xs text-muted-foreground">{label}</dt>
-                  <dd className="truncate text-sm font-medium">{value}</dd>
-                </div>
-              </div>
-            ))}
-          </dl>
-        </CardContent>
-      )}
-    </Card>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Quick stats                                                         */
-/* ------------------------------------------------------------------ */
-
-function StatCard({
-  Icon,
-  accent,
-  label,
-  value,
-  loading,
-}: {
-  Icon: IconCmp;
-  accent: string;
-  label: string;
-  value: number;
-  loading: boolean;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3">
-        <div
-          className={cn(
-            "flex size-10 shrink-0 items-center justify-center rounded-lg",
-            accent,
-          )}
-        >
-          <Icon className="size-5" />
-        </div>
-        <div className="flex min-w-0 flex-col">
-          {loading ? (
-            <Skeleton className="h-6 w-10" />
-          ) : (
-            <span className="text-xl font-semibold tabular-nums">{value}</span>
-          )}
-          <span className="truncate text-xs text-muted-foreground">{label}</span>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+const LICENSE_CLASSES = [
+  "AM",
+  "A1",
+  "A2",
+  "A",
+  "A80",
+  "B",
+  "B96",
+  "B196",
+  "B197",
+  "B Automatik",
+  "BE",
+  "C1",
+  "C1E",
+  "C",
+  "CE",
+  "D1",
+  "D1E",
+  "D",
+  "DE",
+  "L",
+  "T",
+  "Mofa",
+  "ASF",
+  "FES",
+  "MPU",
+];
+const BKF_CLASSES = ["C (BKF)", "C+CE (BKF)", "D (BKF)", "GC", "GD", "WC", "WD"];
+const FEATURES = [
+  "Eignungstest",
+  "ASF",
+  "Sehtest",
+  "Erste Hilfe",
+  "Weibliche Fahrlehrer",
+  "FES",
+  "Finanzierung",
+  "Amtliche Anmeldung",
+  "Intensivkurs",
+  "Online lernen",
+  "Fahrsimulator",
+];
+const PAYMENT_METHODS = [
+  "Banküberweisung",
+  "Lastschrift",
+  "Bar",
+  "Giro / EC-Karte",
+  "Kredit- / Debitkarte",
+];
 
 /* ------------------------------------------------------------------ */
-/* Branch dialog (create + edit)                                       */
+/* Layout helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-const emptyDraft: BranchInput = {
-  name: "",
-  address: "",
-  phone: "",
-  email: "",
-  openingHours: "",
-  isMain: false,
-  status: "offen",
-};
-
-function branchToDraft(branch: Branch): BranchInput {
-  const { id: _id, createdAt: _createdAt, ...draft } = branch;
-  return draft;
-}
-
-function BranchDialog({
+function Section({
   title,
   description,
-  draft,
-  open,
-  saving,
-  onOpenChange,
-  onChange,
-  onSave,
+  children,
 }: {
   title: string;
-  description: string;
-  draft: BranchInput;
-  open: boolean;
-  saving: boolean;
-  onOpenChange: (open: boolean) => void;
-  onChange: (draft: BranchInput) => void;
-  onSave: () => void;
+  description?: React.ReactNode;
+  children: React.ReactNode;
 }) {
-  function update<Key extends keyof BranchInput>(key: Key, value: BranchInput[Key]) {
-    onChange({ ...draft, [key]: value });
-  }
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
+    <section className="flex flex-col gap-4 border-t pt-6 first:border-t-0 first:pt-0">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
+        {description && (
+          <p className="max-w-prose text-sm text-pretty text-muted-foreground">
+            {description}
+          </p>
+        )}
+      </div>
+      {children}
+    </section>
+  );
+}
 
-        <FieldGroup className="grid gap-4 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="branch-name">Name</FieldLabel>
+function Grid({ children }: { children: React.ReactNode }) {
+  return <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>;
+}
+
+function OwnerOnlyNote() {
+  return (
+    <Alert>
+      <Lock />
+      <AlertDescription>
+        Steuer- und Bankdaten kann nur die Inhaberin bzw. der Inhaber ändern. Sie sehen
+        sie hier zur Information.
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+type TabProps = {
+  value: SettingsDraft;
+  errors: FieldErrors;
+  setCompany: (patch: Partial<CompanyProfile>) => void;
+  setSchool: (patch: Partial<SchoolProfile>) => void;
+  setPolicy: (patch: Partial<SettingsDraft["policy"]>) => void;
+  ownerOnlyLocked: boolean;
+};
+
+/* ------------------------------------------------------------------ */
+/* Tabs                                                                */
+/* ------------------------------------------------------------------ */
+
+function StammdatenTab({ value, errors, setCompany, ownerOnlyLocked }: TabProps) {
+  const c = value.company;
+  return (
+    <div className="flex flex-col gap-6">
+      <Section
+        title="Fahrschule"
+        description="Grunddaten — erscheinen auf Rechnungen, Quittungen, im Impressum und im DATEV-Export."
+      >
+        <Grid>
+          <FormField
+            id="company-name"
+            label="Name der Fahrschule"
+            required
+            error={errors["company-name"]}
+          >
             <Input
-              id="branch-name"
-              placeholder="z. B. Hauptstelle Mitte"
-              value={draft.name}
-              onChange={(event) => update("name", event.target.value)}
+              value={c.name}
+              onChange={(e) => setCompany({ name: e.target.value })}
             />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="branch-address">Adresse</FieldLabel>
+          </FormField>
+          <FormField
+            id="company-inhaber"
+            label="Inhaber/in bzw. vertretungsberechtigte Person"
+            hint="Pflichtangabe im Impressum (§ 5 DDG)."
+          >
             <Input
-              id="branch-address"
+              placeholder="Vor- und Nachname"
+              value={c.inhaber}
+              onChange={(e) => setCompany({ inhaber: e.target.value })}
+            />
+          </FormField>
+          <FormField id="company-address" label="Anschrift">
+            <Input
               placeholder="Straße Nr., PLZ Ort"
-              value={draft.address}
-              onChange={(event) => update("address", event.target.value)}
+              value={c.address}
+              onChange={(e) => setCompany({ address: e.target.value })}
             />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="branch-phone">Telefon</FieldLabel>
+          </FormField>
+          <FormField id="company-phone" label="Telefon">
             <Input
-              id="branch-phone"
               type="tel"
-              value={draft.phone}
-              onChange={(event) => update("phone", event.target.value)}
+              value={c.phone}
+              onChange={(e) => setCompany({ phone: e.target.value })}
             />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="branch-email">E-Mail</FieldLabel>
+          </FormField>
+          <FormField
+            id="company-email"
+            label="E-Mail"
+            hint="Kontaktadresse der Fahrschule — auch Antwortadresse für E-Mails an Schüler."
+            error={errors["company-email"]}
+          >
             <Input
-              id="branch-email"
               type="email"
-              value={draft.email}
-              onChange={(event) => update("email", event.target.value)}
+              value={c.email}
+              onChange={(e) => setCompany({ email: e.target.value })}
             />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="branch-hours">Öffnungszeiten</FieldLabel>
+          </FormField>
+          <FormField id="company-website" label="Webseite">
             <Input
-              id="branch-hours"
-              placeholder="z. B. Mo–Fr 14–18 Uhr"
-              value={draft.openingHours}
-              onChange={(event) => update("openingHours", event.target.value)}
+              type="url"
+              placeholder="https://…"
+              value={c.website}
+              onChange={(e) => setCompany({ website: e.target.value })}
             />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="branch-status">Status</FieldLabel>
-            <Select
-              value={draft.status}
-              onValueChange={(value) => update("status", value as BranchInput["status"])}
-            >
-              <SelectTrigger id="branch-status" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="offen">Offen</SelectItem>
-                  <SelectItem value="geschlossen">Geschlossen</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        </FieldGroup>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type="button" variant="outline">
-              Abbrechen
-            </Button>
-          </DialogClose>
-          <Button
-            type="button"
-            disabled={saving || !draft.name.trim() || !draft.address.trim()}
-            onClick={onSave}
+          </FormField>
+        </Grid>
+      </Section>
+      <Section
+        title="Steuer & DATEV"
+        description="Steuernummer oder USt-IdNr. muss auf jeder Rechnung stehen (§ 14 UStG)."
+      >
+        {ownerOnlyLocked && <OwnerOnlyNote />}
+        <Grid>
+          <FormField
+            id="company-steuernummer"
+            label="Steuernummer"
+            hint="Vom Finanzamt, z. B. 045/123/45678."
           >
-            Speichern
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <Input
+              className="font-mono text-[13px]"
+              disabled={ownerOnlyLocked}
+              value={c.steuernummer}
+              onChange={(e) => setCompany({ steuernummer: e.target.value })}
+            />
+          </FormField>
+          <FormField
+            id="company-ustidnr"
+            label="USt-IdNr. (Umsatzsteuer-Identifikationsnummer)"
+            hint="Optional — z. B. DE123456789."
+          >
+            <Input
+              className="font-mono text-[13px]"
+              disabled={ownerOnlyLocked}
+              value={c.ustIdNr}
+              onChange={(e) => setCompany({ ustIdNr: e.target.value })}
+            />
+          </FormField>
+          <FormField
+            id="company-beraternr"
+            label="DATEV-Beraternummer"
+            hint="Nummer Ihres Steuerberaters (1001–9999999)."
+            error={errors["company-beraternr"]}
+          >
+            <Input
+              inputMode="numeric"
+              className="font-mono text-[13px]"
+              value={c.beraterNr}
+              onChange={(e) =>
+                setCompany({ beraterNr: e.target.value.replace(/\D/g, "") })
+              }
+            />
+          </FormField>
+          <FormField
+            id="company-mandantnr"
+            label="DATEV-Mandantennummer"
+            hint="Ihre Mandantennummer beim Steuerberater (1–99999)."
+            error={errors["company-mandantnr"]}
+          >
+            <Input
+              inputMode="numeric"
+              className="font-mono text-[13px]"
+              value={c.mandantNr}
+              onChange={(e) =>
+                setCompany({ mandantNr: e.target.value.replace(/\D/g, "") })
+              }
+            />
+          </FormField>
+        </Grid>
+      </Section>
+    </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Branch card                                                         */
-/* ------------------------------------------------------------------ */
-
-function BranchCard({
-  branch,
-  onEdit,
-  onDelete,
-  onMakeMain,
-}: {
-  branch: Branch;
-  onEdit: () => void;
-  onDelete: () => void;
-  onMakeMain: () => void;
-}) {
-  const details = [
-    { Icon: MapPin, label: "Adresse", value: branch.address },
-    { Icon: Phone, label: "Telefon", value: branch.phone },
-    { Icon: Mail, label: "E-Mail", value: branch.email },
-    { Icon: Clock, label: "Öffnungszeiten", value: branch.openingHours },
-  ].filter((detail) => detail.value);
-
+function BankTab({ value, errors, setCompany, ownerOnlyLocked }: TabProps) {
+  const c = value.company;
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          <div
-            className={cn(
-              "flex size-11 shrink-0 items-center justify-center rounded-lg",
-              branch.isMain
-                ? "bg-amber-500/10 text-amber-600"
-                : "bg-sky-500/10 text-sky-600",
-            )}
-          >
-            <Building2 className="size-6" />
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <CardTitle className="text-base">{branch.name}</CardTitle>
-            <CardDescription>Standort</CardDescription>
-          </div>
-        </div>
-        <CardAction>
-          <div className="flex items-center gap-2">
-            {branch.isMain && (
-              <Badge variant="secondary">
-                <Star data-icon="inline-start" />
-                Hauptstandort
-              </Badge>
-            )}
-            <Badge variant={branch.status === "offen" ? "secondary" : "outline"}>
-              {branch.status === "offen" ? "Offen" : "Geschlossen"}
-            </Badge>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`${branch.name} bearbeiten`}
-              onClick={onEdit}
-            >
-              <Pencil />
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              size="icon-sm"
-              aria-label={`${branch.name} löschen`}
-              onClick={onDelete}
-            >
-              <Trash2 />
-            </Button>
-          </div>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {details.length > 0 && (
-          <>
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-              {details.map(({ Icon, label, value }) => (
-                <div key={label} className="flex items-center gap-2.5">
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                    <Icon className="size-4" />
-                  </div>
-                  <div className="flex min-w-0 flex-col">
-                    <dt className="text-xs text-muted-foreground">{label}</dt>
-                    <dd className="truncate text-sm font-medium">{value}</dd>
-                  </div>
-                </div>
-              ))}
-            </dl>
-            {!branch.isMain && <Separator />}
-          </>
-        )}
-        {!branch.isMain && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-fit"
-            onClick={onMakeMain}
-          >
-            <Star data-icon="inline-start" />
-            Als Hauptstandort festlegen
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+    <Section
+      title="Bankverbindung"
+      description="Erscheint auf Rechnungen und ist das Gläubigerkonto für SEPA-Lastschriften."
+    >
+      {ownerOnlyLocked && <OwnerOnlyNote />}
+      <Grid>
+        <FormField id="company-bankname" label="Bank">
+          <Input
+            placeholder="z. B. Sparkasse Darmstadt"
+            disabled={ownerOnlyLocked}
+            value={c.bankName}
+            onChange={(e) => setCompany({ bankName: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          id="company-iban"
+          label="IBAN"
+          hint="Wird mit der Prüfziffer kontrolliert."
+          error={errors["company-iban"]}
+        >
+          <Input
+            className="font-mono text-[13px]"
+            placeholder="DE00 0000 0000 0000 0000 00"
+            autoComplete="off"
+            disabled={ownerOnlyLocked}
+            value={c.iban}
+            onChange={(e) => setCompany({ iban: e.target.value.toUpperCase() })}
+            onBlur={() => {
+              if (c.iban.trim() && !errors["company-iban"])
+                setCompany({ iban: formatIban(c.iban) });
+            }}
+          />
+        </FormField>
+        <FormField
+          id="company-bic"
+          label="BIC"
+          hint="Optional bei Inlandszahlungen."
+          error={errors["company-bic"]}
+        >
+          <Input
+            className="font-mono text-[13px]"
+            placeholder="z. B. HELADEF1DAS"
+            disabled={ownerOnlyLocked}
+            value={c.bic}
+            onChange={(e) => setCompany({ bic: e.target.value.toUpperCase() })}
+          />
+        </FormField>
+        <FormField
+          id="company-glaeubigerid"
+          label="Gläubiger-ID"
+          hint="SEPA-Gläubiger-Identifikationsnummer der Bundesbank — nur für Lastschriften."
+          error={errors["company-glaeubigerid"]}
+        >
+          <Input
+            className="font-mono text-[13px]"
+            placeholder="z. B. DE98ZZZ09999999999"
+            disabled={ownerOnlyLocked}
+            value={c.glaeubigerId}
+            onChange={(e) => setCompany({ glaeubigerId: e.target.value.toUpperCase() })}
+          />
+        </FormField>
+      </Grid>
+    </Section>
   );
 }
+
+function ProfilTab({ value, errors, setSchool }: TabProps) {
+  const s = value.school;
+  const setBrands = (group: keyof SchoolProfile["vehicle_brands"], next: string[]) =>
+    setSchool({ vehicle_brands: { ...s.vehicle_brands, [group]: next } });
+  return (
+    <div className="flex flex-col gap-6">
+      <Section
+        title="Auftritt"
+        description="So stellt sich Ihre Fahrschule öffentlich vor, z. B. auf der Anfrageseite."
+      >
+        <Grid>
+          <FormField
+            id="school-slogan"
+            label="Slogan"
+            hint="Ein kurzer, prägnanter Satz."
+          >
+            <Input
+              placeholder="z. B. Mit Ruhe zum Führerschein."
+              value={s.slogan}
+              onChange={(e) => setSchool({ slogan: e.target.value })}
+            />
+          </FormField>
+          <FormField
+            id="school-founded"
+            label="Dabei seit"
+            hint="Gründungsjahr (optional)."
+            error={errors["school-founded"]}
+          >
+            <Input
+              inputMode="numeric"
+              maxLength={4}
+              placeholder="z. B. 1998"
+              value={s.founded_year ?? ""}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, "").slice(0, 4);
+                setSchool({ founded_year: digits ? Number(digits) : null });
+              }}
+            />
+          </FormField>
+          <FormField
+            id="school-description"
+            label="Beschreibung"
+            className="md:col-span-2"
+          >
+            <Textarea
+              rows={4}
+              placeholder="Beschreiben Sie Ihre Fahrschule in wenigen Sätzen …"
+              value={s.description}
+              onChange={(e) => setSchool({ description: e.target.value })}
+            />
+          </FormField>
+        </Grid>
+      </Section>
+      <Section title="Social Media & Google">
+        <Grid>
+          <FormField
+            id="school-instagram"
+            label="Instagram"
+            hint="Link oder @Name — wird zum Profil-Link ergänzt."
+            error={errors["school-instagram"]}
+          >
+            <Input
+              placeholder="@fahrschule"
+              value={s.instagram}
+              onChange={(e) => setSchool({ instagram: e.target.value })}
+              onBlur={() => {
+                const url = toInstagramUrl(s.instagram);
+                if (url && url !== s.instagram) setSchool({ instagram: url });
+              }}
+            />
+          </FormField>
+          <FormField id="school-facebook" label="Facebook">
+            <Input
+              placeholder="https://facebook.com/…"
+              value={s.facebook}
+              onChange={(e) => setSchool({ facebook: e.target.value })}
+            />
+          </FormField>
+          <FormField id="school-maps" label="Google Maps">
+            <Input
+              placeholder="https://maps.google.com/…"
+              value={s.google_maps_url}
+              onChange={(e) => setSchool({ google_maps_url: e.target.value })}
+            />
+          </FormField>
+          <FormField
+            id="school-place-id"
+            label="Google Place ID"
+            hint="Für den Import der Google-Bewertungen. Die ID beginnt meist mit „ChIJ“ (Place ID Finder von Google)."
+            error={errors["school-place-id"]}
+          >
+            <Input
+              className="font-mono"
+              placeholder="ChIJ…"
+              spellCheck={false}
+              value={s.google_place_id}
+              onChange={(e) => setSchool({ google_place_id: e.target.value.trim() })}
+            />
+          </FormField>
+        </Grid>
+      </Section>
+      <Section title="Angebot" description="Welche Klassen und Leistungen bieten Sie an?">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">Führerscheinklassen</span>
+          <ChipSelect
+            label="Führerscheinklassen"
+            options={LICENSE_CLASSES}
+            value={s.license_classes}
+            onChange={(license_classes) => setSchool({ license_classes })}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">Berufskraftfahrer</span>
+          <ChipSelect
+            label="Berufskraftfahrer-Klassen"
+            options={BKF_CLASSES}
+            value={s.bkf_classes}
+            onChange={(bkf_classes) => setSchool({ bkf_classes })}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">Merkmale</span>
+          <ChipSelect
+            label="Merkmale"
+            options={FEATURES}
+            value={s.features}
+            onChange={(features) => setSchool({ features })}
+          />
+        </div>
+        <Grid>
+          <FormField
+            id="school-services"
+            label="Leistungen"
+            hint="Enter drückt einen Eintrag fest."
+          >
+            <TagInput
+              value={s.services}
+              onChange={(services) => setSchool({ services })}
+              placeholder="z. B. Intensivkurse"
+            />
+          </FormField>
+          <FormField
+            id="school-highlights"
+            label="Highlights"
+            hint="Was macht Sie besonders?"
+          >
+            <TagInput
+              value={s.highlights}
+              onChange={(highlights) => setSchool({ highlights })}
+              placeholder="z. B. Moderne Fahrzeugflotte"
+            />
+          </FormField>
+          <FormField id="school-languages" label="Sprachen" hint="Unterrichtssprachen.">
+            <TagInput
+              value={s.languages}
+              onChange={(languages) => setSchool({ languages })}
+              placeholder="z. B. Deutsch"
+            />
+          </FormField>
+          <FormField id="school-certificates" label="Zertifikate">
+            <TagInput
+              value={s.certificates}
+              onChange={(certificates) => setSchool({ certificates })}
+              placeholder="z. B. DEKRA-zertifiziert"
+            />
+          </FormField>
+        </Grid>
+      </Section>
+      <Section
+        title="Fahrzeugmarken"
+        description="Marken Ihrer Schulungsfahrzeuge je Klasse."
+      >
+        <Grid>
+          {(
+            [
+              ["A", "Klasse A (Motorrad)"],
+              ["B", "Klasse B (Pkw)"],
+              ["C", "Klasse C (Lkw)"],
+              ["D", "Klasse D (Bus)"],
+            ] as const
+          ).map(([group, label]) => (
+            <FormField key={group} id={`school-brands-${group}`} label={label}>
+              <TagInput
+                value={s.vehicle_brands[group]}
+                onChange={(next) => setBrands(group, next)}
+                placeholder="Marke hinzufügen …"
+              />
+            </FormField>
+          ))}
+        </Grid>
+      </Section>
+      <Section title="Zahlungsarten" description="Welche Zahlungsarten akzeptieren Sie?">
+        <ChipSelect
+          label="Zahlungsarten"
+          options={PAYMENT_METHODS}
+          value={s.payment_methods}
+          onChange={(payment_methods) => setSchool({ payment_methods })}
+        />
+      </Section>
+    </div>
+  );
+}
+
+function ZeitenTab({ value, errors, setSchool }: TabProps) {
+  return (
+    <div className="flex flex-col gap-6">
+      <Section
+        title="Bürozeiten"
+        description="Wann ist Ihr Büro für Anmeldung und Fragen erreichbar?"
+      >
+        <HoursEditor
+          idPrefix="opening"
+          value={value.school.opening_hours}
+          errors={errors}
+          onChange={(opening_hours) => setSchool({ opening_hours })}
+        />
+      </Section>
+      <Section
+        title="Theorieunterricht"
+        description="Feste Theoriezeiten, falls vorhanden."
+      >
+        <HoursEditor
+          idPrefix="theory"
+          value={value.school.theory_hours}
+          errors={errors}
+          onChange={(theory_hours) => setSchool({ theory_hours })}
+        />
+      </Section>
+    </div>
+  );
+}
+
+function RechtTab({ value, errors, setCompany }: TabProps) {
+  const c = value.company;
+  return (
+    <Section
+      title="Impressum & Datenschutz"
+      description={
+        <>
+          Ergänzt die öffentlichen Seiten{" "}
+          <a
+            href="/impressum"
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            Impressum
+            <ExternalLink className="ml-0.5 inline size-3" />
+          </a>{" "}
+          und{" "}
+          <a
+            href="/datenschutz"
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            Datenschutzerklärung
+            <ExternalLink className="ml-0.5 inline size-3" />
+          </a>
+          , zusammen mit Name, Anschrift, Inhaber/in und Steuerangaben aus „Stammdaten &
+          Steuer“.
+        </>
+      }
+    >
+      <Grid>
+        <FormField
+          id="company-aufsichtsbehoerde"
+          label="Aufsichtsbehörde"
+          hint="Behörde, die die Fahrschulerlaubnis erteilt hat."
+        >
+          <Input
+            placeholder="z. B. Stadt Darmstadt, Straßenverkehrsbehörde"
+            value={c.aufsichtsbehoerde}
+            onChange={(e) => setCompany({ aufsichtsbehoerde: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          id="company-datenschutzemail"
+          label="E-Mail für Datenschutzanfragen"
+          hint="Optional — sonst gilt die E-Mail der Fahrschule."
+          error={errors["company-datenschutzemail"]}
+        >
+          <Input
+            type="email"
+            value={c.datenschutzEmail}
+            onChange={(e) => setCompany({ datenschutzEmail: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          id="company-registergericht"
+          label="Registergericht"
+          hint="Nur bei Eintragung im Handelsregister."
+        >
+          <Input
+            placeholder="z. B. Amtsgericht Darmstadt"
+            value={c.registergericht}
+            onChange={(e) => setCompany({ registergericht: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          id="company-registernummer"
+          label="Registernummer"
+          hint="z. B. HRB 12345."
+        >
+          <Input
+            className="font-mono text-[13px]"
+            value={c.registernummer}
+            onChange={(e) => setCompany({ registernummer: e.target.value })}
+          />
+        </FormField>
+        <FormField
+          id="company-impressumzusatz"
+          label="Zusatz zum Impressum"
+          hint="Optional — erscheint am Ende des Impressums."
+          className="md:col-span-2"
+        >
+          <Textarea
+            rows={3}
+            value={c.impressumZusatz}
+            onChange={(e) => setCompany({ impressumZusatz: e.target.value })}
+          />
+        </FormField>
+      </Grid>
+    </Section>
+  );
+}
+
+function AbsagenTab({ value, errors, setPolicy }: TabProps) {
+  return (
+    <Section
+      title="Terminabsagen"
+      description="Regeln für kurzfristige Absagen und Nichterscheinen — steuern die Vorauswahl der Ausfallgebühr beim Absagen eines Termins."
+    >
+      <Grid>
+        <FormField
+          id="policy-hours"
+          label="Absagefrist (Stunden vor Beginn)"
+          required
+          hint="Spätere Absagen gelten als kurzfristig. Nichterscheinen ist immer gebührenpflichtig."
+          error={errors["policy-hours"]}
+        >
+          <Input
+            inputMode="numeric"
+            className="tabular-nums"
+            value={value.policy.hours}
+            onChange={(e) => setPolicy({ hours: e.target.value.replace(/\D/g, "") })}
+          />
+        </FormField>
+        <FormField
+          id="policy-fee"
+          label="Ausfallgebühr (EUR)"
+          hint="Leer lassen, um den Preis einer Fahrstunde aus dem Preisplan des Fahrschülers zu verwenden."
+          error={errors["policy-fee"]}
+        >
+          <Input
+            inputMode="decimal"
+            className="tabular-nums"
+            placeholder="Preis der Fahrstunde"
+            value={value.policy.fee}
+            onChange={(e) => setPolicy({ fee: e.target.value })}
+          />
+        </FormField>
+      </Grid>
+    </Section>
+  );
+}
+
+const TAB_CONTENT: Record<
+  Exclude<SettingsTab, "standorte">,
+  (props: TabProps) => React.ReactNode
+> = {
+  stammdaten: StammdatenTab,
+  bank: BankTab,
+  profil: ProfilTab,
+  zeiten: ZeitenTab,
+  recht: RechtTab,
+  absagen: AbsagenTab,
+};
 
 /* ------------------------------------------------------------------ */
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
 
+function useSavedSettings() {
+  const company = useQuery(companyProfileQueryOptions);
+  const school = useQuery(schoolProfileQueryOptions);
+  const policy = useQuery({
+    queryKey: ["cancellation-policy"],
+    queryFn: fetchCancellationPolicy,
+  });
+  const saved = useMemo<SettingsDraft | null>(
+    () =>
+      company.data && school.data && policy.data
+        ? {
+            company: company.data,
+            school: school.data,
+            policy: policyToDraft(policy.data),
+          }
+        : null,
+    [company.data, school.data, policy.data],
+  );
+  const error = company.error ?? school.error ?? policy.error;
+  return {
+    saved,
+    error,
+    refetch: () => Promise.all([company.refetch(), school.refetch(), policy.refetch()]),
+  };
+}
+
 export function Fahrschule() {
-  const { branches, loading: branchesLoading, refresh } = useBranches();
-  const { students, loading: studentsLoading } = useStudents();
-  const { instructors, loading: instructorsLoading } = useInstructors();
-  const { vehicles, loading: vehiclesLoading } = useVehicles();
-  const { profile, error: profileError } = useCompanyProfile();
-
-  const [creating, setCreating] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [deleting, setDeleting] = useState<Branch | null>(null);
-  const [draft, setDraft] = useState<BranchInput>(emptyDraft);
+  const { tab = "stammdaten" } = useSearch({ from: "/_portal/fahrschule" });
+  const navigate = useNavigate({ from: "/fahrschule" });
+  const queryClient = useQueryClient();
+  const role = useAuthStatus().data?.user?.role;
+  const ownerOnlyLocked = role !== "inhaber";
+  const { saved, error, refetch } = useSavedSettings();
+  const [draft, setDraft] = useState<SettingsDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const value = draft ?? saved;
 
+  const parts = value && saved ? changedParts(value, saved) : null;
+  const dirty = parts ? parts.company || parts.school || parts.policy : false;
+  const errors = useMemo(() => (value ? validateSettings(value) : {}), [value]);
+  const errorIds = Object.keys(errors);
+  const errorsPerTab = errorIds.reduce<Partial<Record<SettingsTab, number>>>(
+    (acc, id) => {
+      const t = tabOfField(id);
+      acc[t] = (acc[t] ?? 0) + 1;
+      return acc;
+    },
+    {},
+  );
+
+  // On phones the tab strip scrolls — keep the current tab in view.
   useEffect(() => {
-    if (profileError) toast.error("Profil konnte nicht geladen werden.");
-  }, [profileError]);
+    document
+      .querySelector<HTMLElement>('[data-slot="tabs-trigger"][data-state="active"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab]);
 
-  const startCreating = () => {
-    setDraft(emptyDraft);
-    setCreating(true);
+  // Leaving with unsaved changes asks first.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const edit = (update: (current: SettingsDraft) => SettingsDraft) => {
+    if (!saved) return;
+    setDraft((current) => update(current ?? saved));
   };
+  const setCompany = (patch: Partial<CompanyProfile>) =>
+    edit((d) => ({
+      ...d,
+      company: { ...d.company, ...patch },
+      // The website is shared with the public profile.
+      school:
+        patch.website === undefined ? d.school : { ...d.school, website: patch.website },
+    }));
+  const setSchool = (patch: Partial<SchoolProfile>) =>
+    edit((d) => ({ ...d, school: { ...d.school, ...patch } }));
+  const setPolicy = (patch: Partial<SettingsDraft["policy"]>) =>
+    edit((d) => ({ ...d, policy: { ...d.policy, ...patch } }));
 
-  const startEditing = (branch: Branch) => {
-    setDraft(branchToDraft(branch));
-    setEditingId(branch.id);
-  };
-
-  const save = async (action: () => Promise<unknown>, success: string) => {
+  const save = async () => {
+    if (!value || !saved || !parts || errorIds.length > 0) return;
     setSaving(true);
     try {
-      await action();
-      await refresh();
-      setCreating(false);
-      setEditingId(null);
-      toast.success(success);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Speichern fehlgeschlagen.");
+      if (parts.company) {
+        queryClient.setQueryData(
+          companyProfileQueryOptions.queryKey,
+          await saveCompanyProfile(value.company),
+        );
+      }
+      if (parts.school) {
+        queryClient.setQueryData(
+          schoolProfileQueryOptions.queryKey,
+          await saveSchoolProfile(value.school),
+        );
+      }
+      if (parts.policy) {
+        const fee = value.policy.fee.trim() ? parseEuroToCents(value.policy.fee) : 0;
+        queryClient.setQueryData(
+          ["cancellation-policy"],
+          await saveCancellationPolicy({
+            hoursBefore: Number(value.policy.hours),
+            feeCents: fee ?? 0,
+          }),
+        );
+      }
+      // Website edits sync the other record on the server — reload both.
+      await queryClient.invalidateQueries({ queryKey: ["public-legal"] });
+      setDraft(null);
+      toast.dismiss();
+      toast.success("Einstellungen gespeichert.");
+    } catch (err) {
+      // Parts saved so far are in the cache; the rest stays as draft.
+      toast.error(err instanceof Error ? err.message : "Speichern fehlgeschlagen.");
     } finally {
       setSaving(false);
     }
   };
 
-  const makeMain = async (branch: Branch) => {
-    try {
-      await updateBranch(branch.id, { isMain: true });
-      await refresh();
-      toast.success(`„${branch.name}" ist jetzt der Hauptstandort.`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Aktion fehlgeschlagen.");
-    }
-  };
+  const setTab = (next: string) =>
+    void navigate({ search: { tab: next as SettingsTab }, replace: true });
 
-  const removeBranch = async () => {
-    if (!deleting) return;
-    try {
-      await deleteBranch(deleting.id);
-      await refresh();
-      toast.success("Standort gelöscht.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Löschen fehlgeschlagen.");
-    } finally {
-      setDeleting(null);
-    }
-  };
+  const status = !dirty
+    ? "Alle Änderungen gespeichert"
+    : errorIds.length > 0
+      ? `${errorIds.length} ${errorIds.length === 1 ? "Eingabe" : "Eingaben"} prüfen`
+      : "Ungespeicherte Änderungen";
+
+  const firstErrorTab = errorIds[0] ? tabOfField(errorIds[0]) : null;
+  const TabBody = tab === "standorte" ? null : TAB_CONTENT[tab];
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <Button type="button" size="sm" onClick={startCreating}>
-            <Plus data-icon="inline-start" />
-            Standort hinzufügen
-          </Button>
+          <>
+            <button
+              type="button"
+              disabled={!(dirty && firstErrorTab)}
+              onClick={() => firstErrorTab && setTab(firstErrorTab)}
+              className={cn(
+                "hidden items-center gap-1.5 text-xs whitespace-nowrap lg:flex",
+                dirty && errorIds.length > 0
+                  ? "text-destructive hover:underline"
+                  : "text-muted-foreground",
+              )}
+              aria-live="polite"
+            >
+              {dirty && errorIds.length > 0 && <AlertCircle className="size-3.5" />}
+              {status}
+            </button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!dirty || saving}
+              className="hidden sm:inline-flex"
+              onClick={() => setDraft(null)}
+            >
+              Verwerfen
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!dirty || saving || errorIds.length > 0}
+              title={
+                !dirty
+                  ? "Keine Änderungen zu speichern"
+                  : errorIds.length > 0
+                    ? "Bitte zuerst die markierten Eingaben korrigieren"
+                    : undefined
+              }
+              onClick={() => void save()}
+            >
+              <Check data-icon="inline-start" />
+              {saving ? "Speichert …" : "Speichern"}
+            </Button>
+          </>
         }
-      />
-
-      <div className="min-h-0 flex-1 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
-        <div className="stagger-in flex flex-col gap-4 2xl:gap-5">
-          {/* School summary */}
-          <SchoolSummaryCard profile={profile} />
-
-          {/* Quick stats */}
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 2xl:gap-5">
-            <StatCard
-              Icon={Users}
-              accent="bg-emerald-500/10 text-emerald-600"
-              label="Fahrschüler"
-              value={students.length}
-              loading={studentsLoading}
-            />
-            <StatCard
-              Icon={GraduationCap}
-              accent="bg-violet-500/10 text-violet-600"
-              label="Fahrlehrer/innen"
-              value={instructors.length}
-              loading={instructorsLoading}
-            />
-            <StatCard
-              Icon={Car}
-              accent="bg-rose-500/10 text-rose-600"
-              label="Fahrzeuge"
-              value={vehicles.length}
-              loading={vehiclesLoading}
-            />
-            <StatCard
-              Icon={Building2}
-              accent="bg-sky-500/10 text-sky-600"
-              label="Standorte"
-              value={branches.length}
-              loading={branchesLoading}
-            />
-          </div>
-
-          {/* Branches */}
-          <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-semibold">Standorte</h2>
-            <p className="text-xs text-muted-foreground">
-              Filialen und Anmeldestellen Ihrer Fahrschule verwalten.
-            </p>
-          </div>
-
-          {branchesLoading ? (
-            <div className="grid gap-4 md:grid-cols-2 2xl:gap-5">
-              <Skeleton className="h-56 rounded-xl" />
-              <Skeleton className="h-56 rounded-xl" />
-            </div>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2 2xl:gap-5">
-              {branches.map((branch) => (
-                <BranchCard
-                  key={branch.id}
-                  branch={branch}
-                  onEdit={() => startEditing(branch)}
-                  onDelete={() => setDeleting(branch)}
-                  onMakeMain={() => void makeMain(branch)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <BranchDialog
-        title="Standort hinzufügen"
-        description="Neue Filiale oder Anmeldestelle anlegen."
-        draft={draft}
-        open={creating}
-        saving={saving}
-        onOpenChange={(open) => !open && setCreating(false)}
-        onChange={setDraft}
-        onSave={() => save(() => createBranch(draft), "Standort angelegt.")}
-      />
-
-      <BranchDialog
-        title="Standort bearbeiten"
-        description="Adresse, Kontakt und Öffnungszeiten aktualisieren."
-        draft={draft}
-        open={editingId !== null}
-        saving={saving}
-        onOpenChange={(open) => !open && setEditingId(null)}
-        onChange={setDraft}
-        onSave={() =>
-          save(() => updateBranch(editingId!, draft), "Änderungen gespeichert.")
-        }
-      />
-
-      <AlertDialog
-        open={deleting !== null}
-        onOpenChange={(open) => !open && setDeleting(null)}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Standort löschen?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {deleting
-                ? `„${deleting.name}" (${deleting.address}) wird dauerhaft entfernt. Diese Aktion kann nicht rückgängig gemacht werden.`
-                : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void removeBranch()}>
-              Löschen
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
+          <span className="hidden sm:inline">Fahrschule &amp; Einstellungen</span>
+          <span className="sm:hidden">Einstellungen</span>
+        </h1>
+      </PageHeader>
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background">
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          className="mx-auto w-full max-w-[980px] gap-0"
+        >
+          <div className="sticky top-0 z-10 border-b bg-background px-2 pt-2">
+            <TabsList
+              variant="line"
+              className="w-full justify-start overflow-x-auto [scrollbar-width:none]"
+            >
+              {SETTINGS_TABS.map((t) => (
+                <TabsTrigger key={t} value={t} className="flex-none px-2.5">
+                  {SETTINGS_TAB_LABELS[t]}
+                  {dirty && errorsPerTab[t] ? (
+                    <span className="ml-1 inline-flex size-4 items-center justify-center rounded-full bg-destructive text-[10px] text-white">
+                      {errorsPerTab[t]}
+                      <span className="sr-only"> Fehler</span>
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+          <div className="p-4 pb-24 2xl:p-6">
+            {tab === "standorte" ? (
+              <TabsContent value="standorte">
+                <Standorte />
+              </TabsContent>
+            ) : error && !value ? (
+              <Alert variant="destructive">
+                <AlertCircle />
+                <AlertDescription>
+                  Die Einstellungen konnten nicht geladen werden.{" "}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => void refetch()}
+                  >
+                    Erneut versuchen
+                  </button>
+                </AlertDescription>
+              </Alert>
+            ) : !value || !TabBody ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                {Array.from({ length: 6 }, (_, i) => (
+                  <Skeleton key={i} className="h-14 rounded-lg" />
+                ))}
+              </div>
+            ) : (
+              <TabsContent value={tab} className="flex flex-col gap-6">
+                <TabBody
+                  value={value}
+                  errors={dirty ? errors : {}}
+                  setCompany={setCompany}
+                  setSchool={setSchool}
+                  setPolicy={setPolicy}
+                  ownerOnlyLocked={ownerOnlyLocked}
+                />
+                {(tab === "stammdaten" || tab === "absagen") && <RequiredLegend />}
+                <div className="flex items-center justify-between gap-3 border-t pt-4 sm:hidden">
+                  <span className="text-xs text-muted-foreground">{status}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!dirty || saving || errorIds.length > 0}
+                    onClick={() => void save()}
+                  >
+                    Speichern
+                  </Button>
+                </div>
+              </TabsContent>
+            )}
+          </div>
+        </Tabs>
+      </div>
     </div>
   );
 }

@@ -21,3 +21,15 @@ export function useCompanyProfile() {
     refresh: query.refetch,
   };
 }
+
+export async function saveCompanyProfile(
+  profile: Partial<CompanyProfile>,
+): Promise<CompanyProfile> {
+  return parseOrThrow<CompanyProfile>(
+    await fetch("/api/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(profile),
+    }),
+  );
+}

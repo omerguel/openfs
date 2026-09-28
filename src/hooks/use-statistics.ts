@@ -96,12 +96,17 @@ export async function fetchStatistics(signal?: AbortSignal): Promise<Statistics>
   return parseOrThrow<Statistics>(await fetch("/api/statistics", { signal }));
 }
 
-export function useStatistics() {
+/** `enabled: false` skips the request (roles without finance access). */
+export function useStatistics(enabled = true) {
   const [statistics, setStatistics] = useState<Statistics | null>(null);
   const [loading, setLoading] = useState(true);
   const controller = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     controller.current?.abort();
     const current = new AbortController();
     controller.current = current;
@@ -114,7 +119,7 @@ export function useStatistics() {
     } finally {
       if (!current.signal.aborted) setLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     void refresh();

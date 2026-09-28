@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { serve } from "bun";
 
-import { buildApiRoutes } from "./app-routes";
+import { API_NOT_FOUND, buildApiRoutes } from "./app-routes";
 import { createUser, isAllowed, isPublic, updateUser } from "./auth";
 import { ensureChatTables } from "./chat";
 import { getCompany, openDb } from "./db";
@@ -148,6 +148,52 @@ describe("sessions", () => {
     await attempt();
     expect((await attempt()).status).toBe(429);
   });
+
+  test("only failed logins count; a successful login resets the counter", async () => {
+    await seedUsers();
+    start({ auth: { loginRateLimit: { max: 2, windowMs: 60_000 } } });
+    const attempt = (password: string) =>
+      fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        body: JSON.stringify({ email: "chefin@fs.de", password }),
+      });
+    // Many successful sign-ins never lock the account.
+    for (let i = 0; i < 5; i++) {
+      expect((await attempt("geheim-geheim")).status).toBe(200);
+    }
+    // One failure, then success resets: two more failures are still allowed.
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    expect((await attempt("geheim-geheim")).status).toBe(200);
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    expect((await attempt("falsch-falsch")).status).toBe(401);
+    // Now blocked — even the right password waits for the window to pass.
+    expect((await attempt("geheim-geheim")).status).toBe(429);
+  });
+});
+
+describe("unknown API paths", () => {
+  test("answer with a JSON 404 instead of the SPA page", async () => {
+    await seedUsers();
+    server = serve({
+      port: 0,
+      routes: {
+        "/*": new Response("<!doctype html>", {
+          headers: { "Content-Type": "text/html" },
+        }),
+        ...API_NOT_FOUND,
+        ...buildApiRoutes(db, { auth: { loginRateLimit: false } }),
+      },
+    });
+    base = `http://localhost:${server.port}`;
+    const cookie = await login("chefin@fs.de", "geheim-geheim");
+    const unknown = await fetch(`${base}/api/gibt-es-nicht`, as(cookie));
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("content-type")).toContain("application/json");
+    expect(((await unknown.json()) as { error: string }).error).toContain("API");
+    // Known endpoints and SPA pages are unaffected.
+    expect((await fetch(`${base}/api/students`, as(cookie))).status).toBe(200);
+    expect(await (await fetch(`${base}/fahrschueler`)).text()).toContain("doctype");
+  });
 });
 
 describe("roles", () => {
@@ -205,6 +251,27 @@ describe("roles", () => {
       false,
     );
     expect(isAllowed("buero", "POST", "/api/outbox/sms")).toBe(true);
+    // Umsatz statistics are money matters.
+    expect(isAllowed("fahrlehrer", "GET", "/api/statistics")).toBe(false);
+    expect(isAllowed("buero", "GET", "/api/statistics")).toBe(true);
+  });
+
+  test("Büro cannot change tax numbers or the IBAN; the Inhaber can", async () => {
+    await seedUsers();
+    start();
+    const put = (cookie: string, body: object) =>
+      fetch(
+        `${base}/api/profile`,
+        as(cookie, { method: "PUT", body: JSON.stringify(body) }),
+      );
+    const office = await login("buero@fs.de", "geheim-geheim");
+    expect((await put(office, { phone: "06151 99" })).status).toBe(200);
+    const denied = await put(office, { steuernummer: "045/123/45678" });
+    expect(denied.status).toBe(403);
+    const owner = await login("chefin@fs.de", "geheim-geheim");
+    expect((await put(owner, { steuernummer: "045/123/45678" })).status).toBe(200);
+    const instructor = await login("lehrer@fs.de", "geheim-geheim");
+    expect((await put(instructor, { phone: "1" })).status).toBe(403);
   });
 
   test("the last Inhaber cannot be demoted or deactivated", async () => {

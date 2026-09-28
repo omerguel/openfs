@@ -81,7 +81,7 @@ function HeaderStats({ stats }: { stats: Statistics }) {
       label: "Termine",
       value: String(stats.lessons.total),
       hint: "gesamt",
-      href: "/kalendar",
+      href: "/kalender",
     },
     {
       label: "Umsatz",

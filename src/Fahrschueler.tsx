@@ -202,7 +202,7 @@ export function Fahrschueler() {
             onClick={() => void navigate({ to: "/neue-schueler" })}
           >
             <UserPlus data-icon="inline-start" />
-            <span className="hidden sm:inline">Schüler Anmeldung</span>
+            <span className="hidden sm:inline">Schüler anmelden</span>
             <span className="sr-only sm:hidden">Schüler anmelden</span>
           </Button>
         }

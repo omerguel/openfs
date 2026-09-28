@@ -361,7 +361,7 @@ export function MeinTag() {
       <PageHeader
         end={
           <Button variant="ghost" size="sm" asChild>
-            <Link to="/kalendar">
+            <Link to="/kalender">
               <CalendarDays data-icon="inline-start" />
               <span className="hidden sm:inline">Kalender</span>
             </Link>

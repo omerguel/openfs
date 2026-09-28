@@ -21,7 +21,7 @@ import type { BunRequest } from "bun";
 import { ValidationError } from "./errors";
 import {
   clientIp,
-  createRateLimiter,
+  createFailureLimiter,
   err,
   handle,
   json,
@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log(at);
+
+-- One-time "set your password" links (invites.ts); only the hash is kept.
+CREATE TABLE IF NOT EXISTS user_invites (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at INTEGER NOT NULL,
+  used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_invites_user ON user_invites(user_id);
 `;
 
 export function ensureAuthTables(db: Database) {
@@ -180,15 +190,19 @@ export async function createUser(
     password?: unknown;
     role?: unknown;
     instructorId?: unknown;
+    /** true: no password yet — the user sets it via an Einladungslink. */
+    invite?: unknown;
   },
 ): Promise<UserRecord> {
   const email = requireEmail(input.email);
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name) throw new ValidationError("Name ist erforderlich.");
-  const password = requirePassword(input.password);
+  const invited = input.invite === true && !input.password;
+  const password = invited ? null : requirePassword(input.password);
   const role = requireRole(input.role);
   const instructorId = requireInstructorId(db, input.instructorId);
-  const hash = await Bun.password.hash(password);
+  // Invited users get an unguessable placeholder until they accept.
+  const hash = await Bun.password.hash(password ?? newToken());
   try {
     const row = db
       .query<{ id: number }, [string, string, string, Role, number | null]>(
@@ -405,6 +419,8 @@ type Rule = { method: string | "*"; pattern: RegExp };
 export const PUBLIC_ROUTES: Rule[] = [
   { method: "GET", pattern: /^\/api\/auth\/status$/ },
   { method: "POST", pattern: /^\/api\/auth\/(login|setup|logout)$/ },
+  // Einladungslink: read who is invited, set the password (token-gated).
+  { method: "*", pattern: /^\/api\/auth\/invite\/[^/]+$/ },
   // Public appointment form (/anfrage): submit + school profile for the header.
   { method: "POST", pattern: /^\/api\/appointment-requests$/ },
   { method: "GET", pattern: /^\/api\/school-profile$/ },
@@ -435,6 +451,8 @@ const FINANCE = [
   /^\/api\/import\//,
   /^\/api\/calendar-events\/[^/]+\/bill$/,
   /^\/api\/campaigns/,
+  // Umsatz per month etc. — the Statistik page is an office/owner tool.
+  /^\/api\/statistics/,
 ];
 
 /* What a Fahrlehrer may change: Termine (incl. Absage), Ausbildungs-
@@ -593,7 +611,9 @@ function dbOf(fallback: Database): Database {
 }
 
 export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {}) {
-  const limited = createRateLimiter(
+  // Only failed attempts count; a successful login clears the counter, so
+  // staff signing in often (several devices, shared PC) is never locked out.
+  const failures = createFailureLimiter(
     options.loginRateLimit ?? { max: 10, windowMs: 15 * 60_000 },
   );
 
@@ -632,7 +652,7 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             password?: unknown;
           };
           const key = `${clientIp(req, server)}|${String(body.email ?? "").toLowerCase()}`;
-          if (limited(key)) {
+          if (failures.blocked(key)) {
             return err(
               "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.",
               429,
@@ -648,7 +668,11 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             status: user ? 200 : 401,
             ip: clientIp(req, server),
           });
-          if (!user) return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
+          if (!user) {
+            failures.fail(key);
+            return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
+          }
+          failures.reset(key);
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             headers: { "Content-Type": "application/json", "Set-Cookie": cookie },

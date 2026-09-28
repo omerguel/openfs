@@ -18,10 +18,25 @@ const PORT = 4100 + Math.floor(Math.random() * 800);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 /* Pages meant to be reachable without signing in. */
-const PUBLIC_PAGES = ["/anfrage", "/portal/", "/impressum", "/datenschutz"];
+const PUBLIC_PAGES = [
+  "/anfrage",
+  "/portal/",
+  "/impressum",
+  "/datenschutz",
+  "/einladung/",
+];
 
 /* Tabs worth clicking per page (visible button/tab labels). */
 const CLICK_THROUGH: Record<string, string[]> = {
+  "/fahrschule": [
+    "Bankverbindung",
+    "Öffentliches Profil",
+    "Öffnungszeiten",
+    "Standorte",
+    "Rechtliches",
+    "Terminabsagen",
+  ],
+  "/benutzer": ["Protokoll"],
   "/fahrlehrer": ["Arbeitszeiten"],
   "/rechnungen": ["Offene Posten", "Ratenpläne", "Lastschriften", "Einstellungen"],
   "/fahrschueler/$studentId": [
@@ -62,6 +77,18 @@ async function waitForServer(): Promise<void> {
 }
 
 async function resolveParams(path: string): Promise<string> {
+  if (path.includes("$inviteToken")) {
+    const email = `e2e-${Date.now()}-${Math.random().toString(36).slice(2)}@example.de`;
+    const created = await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ email, name: "E2E Einladung", role: "buero", invite: true }),
+    });
+    const { id } = (await created.json()) as { id: number };
+    const res = await api(`/api/users/${id}/invite`, { method: "POST", body: "{}" });
+    const { url } = (await res.json()) as { url?: string };
+    if (!url) throw new Error(`Could not create an invite link: ${res.status}`);
+    return path.replace("$inviteToken", url.split("/einladung/")[1]!);
+  }
   if (path.includes("$studentId")) {
     const { students } = (await (await api("/api/students")).json()) as {
       students: { id: number }[];
@@ -116,6 +143,43 @@ async function check(page: Page, url: string, clicks: string[]): Promise<string[
   return problems;
 }
 
+/* Regression checks for form behaviour that a render smoke test misses.
+   Each returns a problem description or null. */
+const FORM_CHECKS: { name: string; run: (page: Page) => Promise<string | null> }[] = [
+  {
+    // The first keystroke into an untouched settings field used to be
+    // dropped (dirty state set in a capture handler reset the input).
+    name: "Einstellungen: erste Eingabe in ein unberührtes Feld bleibt erhalten",
+    run: async (page) => {
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page.locator("#company-ustidnr").fill("DE123456789");
+      const filled = await page.inputValue("#company-ustidnr");
+      if (filled !== "DE123456789") return `fill() ergab „${filled}“`;
+      await page.locator("#company-steuernummer").fill("");
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page
+        .locator("#company-steuernummer")
+        .pressSequentially("315/5", { delay: 20 });
+      const typed = await page.inputValue("#company-steuernummer");
+      if (typed !== "315/5") return `Tippen ergab „${typed}“`;
+      const save = page.getByRole("button", { name: "Speichern" }).first();
+      if (!(await save.isEnabled()))
+        return "Speichern blieb nach der Eingabe deaktiviert";
+      return null;
+    },
+  },
+  {
+    name: "Einstellungen: Klick auf einen Tab markiert nichts als geändert",
+    run: async (page) => {
+      await page.goto(`${BASE}/fahrschule?tab=stammdaten`, { waitUntil: "networkidle" });
+      await page.getByRole("tab", { name: "Öffnungszeiten" }).click();
+      await page.getByRole("tab", { name: "Stammdaten & Steuer" }).click();
+      const save = page.getByRole("button", { name: "Speichern" }).first();
+      return (await save.isEnabled()) ? "Speichern ist ohne Änderung aktiv" : null;
+    },
+  },
+];
+
 const server = Bun.spawn(["bun", "src/index.ts"], {
   cwd: ROOT,
   env: { ...process.env, DEMO_MODE: "1", PORT: String(PORT), NODE_ENV: "production" },
@@ -146,6 +210,20 @@ try {
       for (const problem of problems) console.log(`    ${problem}`);
     } else {
       console.log(`✓ ${route}`);
+    }
+  }
+  for (const check of FORM_CHECKS) {
+    let problem: string | null;
+    try {
+      problem = await check.run(page);
+    } catch (error) {
+      problem = error instanceof Error ? error.message.split("\n")[0]! : String(error);
+    }
+    if (problem) {
+      failed += 1;
+      console.log(`✗ ${check.name}\n    ${problem}`);
+    } else {
+      console.log(`✓ ${check.name}`);
     }
   }
   // Signed out: public pages still work, staff pages show the sign-in form.

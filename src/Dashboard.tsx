@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis } from "recharts";
-import { ArrowRight, CalendarDays, ChevronRight, MapPin, Plus } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CalendarDays,
+  ChevronRight,
+  MapPin,
+  Plus,
+} from "lucide-react";
 
+import { InstructorToday } from "@/components/dashboard/InstructorToday";
+import { SetupChecklist } from "@/components/dashboard/SetupChecklist";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -42,6 +52,8 @@ import { useStudents } from "@/hooks/use-students";
 import { useAuthStatus } from "@/hooks/use-auth";
 import { useOpenItems } from "@/hooks/use-invoices";
 import { useStatistics } from "@/hooks/use-statistics";
+import { useVehicles } from "@/hooks/use-vehicles";
+import { huState } from "@/lib/vehicle-hu";
 import { formatEuro } from "@/lib/money";
 
 /* Navigate without threading the router down — mirrors the "Schüler
@@ -54,7 +66,7 @@ function goTo(url: string) {
 /* ------------------------------------------------------------------ */
 /* Shared calendar data — every widget below is derived from the        */
 /* persisted events (via useCalendarEvents) so the dashboard always     */
-/* agrees with /kalendar.                                               */
+/* agrees with /kalender.                                               */
 /* ------------------------------------------------------------------ */
 
 const weekStart = startOfWeek(TODAY);
@@ -104,7 +116,7 @@ function HeaderStats({ events }: { events: CalEvent[] }) {
 
   const role = useAuthStatus().data?.user?.role;
   const canSeeFinance = role === "inhaber" || role === "buero";
-  const { statistics } = useStatistics();
+  const { statistics } = useStatistics(canSeeFinance);
   const openItems = useOpenItems(canSeeFinance);
   const monthKey = (date: Date) =>
     `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -136,7 +148,7 @@ function HeaderStats({ events }: { events: CalEvent[] }) {
     {
       label: "Fahrstunden",
       value: String(fahrstundenThisWeek),
-      href: "/kalendar",
+      href: "/kalender",
       hint: `${fahrstundenToday} heute`,
     },
     // Finance readouts come from the ledger/invoices — hidden for roles
@@ -203,17 +215,56 @@ function HeaderStats({ events }: { events: CalEvent[] }) {
   );
 }
 
-function Navigation({ events }: { events: CalEvent[] }) {
+function Navigation({ events, office }: { events: CalEvent[]; office: boolean }) {
   return (
     <PageHeader
       center={<HeaderStats events={events} />}
       end={
-        <Button onClick={() => goTo("/neue-schueler")}>
-          <Plus data-icon="inline-start" />
-          Schüler anmelden
-        </Button>
+        office ? (
+          <Button size="sm" onClick={() => goTo("/neue-schueler")}>
+            <Plus data-icon="inline-start" />
+            <span className="hidden sm:inline">Schüler anmelden</span>
+            <span className="sm:hidden">Anmelden</span>
+          </Button>
+        ) : undefined
       }
     />
+  );
+}
+
+/* HU reminder for the office: vehicles whose HU is overdue or due within
+   60 days (same rule as the badge on /fahrzeuge). */
+function HuHint() {
+  const { vehicles } = useVehicles();
+  const due = vehicles.filter((vehicle) => {
+    const hu = vehicle.details.find((d) => d.label === "Nächste HU")?.value;
+    const state = huState(hu);
+    return state === "due" || state === "overdue";
+  });
+  if (due.length === 0) return null;
+  return (
+    <Alert className="mx-auto w-full max-w-[1800px]">
+      <AlertTriangle />
+      <AlertDescription>
+        <span>
+          HU fällig oder bald fällig:{" "}
+          {due
+            .map(
+              (v) =>
+                `${v.model} (${v.details.find((d) => d.label === "Nächste HU")?.value})`,
+            )
+            .join(", ")}
+          .{" "}
+          <button
+            type="button"
+            className="font-medium underline underline-offset-2"
+            onClick={() => goTo("/fahrzeuge")}
+          >
+            Zu den Fahrzeugen
+          </button>
+        </span>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -229,7 +280,7 @@ const chartConfig = {
 
 function Chart({ events }: { events: CalEvent[] }) {
   // Fahrstunden (practical driving lessons) per weekday, straight from the
-  // calendar events — same items the /kalendar grid renders.
+  // calendar events — same items the /kalender grid renders.
   const chartData = useMemo(
     () =>
       weekDays.map((day, i) => ({
@@ -248,7 +299,7 @@ function Chart({ events }: { events: CalEvent[] }) {
           <span className="tabular-nums">{total}</span> in dieser Woche
         </CardDescription>
         <CardAction>
-          <Button variant="ghost" size="sm" onClick={() => goTo("/kalendar")}>
+          <Button variant="ghost" size="sm" onClick={() => goTo("/kalender")}>
             Alle ansehen
             <ChevronRight />
           </Button>
@@ -303,7 +354,7 @@ const weekdayShort = (date: Date) =>
   date.toLocaleDateString("de-DE", { weekday: "short" }).replace(".", "");
 
 function List({ events }: { events: CalEvent[] }) {
-  const openCalendar = () => goTo("/kalendar?filter=non-fahrstunde");
+  const openCalendar = () => goTo("/kalender?filter=non-fahrstunde");
   // Everything that isn't a routine driving lesson — theory, exams, exam
   // prep, courses — from today onward ("anstehend" excludes the past).
   // Clicking through opens the calendar filtered to these.
@@ -455,7 +506,7 @@ function MonthCalendar({ events }: { events: CalEvent[] }) {
                 <button
                   key={event.id}
                   type="button"
-                  onClick={() => goTo("/kalendar")}
+                  onClick={() => goTo("/kalender")}
                   className="animate-agenda-row group/row flex items-center gap-2.5 rounded-md px-1 py-2 text-left outline-hidden transition-colors duration-150 hover:bg-muted hover:duration-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                   style={{ animationDelay: `${idx * 60}ms` }}
                 >
@@ -493,14 +544,23 @@ function MonthCalendar({ events }: { events: CalEvent[] }) {
 
 export function Dashboard() {
   const { events: allEvents } = useCalendarEvents();
+  const user = useAuthStatus().data?.user;
+  const office = user?.role === "inhaber" || user?.role === "buero";
+  const instructorId = user?.instructorId ?? null;
   // Cancelled lessons stay in the calendar as history but are not work.
+  // A Fahrlehrer sees their own Termine only.
   const events = useMemo(
-    () => allEvents.filter((event) => !isCancelled(event)),
-    [allEvents],
+    () =>
+      allEvents.filter(
+        (event) =>
+          !isCancelled(event) &&
+          (office || (instructorId !== null && event.instructorId === instructorId)),
+      ),
+    [allEvents, office, instructorId],
   );
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
-      <Navigation events={events} />
+      <Navigation events={events} office={office} />
       <div
         className={cn(
           "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:gap-5 2xl:p-6",
@@ -510,13 +570,23 @@ export function Dashboard() {
             (7 × 32px cells + card padding) no longer fits a 3–4 col slot,
             so everything stacks. The cap keeps ultra-wide monitors from
             stretching the cards into slabs. */}
+        {office && (
+          <div className="mx-auto w-full max-w-[1800px]">
+            <SetupChecklist />
+          </div>
+        )}
+        {office && <HuHint />}
         <div className="stagger-in mx-auto grid w-full max-w-[1800px] grid-cols-1 gap-4 2xl:gap-5 xl:grid-cols-12">
           <MeinTagHint />
           <div className="xl:col-span-4 2xl:col-span-5">
             <Chart events={events} />
           </div>
           <div className="xl:col-span-4">
-            <List events={events} />
+            {office ? (
+              <List events={events} />
+            ) : (
+              <InstructorToday events={events} linked={instructorId !== null} />
+            )}
           </div>
           <div className="xl:col-span-4 2xl:col-span-3">
             <MonthCalendar events={events} />

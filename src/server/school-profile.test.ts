@@ -10,6 +10,8 @@ import type { BunRequest } from "bun";
 import { ValidationError } from "./engine";
 import {
   DEFAULT_SCHOOL_PROFILE,
+  EMPTY_SCHOOL_PROFILE,
+  normalizeInstagram,
   getSchoolProfile,
   sanitizeSchoolProfile,
   schoolProfileRoutes,
@@ -17,7 +19,7 @@ import {
   WEEK_DAYS,
   type SchoolProfile,
 } from "./school-profile";
-import { getCompany } from "./db";
+import { getCompany, openDb } from "./db";
 
 let db: Database;
 
@@ -28,6 +30,9 @@ beforeEach(() => {
 
 function sampleProfile(): SchoolProfile {
   return {
+    ...EMPTY_SCHOOL_PROFILE,
+    license_classes: ["B", "A2"],
+    vehicle_brands: { A: ["Yamaha"], B: ["VW"], C: [], D: [] },
     description: "Fahrschule mit Herz seit über 25 Jahren.",
     slogan: "Entspannt zum Führerschein.",
     founded_year: 1998,
@@ -264,5 +269,57 @@ describe("schoolProfileRoutes", () => {
   test("PUT invalid JSON body → 400", async () => {
     const res = await routes().PUT(putRequest("kein json{"));
     expect(res.status).toBe(400);
+  });
+});
+
+/* ================================================================== */
+/* Real (non-demo) school, extended fields                              */
+/* ================================================================== */
+
+describe("a real school", () => {
+  test("starts with an empty public profile (no demo slogan, classes, brands)", () => {
+    const real = openDb(":memory:", { demoData: false });
+    const profile = getSchoolProfile(real);
+    expect(profile).toEqual(EMPTY_SCHOOL_PROFILE);
+    expect(profile.slogan).toBe("");
+    expect(profile.highlights).toEqual([]);
+    expect(profile.license_classes).toEqual([]);
+    expect(profile.languages).toEqual([]);
+    // The demo school keeps its sample content.
+    expect(getSchoolProfile(openDb(":memory:")).slogan).toBe("Sicher ans Ziel.");
+  });
+
+  test("persists classes, Merkmale, brands, payment methods and theory hours", () => {
+    const real = openDb(":memory:", { demoData: false });
+    const next = sanitizeSchoolProfile(
+      {
+        license_classes: ["B", " B197 ", "B"],
+        features: ["Sehtest"],
+        vehicle_brands: { B: ["VW", ""] },
+        payment_methods: ["Bar"],
+        theory_hours: [{ day: "Montag", hours: "18:00 – 19:30" }],
+      },
+      getSchoolProfile(real),
+    );
+    setSchoolProfile(real, next);
+    const stored = getSchoolProfile(real);
+    expect(stored.license_classes).toEqual(["B", "B197"]);
+    expect(stored.vehicle_brands).toEqual({ A: [], B: ["VW"], C: [], D: [] });
+    expect(stored.theory_hours[0]).toEqual({ day: "Montag", hours: "18:00 – 19:30" });
+    expect(stored.theory_hours).toHaveLength(7);
+  });
+
+  test("an Instagram handle becomes a profile URL", () => {
+    expect(normalizeInstagram("@fahrschule_nord")).toBe(
+      "https://instagram.com/fahrschule_nord",
+    );
+    expect(normalizeInstagram("instagram.com/fs.nord/")).toBe(
+      "https://instagram.com/fs.nord",
+    );
+    expect(normalizeInstagram("https://instagram.com/x")).toBe("https://instagram.com/x");
+    expect(() => normalizeInstagram("zwei Worte")).toThrow(ValidationError);
+    expect(
+      sanitizeSchoolProfile({ instagram: "@fs" }, EMPTY_SCHOOL_PROFILE).instagram,
+    ).toBe("https://instagram.com/fs");
   });
 });

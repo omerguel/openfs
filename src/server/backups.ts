@@ -45,6 +45,8 @@ export type BackupConfig = {
   keep: number;
   intervalHours: number;
   offsite: OffsiteTarget | null;
+  /** Where uploaded documents live (shown in the restore steps). */
+  files?: string;
 };
 
 export type BackupInfo = {
@@ -70,6 +72,10 @@ export function backupConfigFromEnv(
     dir: env.BACKUP_DIR?.trim() || join("data", "backups"),
     keep: positiveInt(env.BACKUP_KEEP, 14),
     intervalHours: positiveInt(env.BACKUP_INTERVAL_HOURS, 24),
+    // Same rule as createFileStoreFromEnv (file-store.ts).
+    files: s3
+      ? `S3: ${s3.bucket}/${s3.prefix}files/`
+      : env.FILE_STORE_DIR?.trim() || join("data", "files"),
     offsite: s3
       ? {
           client: createClient(s3),
@@ -285,6 +291,12 @@ export function startBackupScheduler(
 /* HTTP — admin only (the auth layer wraps /api/admin/* centrally).     */
 /* ------------------------------------------------------------------ */
 
+/** Path of the main database file ("" for in-memory databases). */
+export function databaseFile(db: Database): string {
+  const rows = db.query<{ name: string; file: string }, []>("PRAGMA database_list").all();
+  return rows.find((row) => row.name === "main")?.file ?? "";
+}
+
 const DISABLED_MESSAGE =
   "Im Demo-Modus sind Datensicherungen deaktiviert – Änderungen werden ohnehin nicht gespeichert.";
 
@@ -305,6 +317,10 @@ export function backupRoutes(db: Database, config: BackupConfig | null) {
               keep: config.keep,
               intervalHours: config.intervalHours,
               offsite: config.offsite?.label ?? null,
+              // The live database file (DB_PATH, or the school's file in
+              // multi-tenant mode) — what a restore replaces.
+              dbPath: databaseFile(db),
+              files: config.files ?? null,
             },
           });
         })(),

@@ -24,11 +24,14 @@ import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
 import { accountingReportRoutes } from "./accounting-reports";
+import { dataExportRoutes } from "./data-export";
 import { instalmentRoutes } from "./instalments";
+import { inviteRoutes } from "./invites";
 import { reportRoutes } from "./instructor-hours";
 import { invoiceRoutes } from "./invoices";
 import { legalRoutes } from "./legal";
 import { MemoryFileStore, type FileStore } from "./file-store";
+import { err } from "./http";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
 import { theoryGroupRoutes } from "./theory-groups";
@@ -60,6 +63,12 @@ export type ApiRouteOptions = {
   backups?: BackupConfig | null;
 };
 
+/* Unknown /api/* paths answer with a JSON 404 instead of falling through
+   to the SPA index.html ("/*"), which would be a misleading 200. */
+export const API_NOT_FOUND = {
+  "/api/*": () => err("Unbekannter API-Endpunkt.", 404),
+};
+
 /* Every route below is wrapped by the session/role guard (auth.ts);
    only PUBLIC_ROUTES are reachable without signing in. */
 export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
@@ -72,6 +81,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
   const fileStore = options.fileStore ?? new MemoryFileStore();
   return {
     ...authRoutes(db, options.auth),
+    ...inviteRoutes(db, { mailConfigured: Boolean(options.mail?.config) }),
     ...accountingRoutes(db),
     ...accountingReportRoutes(db),
     ...archiveRoutes(db, fileStore),
@@ -87,6 +97,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
     ...studentRoutes(db),
     ...vehicleRoutes(db),
     ...exportRoutes(db),
+    ...dataExportRoutes(db, fileStore),
     ...appointmentRequestRoutes(db),
     ...branchRoutes(db),
     ...campaignRoutes(db),

@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "./sqlite";
 
-import { openDb } from "./db";
+import { migrateVehicleInstructorDetail, openDb } from "./db";
 import { ValidationError } from "./engine";
 import {
   createVehicle,
@@ -319,5 +319,134 @@ describe("deleteVehicle", () => {
 
   test("unknown id → ValidationError", () => {
     expect(() => deleteVehicle(db, 999999)).toThrow(ValidationError);
+  });
+});
+
+/* ================================================================== */
+/* Fahrlehrer ↔ Fahrzeug: one source of truth                           */
+/* ================================================================== */
+
+describe("instructor assignment", () => {
+  test("assigning on the vehicle sets the instructor's Stammfahrzeug", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Golf" }));
+    const anna = createInstructor(
+      db,
+      makeInstructor({ firstName: "Anna", lastName: "Sync" }),
+    );
+    const updated = updateVehicle(db, vehicle.id, {
+      details: [{ label: "Fahrlehrer/in", value: "Anna Sync" }],
+    });
+    expect(updated.instructorIds).toEqual([anna.id]);
+    expect(updated.details.find((d) => d.label === "Fahrlehrer/in")?.value).toBe(
+      "Anna Sync",
+    );
+    expect(getInstructor(db, anna.id).vehicleId).toBe(vehicle.id);
+    expect(getInstructor(db, anna.id).vehicle).toBe("Sync Golf");
+  });
+
+  test("the Stammfahrzeug set on the instructor shows up on the vehicle", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Polo" }));
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Ben", lastName: "Sync", vehicle: "Sync Polo" }),
+    );
+    const shown = getVehicle(db, vehicle.id).details.find(
+      (d) => d.label === "Fahrlehrer/in",
+    );
+    expect(shown?.value).toBe("Ben Sync");
+  });
+
+  test("reassigning moves the vehicle; 'Nicht zugeteilt' clears it", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync ID3" }));
+    const a = createInstructor(
+      db,
+      makeInstructor({ firstName: "Cara", lastName: "Sync" }),
+    );
+    const b = createInstructor(
+      db,
+      makeInstructor({ firstName: "Dirk", lastName: "Sync" }),
+    );
+    updateVehicle(db, vehicle.id, { instructorId: a.id });
+    updateVehicle(db, vehicle.id, { instructorId: b.id });
+    expect(getInstructor(db, a.id).vehicleId).toBeNull();
+    expect(getInstructor(db, b.id).vehicleId).toBe(vehicle.id);
+    updateVehicle(db, vehicle.id, {
+      details: [{ label: "Fahrlehrer/in", value: "Nicht zugeteilt" }],
+    });
+    expect(getInstructor(db, b.id).vehicleId).toBeNull();
+    expect(getVehicle(db, vehicle.id).instructorIds).toEqual([]);
+  });
+
+  test("an unchanged multi-name value does not touch assignments", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Sync Bus" }));
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Eva", lastName: "A", vehicle: "Sync Bus" }),
+    );
+    createInstructor(
+      db,
+      makeInstructor({ firstName: "Fin", lastName: "B", vehicle: "Sync Bus" }),
+    );
+    const current = getVehicle(db, vehicle.id);
+    const saved = updateVehicle(db, vehicle.id, { details: current.details });
+    expect(saved.instructorIds.length).toBe(2);
+  });
+
+  test("an unknown instructor name is rejected", () => {
+    const vehicle = createVehicle(db, makeVehicle());
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Fahrlehrer/in", value: "Niemand Da" }],
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("migration carries a vehicle-only name over and clears the copy", () => {
+    const vehicle = createVehicle(db, makeVehicle({ model: "Alt Astra" }));
+    const gus = createInstructor(
+      db,
+      makeInstructor({ firstName: "Gus", lastName: "Alt" }),
+    );
+    db.prepare("UPDATE vehicles SET details = ? WHERE id = ?").run(
+      JSON.stringify([{ label: "Fahrlehrer/in", value: "Gus Alt" }]),
+      vehicle.id,
+    );
+    migrateVehicleInstructorDetail(db);
+    migrateVehicleInstructorDetail(db);
+    expect(getInstructor(db, gus.id).vehicleId).toBe(vehicle.id);
+    const raw = db
+      .query<{ details: string }, [number]>("SELECT details FROM vehicles WHERE id = ?")
+      .get(vehicle.id)!.details;
+    expect(raw).not.toContain("Gus Alt");
+  });
+});
+
+describe("HU and Kilometerstand", () => {
+  test("HU accepts a month (JJJJ-MM → MM/JJJJ) and rejects free text", () => {
+    const vehicle = createVehicle(
+      db,
+      makeVehicle({ details: [{ label: "Nächste HU", value: "2027-03" }] }),
+    );
+    expect(vehicle.details.find((d) => d.label === "Nächste HU")?.value).toBe("03/2027");
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Nächste HU", value: "bald" }],
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("Kilometerstand is stored as a formatted number", () => {
+    const vehicle = createVehicle(
+      db,
+      makeVehicle({ details: [{ label: "Kilometerstand", value: "84320" }] }),
+    );
+    expect(vehicle.details.find((d) => d.label === "Kilometerstand")?.value).toBe(
+      "84.320 km",
+    );
+    expect(() =>
+      updateVehicle(db, vehicle.id, {
+        details: [{ label: "Kilometerstand", value: "viel" }],
+      }),
+    ).toThrow(ValidationError);
   });
 });

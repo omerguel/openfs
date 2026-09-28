@@ -111,13 +111,4 @@ export async function changePassword(current: string, next: string) {
   await post("/api/auth/password", { current, next });
 }
 
-/* Navigation hidden per role — the server enforces the same rules. */
-const FINANCE_ROUTES = ["/buchhaltung", "/rechnungen", "/import", "/marketing"];
-const OWNER_ROUTES = ["/benutzer", "/datensicherung"];
-
-export function canSeeRoute(role: Role | undefined, route: string): boolean {
-  if (!role || role === "inhaber") return true;
-  if (OWNER_ROUTES.includes(route)) return false;
-  if (role === "buero") return true;
-  return !FINANCE_ROUTES.includes(route);
-}
+/* Which role may open which page: see src/lib/navigation.ts (canSeeRoute). */
