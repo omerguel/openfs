@@ -94,6 +94,12 @@ describe("deriveStudentFacts", () => {
 describe("theory from attendance", () => {
   const NOW = new Date(2026, 5, 20, 12, 0); // 20.06.2026
 
+  // The demo seed gives group members some attendance — start clean.
+  beforeEach(() => {
+    ensureTheoryGroupTables(db);
+    db.exec("DELETE FROM theory_attendance");
+  });
+
   function attend(dates: string[], attended = 1) {
     ensureTheoryGroupTables(db);
     const group = db
@@ -225,5 +231,25 @@ describe("migrateDerivedStudentFields", () => {
     // Idempotent.
     expect(() => migrateDerivedStudentFields(legacy)).not.toThrow();
     expect(() => backfillLessonKinds(legacy)).not.toThrow();
+  });
+});
+
+describe("demo theory attendance", () => {
+  test("seeded students show plausible, past-only theory progress", () => {
+    const demo = openDb(":memory:");
+    ensureTheoryGroupTables(demo);
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = demo
+      .query<{ student_id: number; n: number; last: string }, []>(
+        `SELECT student_id, count(*) AS n, max(session_date) AS last
+         FROM theory_attendance WHERE attended = 1 GROUP BY student_id`,
+      )
+      .all();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.n).toBeGreaterThan(0);
+      expect(row.n).toBeLessThanOrEqual(14);
+      expect(row.last < today).toBe(true);
+    }
   });
 });
