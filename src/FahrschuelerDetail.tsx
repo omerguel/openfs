@@ -57,10 +57,12 @@ import { Spinner } from "@/components/ui/spinner";
 
 type TabKey = "uebersicht" | "stunden" | "dokumente" | "zahlung" | "preise";
 
-const tabs: { value: TabKey; label: string; money?: boolean }[] = [
+/* money: finance tabs; office: documents and contracts — both hidden for
+   Fahrlehrer/innen, whose API access ends there (src/server/auth.ts). */
+const tabs: { value: TabKey; label: string; money?: boolean; office?: boolean }[] = [
   { value: "uebersicht", label: "Übersicht" },
   { value: "stunden", label: "Stundenübersicht" },
-  { value: "dokumente", label: "Dokumente" },
+  { value: "dokumente", label: "Dokumente", office: true },
   { value: "zahlung", label: "Zahlungserfassung", money: true },
   { value: "preise", label: "Preise", money: true },
 ];
@@ -195,7 +197,7 @@ export function FahrschuelerDetail() {
 
   const student = students.find((entry) => entry.id === studentId) ?? null;
   const balance = describeBalance(student?.balanceCents);
-  const visibleTabs = tabs.filter((item) => canSeeMoney || !item.money);
+  const visibleTabs = tabs.filter((item) => canSeeMoney || !(item.money || item.office));
   const activeTab = visibleTabs.some((item) => item.value === tab) ? tab : "uebersicht";
 
   if (!Number.isInteger(studentId) || studentId < 1) {

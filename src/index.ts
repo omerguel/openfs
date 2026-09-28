@@ -9,7 +9,11 @@ import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap
 import { openDb } from "./server/db";
 import { createFileStoreFromEnv } from "./server/file-store";
 import { healthRoutes } from "./server/health";
+import { MAX_REQUEST_BODY_BYTES } from "./server/request-guards";
+import { hstsFromEnv, secureRoutes } from "./server/security-headers";
 import { applySetup } from "./server/setup";
+import { buildSpaRoutes } from "./server/spa";
+
 import { smsConfigFromEnv } from "./server/sms";
 import { smtpConfigFromEnv } from "./server/smtp";
 import {
@@ -31,6 +35,11 @@ const demoMode = process.env.DEMO_MODE === "1" || process.env.DEMO_MODE === "tru
 const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "true";
 // MULTI_TENANT=1: one portal per school at <slug>.<BASE_DOMAIN>.
 const tenancy = demoMode ? null : tenancyConfigFromEnv();
+// Hot reloading and the browser-console echo only when explicitly asked
+// for (`bun run dev` sets NODE_ENV=development) — never by omission.
+const development = process.env.NODE_ENV === "development";
+// Strict-Transport-Security on every response (only behind HTTPS!).
+const headerOptions = { hsts: hstsFromEnv() };
 
 if (!demoMode && !tenancy) {
   // SQLite needs the directory to exist before it can create the file.
@@ -106,24 +115,36 @@ if (tenancy) {
   };
 }
 
+/* The SPA: in development Bun's HTML import (hot reloading); otherwise a
+   bundle built once at startup and served with the security headers
+   (Content-Security-Policy, X-Frame-Options, …; see security-headers.ts). */
+type SpaRoute = typeof index | (() => Response);
+const spaRoutes: { "/*": SpaRoute; [path: string]: SpaRoute } = development
+  ? { "/*": index }
+  : ((await buildSpaRoutes(headerOptions)) as { "/*": SpaRoute });
+
 const server = serve({
   // Loopback by default: put a TLS-terminating reverse proxy in front (or
   // set HOST=0.0.0.0 on a trusted network) to reach it from elsewhere.
   hostname: process.env.HOST ?? "127.0.0.1",
 
+  // Uploads are max. 12 MB; larger bodies are refused with 413 before a
+  // handler buffers them (chunked ones by the API guard, request-guards.ts).
+  maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
+
   routes: {
     // Serve index.html for all unmatched routes ...
-    "/*": index,
+    ...spaRoutes,
     // ... except unknown API paths: JSON 404 (single- and multi-tenant).
-    ...API_NOT_FOUND,
+    ...secureRoutes(API_NOT_FOUND, headerOptions),
 
     // Public liveness/version probe (answers on every host).
-    ...healthRoutes(),
+    ...secureRoutes(healthRoutes(), headerOptions),
 
-    ...apiRoutes,
+    ...secureRoutes(apiRoutes, headerOptions),
   },
 
-  development: process.env.NODE_ENV !== "production" && {
+  development: development && {
     // Enable browser hot reloading in development
     hmr: true,
 
@@ -133,5 +154,5 @@ const server = serve({
 });
 
 console.log(
-  `🚀 Server running at ${server.url}${demoMode ? " (demo mode: in-memory DB, changes are not persisted)" : ""}`,
+  `🚀 Server running at ${server.url} — ${development ? "Entwicklungsmodus (Hot Reload, Browser-Konsole)" : "Produktionsmodus"}${demoMode ? " (demo mode: in-memory DB, changes are not persisted)" : ""}`,
 );

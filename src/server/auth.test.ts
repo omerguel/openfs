@@ -81,6 +81,7 @@ describe("sessions", () => {
 
     const bad = await fetch(`${base}/api/auth/login`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "chefin@fs.de", password: "falsch-falsch" }),
     });
     expect(bad.status).toBe(401);
@@ -142,6 +143,7 @@ describe("sessions", () => {
     const attempt = () =>
       fetch(`${base}/api/auth/login`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: "chefin@fs.de", password: "falsch-falsch" }),
       });
     await attempt();
@@ -155,6 +157,7 @@ describe("sessions", () => {
     const attempt = (password: string) =>
       fetch(`${base}/api/auth/login`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: "chefin@fs.de", password }),
       });
     // Many successful sign-ins never lock the account.
@@ -215,6 +218,7 @@ describe("roles", () => {
       `${base}/api/calendar-events`,
       as(cookie, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           date: "2026-07-01",
           start: "08:00",
@@ -310,6 +314,7 @@ describe("user admin + audit log", () => {
       `${base}/api/users`,
       as(cookie, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: "neu@fs.de",
           name: "Neu",
@@ -339,6 +344,7 @@ describe("user admin + audit log", () => {
       `${base}/api/auth/password`,
       as(cookie, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ current: "nope-nope-nope", next: "neues-passwort-1" }),
       }),
     );
@@ -347,6 +353,7 @@ describe("user admin + audit log", () => {
       `${base}/api/auth/password`,
       as(cookie, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ current: "geheim-geheim", next: "neues-passwort-1" }),
       }),
     );
@@ -388,6 +395,7 @@ describe("first-run setup of a real school", () => {
     };
     const res = await fetch(`${base}/api/auth/setup`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     expect(res.status).toBe(201);
@@ -399,6 +407,7 @@ describe("first-run setup of a real school", () => {
 
     const again = await fetch(`${base}/api/auth/setup`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, email: "zweiter@fs.de" }),
     });
     expect(again.status).toBe(409);
@@ -409,6 +418,7 @@ describe("first-run setup of a real school", () => {
     start();
     const res = await fetch(`${base}/api/auth/setup`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "a@b.de", name: "A", password: "sehr-geheim-1" }),
     });
     expect(res.status).toBe(400);

@@ -36,8 +36,10 @@ export function useFetchList<T>(
   queryKey: QueryKey,
   fetcher: () => Promise<T[]>,
   errorLabel: string,
+  /** false: don't fetch (e.g. the role may not read the list). */
+  enabled = true,
 ) {
-  const query = useQuery({ queryKey, queryFn: fetcher });
+  const query = useQuery({ queryKey, queryFn: fetcher, enabled });
 
   useEffect(() => {
     if (query.error) console.error(`${errorLabel}:`, query.error);
@@ -45,7 +47,8 @@ export function useFetchList<T>(
 
   return {
     items: query.data ?? (EMPTY_LIST as T[]),
-    loading: query.isPending,
+    loading: enabled && query.isPending,
+
     refresh: query.refetch,
   };
 }

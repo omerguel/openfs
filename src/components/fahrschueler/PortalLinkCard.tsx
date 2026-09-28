@@ -1,6 +1,9 @@
 /* ------------------------------------------------------------------ */
 /* Fahrschüler detail — Schülerportal link: create / copy / rotate /   */
 /* revoke the student's secret access link and send it by e-mail.      */
+/* The server keeps only a hash of the token, so a link is visible     */
+/* once — right after it was created; later the card only says since   */
+/* when a link is active. A mailed link gets its own token.            */
 /* ------------------------------------------------------------------ */
 
 import { useState } from "react";
@@ -45,9 +48,22 @@ async function copyText(text: string) {
   }
 }
 
+function activeSince(createdAt: string): string {
+  const date = new Date(`${createdAt.replace(" ", "T")}Z`);
+  return Number.isNaN(date.getTime())
+    ? createdAt
+    : date.toLocaleDateString("de-DE", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      });
+}
+
 export function PortalLinkCard({ student }: { student: StudentRecord }) {
   const { link, loading, refresh } = usePortalLink(student.id);
   const [busy, setBusy] = useState(false);
+  // The just-created link — gone on reload (only its hash is stored).
+  const [fresh, setFresh] = useState<string | null>(null);
   const hasEmail = student.email.trim().length > 0;
 
   const run = async (action: () => Promise<unknown>, success?: string) => {
@@ -66,10 +82,15 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
   const create = () =>
     run(async () => {
       const created = await createPortalLink(student.id);
+      setFresh(portalUrl(created.token));
       await copyText(portalUrl(created.token));
     });
 
-  const url = link ? portalUrl(link.token) : "";
+  const revoke = () =>
+    run(async () => {
+      await revokePortalLink(student.id);
+      setFresh(null);
+    }, "Portal-Link widerrufen.");
 
   return (
     <Card size="sm">
@@ -84,21 +105,34 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
           <Skeleton className="h-8 rounded-md" />
         ) : link ? (
           <>
-            <div className="flex min-w-0 items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-              <Link2 className="size-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                {url}
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Portal-Link kopieren"
-                onClick={() => void copyText(url)}
-              >
-                <Copy />
-              </Button>
-            </div>
+            {fresh ? (
+              <>
+                <div className="flex min-w-0 items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                  <Link2 className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {fresh}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Portal-Link kopieren"
+                    onClick={() => void copyText(fresh)}
+                  >
+                    <Copy />
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Nur jetzt sichtbar — gespeichert wird lediglich ein Fingerabdruck des
+                  Links. Bitte jetzt kopieren oder per E-Mail senden.
+                </p>
+              </>
+            ) : (
+              <p className="flex items-center gap-2 text-sm">
+                <Link2 className="size-4 shrink-0 text-muted-foreground" />
+                Link aktiv seit {activeSince(link.createdAt)}
+              </p>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -124,7 +158,7 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
                 onClick={() => void create()}
               >
                 <RefreshCw data-icon="inline-start" />
-                Neu erstellen
+                Neuen Link erzeugen
               </Button>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -151,12 +185,7 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
                     <AlertDialogCancel>Abbrechen</AlertDialogCancel>
                     <AlertDialogAction
                       variant="destructive"
-                      onClick={() =>
-                        void run(
-                          () => revokePortalLink(student.id),
-                          "Portal-Link widerrufen.",
-                        )
-                      }
+                      onClick={() => void revoke()}
                     >
                       Widerrufen
                     </AlertDialogAction>
@@ -165,7 +194,9 @@ export function PortalLinkCard({ student }: { student: StudentRecord }) {
               </AlertDialog>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              „Neu erstellen" macht den bisherigen Link ungültig.
+              „Neuen Link erzeugen“ zeigt einen neuen Link zum Kopieren an — alle
+              bisherigen Links (auch per E-Mail versandte) funktionieren danach nicht
+              mehr. Per E-Mail geht ein eigener Link an die Schülerin bzw. den Schüler.
             </p>
           </>
         ) : (

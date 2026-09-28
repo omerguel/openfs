@@ -93,6 +93,7 @@ const KIND_LABEL: Record<MailKind, string> = {
   lesson_reminder_sms: "Erinnerung",
   lesson_cancelled: "Terminabsage",
   portal_link: "Portal-Link",
+  user_invite: "Einladung",
   generic: "Freitext",
 };
 

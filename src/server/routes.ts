@@ -13,7 +13,7 @@ import {
   purgeArchived,
   restoreArchived,
 } from "./archive";
-import { updateCompanyProfile } from "./company-profile";
+import { OWNER_COMPANY_FIELDS, updateCompanyProfile } from "./company-profile";
 import { getCompany } from "./db";
 import { currentUser } from "./request-context";
 import { generateDatevExport } from "./datev";
@@ -484,7 +484,17 @@ export function accountingRoutes(db: Database) {
     },
 
     "/api/profile": {
-      GET: (req: BunRequest) => handle(() => json(getCompany(db)))(),
+      GET: (req: BunRequest) =>
+        handle(() => {
+          const company = getCompany(db);
+          // Fahrlehrer/innen print Nachweise with the school's address —
+          // tax numbers and the Bankverbindung are none of their business.
+          if (currentUser()?.role === "fahrlehrer") {
+            for (const field of OWNER_COMPANY_FIELDS) company[field] = "";
+          }
+          return json(company);
+        })(),
+
       PUT: (req: BunRequest) =>
         handle(async () => {
           const body = (await req.json()) as Partial<CompanyProfile>;

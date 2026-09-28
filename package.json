@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/index.ts",
+    "dev": "NODE_ENV=development bun --hot src/index.ts",
     "build": "rm -rf dist && bun scripts/build-renderer.ts",
     "start": "NODE_ENV=production bun src/index.ts",
     "test": "bun test",

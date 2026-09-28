@@ -11,10 +11,12 @@
 /* without touching this file.                                         */
 /* ------------------------------------------------------------------ */
 
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
+
+import { canSeeRoute } from "../src/lib/navigation";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const PORT = 4100 + Math.floor(Math.random() * 800);
+const PORT = Number(process.env.E2E_PORT) || 4100 + Math.floor(Math.random() * 800);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 /* Pages meant to be reachable without signing in. */
@@ -109,15 +111,28 @@ async function resolveParams(path: string): Promise<string> {
   return path;
 }
 
-async function check(page: Page, url: string, clicks: string[]): Promise<string[]> {
+async function check(
+  page: Page,
+  url: string,
+  clicks: string[],
+  /** Also flag 401/403 answers — a page asking for data its role may
+   *  not read (Fahrlehrer pass). */
+  flagForbidden = false,
+): Promise<string[]> {
   const problems: string[] = [];
   const onError = (error: Error) => problems.push(`pageerror: ${error.message}`);
   const onConsole = (message: { type(): string; text(): string }) => {
     if (message.type() === "error") problems.push(`console: ${message.text()}`);
   };
-  const onResponse = (response: { url(): string; status(): number }) => {
-    if (response.url().includes("/api/") && response.status() >= 500) {
-      problems.push(`api ${response.status()}: ${response.url()}`);
+  const onResponse = (response: {
+    url(): string;
+    status(): number;
+    request(): { method(): string };
+  }) => {
+    if (!response.url().includes("/api/")) return;
+    const status = response.status();
+    if (status >= 500 || (flagForbidden && (status === 401 || status === 403))) {
+      problems.push(`api ${status}: ${response.request().method()} ${response.url()}`);
     }
   };
   page.on("pageerror", onError);
@@ -179,6 +194,66 @@ const FORM_CHECKS: { name: string; run: (page: Page) => Promise<string | null> }
     },
   },
 ];
+
+/* Fahrlehrer/in: every page of the role renders without a single 401/403
+   (the explicit API allow-list in src/server/auth.ts and the pages must
+   agree); office pages show "Kein Zugriff" without asking the API. */
+async function instructorPass(browser: Browser): Promise<number> {
+  const email = `e2e-fahrlehrer-${Date.now()}@example.de`;
+  const password = "fahrlehrer-e2e-1";
+  const { instructors } = (await (await api("/api/instructors")).json()) as {
+    instructors: { id: number }[];
+  };
+  const created = await api("/api/users", {
+    method: "POST",
+    body: JSON.stringify({
+      email,
+      name: "E2E Fahrlehrer",
+      password,
+      role: "fahrlehrer",
+      instructorId: instructors[0]?.id,
+    }),
+  });
+  if (!created.ok) throw new Error(`Could not create a Fahrlehrer: ${created.status}`);
+  const login = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!login.ok) throw new Error(`Fahrlehrer login failed: ${login.status}`);
+  const [name, value] = login.headers.get("set-cookie")!.split(";")[0]!.split("=") as [
+    string,
+    string,
+  ];
+  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  await context.addCookies([{ name, value, url: BASE }]);
+  const page = await context.newPage();
+  let failures = 0;
+  for (const route of await routesFromRouter()) {
+    if (PUBLIC_PAGES.some((prefix) => route.startsWith(prefix))) continue;
+    const path = await resolveParams(route);
+    const allowed = canSeeRoute("fahrlehrer", path);
+    const clicks = allowed ? (INSTRUCTOR_CLICK_THROUGH[route] ?? []) : [];
+    const problems = await check(page, `${BASE}${path}`, clicks, true);
+    if (!allowed) {
+      const text = await page.locator("body").innerText();
+      if (!text.includes("Kein Zugriff")) problems.push("office page not blocked");
+    }
+    if (problems.length) {
+      failures += 1;
+      console.log(`✗ ${route} (Fahrlehrer)`);
+      for (const problem of problems) console.log(`    ${problem}`);
+    }
+  }
+  await context.close();
+  if (failures === 0) console.log("✓ Fahrlehrer: alle Seiten ohne 401/403");
+  return failures;
+}
+
+/* Tabs a Fahrlehrer/in sees (Dokumente, Zahlung, Preise are office-only). */
+const INSTRUCTOR_CLICK_THROUGH: Record<string, string[]> = {
+  "/fahrschueler/$studentId": ["Stundenübersicht"],
+};
 
 const server = Bun.spawn(["bun", "src/index.ts"], {
   cwd: ROOT,
@@ -245,6 +320,7 @@ try {
     }
   }
   console.log("✓ abgemeldet: öffentliche Seiten erreichbar, interne Seiten geschützt");
+  failed += await instructorPass(browser);
   await browser.close();
 } finally {
   server.kill();

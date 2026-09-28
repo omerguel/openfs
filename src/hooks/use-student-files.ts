@@ -12,9 +12,11 @@ export type { StudentFile };
 
 const filesPath = (studentId: number) => `/api/students/${studentId}/files`;
 
-export function useStudentFiles(studentId: number) {
+export function useStudentFiles(studentId: number, enabled = true) {
   const query = useQuery({
+    enabled,
     queryKey: ["student-files", studentId],
+
     queryFn: async () =>
       (await parseOrThrow<{ files: StudentFile[] }>(await fetch(filesPath(studentId))))
         .files,

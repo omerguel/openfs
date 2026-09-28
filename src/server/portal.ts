@@ -6,9 +6,13 @@
 /* (/api/portal/:token…).                                              */
 /*                                                                     */
 /* Security model: the token (32 random bytes, base64url) is the only  */
-/* credential. Public handlers resolve it to exactly one student id    */
-/* and only ever query by that id; unknown and revoked tokens get the  */
-/* same generic 404. All public handlers are rate-limited per IP.      */
+/* credential. Only its SHA-256 is stored (like sessions), so the link */
+/* is shown once — when it is created — and a leaked database or       */
+/* backup opens no portal. Public handlers resolve it to exactly one   */
+/* student id and only ever query by that id; unknown and revoked      */
+/* tokens get the same generic 404. All public handlers are rate-      */
+/* limited per IP. A mailed link gets its own token, minted when the   */
+/* mail is delivered (see mail.ts registerOutboxSecret).               */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -33,7 +37,14 @@ import {
   type RateLimit,
   type RequestIPSource,
 } from "./http";
-import { isValidEmail, mailSchool, queueMail, type OutboxEntry } from "./mail";
+import {
+  isValidEmail,
+  mailSchool,
+  OUTBOX_SECRET_PLACEHOLDER,
+  queueMail,
+  registerOutboxSecret,
+  type OutboxEntry,
+} from "./mail";
 import { portalLinkMail } from "./mail-templates";
 import { localIsoDate } from "./notifications";
 import { computeSpecialDriveProgress } from "../lib/special-drives";
@@ -46,7 +57,7 @@ import { schoolNow } from "./school-time";
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS portal_tokens (
-  token TEXT PRIMARY KEY,
+  token_hash TEXT PRIMARY KEY,
   student_id INTEGER NOT NULL REFERENCES students(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   revoked_at TEXT
@@ -54,15 +65,52 @@ CREATE TABLE IF NOT EXISTS portal_tokens (
 CREATE INDEX IF NOT EXISTS idx_portal_tokens_student ON portal_tokens(student_id);
 `;
 
+const migrated = new WeakSet<Database>();
+
 export function ensurePortalTables(db: Database): void {
   db.exec(DDL);
+  if (migrated.has(db)) return;
+  migratePlaintextTokens(db);
+  migrated.add(db);
+}
+
+/* Databases from before hashing kept the token itself in a `token`
+   column. Hash in place: the links already handed out keep working
+   (the token is unchanged, only its storage is), but the database no
+   longer contains them. Idempotent — hashes are 64 hex characters,
+   tokens 43 base64url characters. */
+function migratePlaintextTokens(db: Database): void {
+  const columns = db
+    .query<{ name: string }, []>("PRAGMA table_info(portal_tokens)")
+    .all()
+    .map((column) => column.name);
+  if (!columns.includes("token")) return;
+  db.transaction(() => {
+    db.exec("ALTER TABLE portal_tokens RENAME COLUMN token TO token_hash");
+    const rows = db
+      .query<{ token_hash: string }, []>(
+        "SELECT token_hash FROM portal_tokens WHERE length(token_hash) != 64",
+      )
+      .all();
+    const update = db.prepare(
+      "UPDATE portal_tokens SET token_hash = ? WHERE token_hash = ?",
+    );
+    for (const row of rows) update.run(sha256(row.token_hash), row.token_hash);
+  })();
 }
 
 /* ----------------------------- tokens ----------------------------- */
 
+/** A freshly created link — the only moment the token is known. */
 export type PortalLink = { token: string; createdAt: string };
+/** What the staff page learns about the active link later on. */
+export type PortalLinkStatus = { createdAt: string };
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+function sha256(value: string): string {
+  return new Bun.CryptoHasher("sha256").update(value).digest("hex");
+}
 
 export function generatePortalToken(): string {
   const bytes = new Uint8Array(32);
@@ -90,36 +138,62 @@ function requireStudent(db: Database, studentId: number) {
   return row;
 }
 
-export function getActivePortalLink(db: Database, studentId: number): PortalLink | null {
+/** Whether (and since when) the student has an active link. */
+export function getActivePortalLink(
+  db: Database,
+  studentId: number,
+): PortalLinkStatus | null {
   ensurePortalTables(db);
   const row = db
-    .query<{ token: string; created_at: string }, [number]>(
-      `SELECT token, created_at FROM portal_tokens
+    .query<{ created_at: string }, [number]>(
+      `SELECT created_at FROM portal_tokens
        WHERE student_id = ? AND revoked_at IS NULL
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .get(studentId);
-  return row ? { token: row.token, createdAt: row.created_at } : null;
+  return row ? { createdAt: row.created_at } : null;
 }
 
-/** Creates a fresh link and revokes every older one (rotation). */
+function insertToken(db: Database, studentId: number): PortalLink {
+  const token = generatePortalToken();
+  const row = db
+    .query<{ created_at: string }, [string, number]>(
+      "INSERT INTO portal_tokens (token_hash, student_id) VALUES (?, ?) RETURNING created_at",
+    )
+    .get(sha256(token), studentId)!;
+  return { token, createdAt: row.created_at };
+}
+
+/** Creates a fresh link and revokes every older one (rotation). The
+ *  token is returned this once; only its hash is stored. */
 export function createPortalLink(db: Database, studentId: number): PortalLink {
   ensurePortalTables(db);
   requireStudent(db, studentId);
-  const token = generatePortalToken();
-  const run = db.transaction(() => {
+  return db.transaction(() => {
     db.prepare(
       `UPDATE portal_tokens SET revoked_at = datetime('now')
        WHERE student_id = ? AND revoked_at IS NULL`,
     ).run(studentId);
-    db.prepare("INSERT INTO portal_tokens (token, student_id) VALUES (?, ?)").run(
-      token,
-      studentId,
-    );
-  });
-  run();
-  return getActivePortalLink(db, studentId)!;
+    return insertToken(db, studentId);
+  })();
 }
+
+/* A mailed portal link: its own token (the one staff may have copied
+   keeps working), minted at delivery so the outbox never holds it. A
+   failed delivery drops the token again. */
+registerOutboxSecret("portal_link", (db, entry) => {
+  if (entry.relatedType !== "student" || entry.relatedId == null) {
+    throw new Error("Portal-Link-Mail ohne Fahrschüler/in.");
+  }
+  ensurePortalTables(db);
+  requireStudent(db, entry.relatedId);
+  const { token } = insertToken(db, entry.relatedId);
+  return {
+    value: token,
+    discard: () =>
+      db.prepare("DELETE FROM portal_tokens WHERE token_hash = ?").run(sha256(token)),
+  };
+});
 
 /** Revokes all active links; returns how many were revoked. */
 export function revokePortalLinks(db: Database, studentId: number): number {
@@ -139,9 +213,9 @@ export function resolvePortalToken(db: Database, token: string): number | null {
   ensurePortalTables(db);
   const row = db
     .query<{ student_id: number }, [string]>(
-      "SELECT student_id FROM portal_tokens WHERE token = ? AND revoked_at IS NULL",
+      "SELECT student_id FROM portal_tokens WHERE token_hash = ? AND revoked_at IS NULL",
     )
-    .get(token);
+    .get(sha256(token));
   return row?.student_id ?? null;
 }
 
@@ -403,8 +477,9 @@ export function postPortalMessage(
 
 /* ----------------------------- e-mail ----------------------------- */
 
-/** Queues the portal link to the student's e-mail (creating a link when
- *  none is active). `baseUrl` is the app origin, e.g. from the request. */
+/** Queues the portal link to the student's e-mail. The outbox keeps a
+ *  placeholder; the token is minted when the mail is delivered (see the
+ *  registerOutboxSecret call above). `baseUrl` is the app origin. */
 export function sendPortalLinkMail(
   db: Database,
   studentId: number,
@@ -424,11 +499,14 @@ export function sendPortalLinkMail(
   } catch {
     throw new ValidationError("Ungültige Basis-URL für den Portal-Link.");
   }
-  const link = getActivePortalLink(db, studentId) ?? createPortalLink(db, studentId);
   const mail = portalLinkMail(
-    { firstName: student.first_name, url: `${origin}/portal/${link.token}` },
+    {
+      firstName: student.first_name,
+      url: `${origin}/portal/${OUTBOX_SECRET_PLACEHOLDER}`,
+    },
     mailSchool(db),
   );
+
   return queueMail(db, {
     recipient: student.email,
     subject: mail.subject,

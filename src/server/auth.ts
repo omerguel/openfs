@@ -4,10 +4,12 @@
 /*  - users: per school (per tenant DB), password hashed with          */
 /*    Bun.password (argon2id). Roles: inhaber (everything), buero      */
 /*    (everything but user admin, backups, raw DB export), fahrlehrer  */
-/*    (calendar, Nachweise, Theorie-Anwesenheit, Chat; no finances).   */
+/*    (explicit allow-list FAHRLEHRER_ALLOWED: calendar, Nachweise,     */
+/*    students read, Theorie-Anwesenheit, Chat; no money, no office).  */
 /*  - sessions: random 32-byte token in an HttpOnly SameSite=Strict    */
 /*    cookie; only its SHA-256 is stored, so a leaked DB/backup does   */
-/*    not leak live sessions. Sliding expiry, instant revocation.      */
+/*    not leak live sessions. Sliding expiry (7 days) capped by an     */
+/*    absolute lifetime (30 days), instant revocation.                 */
 /*  - audit_log: every non-GET API call with user, path and status.    */
 /*                                                                     */
 /* protectApiRoutes() wraps every handler of the routes object built   */
@@ -18,7 +20,7 @@
 import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
-import { ValidationError } from "./errors";
+import { BusyError, ValidationError } from "./errors";
 import {
   clientIp,
   createFailureLimiter,
@@ -31,6 +33,13 @@ import {
   requestHost,
 } from "./http";
 import { requestContext, type Role, type SessionUser } from "./request-context";
+import {
+  checkContentType,
+  limitBody,
+  MAX_REQUEST_BODY_BYTES,
+  PUBLIC_BODY_LIMIT_BYTES,
+} from "./request-guards";
+import { immediateTransaction } from "./sqlite";
 
 export type { Role, SessionUser } from "./request-context";
 
@@ -44,6 +53,11 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 export const SESSION_COOKIE = "openfs_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** No session lives longer than this, however active it is. */
+export const SESSION_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+/** RFC 5321 limit — longer "addresses" are never looked up or logged. */
+export const MAX_EMAIL_LENGTH = 254;
+const MAX_LOGIN_PASSWORD_LENGTH = 1024;
 const SESSION_TOUCH_MS = 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 10;
 
@@ -157,7 +171,7 @@ function requireEmail(value: unknown): string {
   return email;
 }
 
-function requirePassword(value: unknown): string {
+export function requirePassword(value: unknown): string {
   if (typeof value !== "string" || value.length < MIN_PASSWORD_LENGTH) {
     throw new ValidationError(
       `Das Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen lang sein.`,
@@ -184,27 +198,47 @@ function requireInstructorId(db: Database, value: unknown): number | null {
   return id;
 }
 
-export async function createUser(
-  db: Database,
-  input: {
-    email?: unknown;
-    name?: unknown;
-    password?: unknown;
-    role?: unknown;
-    instructorId?: unknown;
-    /** true: no password yet — the user sets it via an Einladungslink. */
-    invite?: unknown;
-  },
-): Promise<UserRecord> {
+export type NewUserInput = {
+  email?: unknown;
+  name?: unknown;
+  password?: unknown;
+  role?: unknown;
+  instructorId?: unknown;
+  /** true: no password yet — the user sets it via an Einladungslink. */
+  invite?: unknown;
+};
+
+export type PreparedUser = {
+  email: string;
+  name: string;
+  role: Role;
+  hash: string;
+  instructorId: unknown;
+};
+
+/** Validates a new account and hashes its password (the slow part), so
+ *  the insert itself can run synchronously inside a transaction. */
+export async function prepareUser(input: NewUserInput): Promise<PreparedUser> {
   const email = requireEmail(input.email);
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name) throw new ValidationError("Name ist erforderlich.");
   const invited = input.invite === true && !input.password;
   const password = invited ? null : requirePassword(input.password);
   const role = requireRole(input.role);
-  const instructorId = requireInstructorId(db, input.instructorId);
   // Invited users get an unguessable placeholder until they accept.
-  const hash = await Bun.password.hash(password ?? newToken());
+  const hash = await hashPassword(password ?? newToken());
+  return { email, name, role, hash, instructorId: input.instructorId };
+}
+
+export async function createUser(db: Database, input: NewUserInput): Promise<UserRecord> {
+  requireInstructorId(db, input.instructorId);
+  return insertUser(db, await prepareUser(input));
+}
+
+/** Synchronous insert of a prepared account (see prepareUser). */
+export function insertUser(db: Database, prepared: PreparedUser): UserRecord {
+  const { email, name, role, hash } = prepared;
+  const instructorId = requireInstructorId(db, prepared.instructorId);
   try {
     const row = db
       .query<{ id: number }, [string, string, string, Role, number | null]>(
@@ -273,7 +307,7 @@ export async function updateUser(
   const hash =
     input.password === undefined
       ? current.password_hash
-      : await Bun.password.hash(requirePassword(input.password));
+      : await hashPassword(requirePassword(input.password));
   const write = db.transaction(() => {
     db.prepare(
       `UPDATE users SET name = ?, role = ?, active = ?, instructor_id = ?, password_hash = ?
@@ -286,6 +320,54 @@ export async function updateUser(
   });
   write();
   return toUser(getUserRow(db, id));
+}
+
+/** Sets an already hashed password and ends the user's sessions —
+ *  synchronous, for use inside a transaction (invites.ts). */
+export function setPasswordHash(db: Database, id: number, hash: string): UserRecord {
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, id);
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+  return toUser(getUserRow(db, id));
+}
+
+/* ------------------------------------------------------------------ */
+/* password hashing: argon2id with bounded concurrency                 */
+/* ------------------------------------------------------------------ */
+
+/* Every argon2id run costs ~64 MB and noticeable CPU. The public
+   endpoints (login, setup, invite) must not let a burst of requests run
+   hundreds at once: at most ARGON_CONCURRENCY run in parallel, up to
+   ARGON_QUEUE wait, everything beyond is answered with 503. */
+const ARGON_CONCURRENCY = 4;
+const ARGON_QUEUE = 64;
+let argonActive = 0;
+const argonWaiting: (() => void)[] = [];
+
+export async function withArgonSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (argonActive >= ARGON_CONCURRENCY) {
+    if (argonWaiting.length >= ARGON_QUEUE) {
+      throw new BusyError("Der Server ist ausgelastet. Bitte gleich erneut versuchen.");
+    }
+    // The finishing run hands its slot over (argonActive stays the same).
+    await new Promise<void>((resolve) => argonWaiting.push(resolve));
+  } else {
+    argonActive += 1;
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = argonWaiting.shift();
+    if (next) next();
+    else argonActive -= 1;
+  }
+}
+
+export function hashPassword(password: string): Promise<string> {
+  return withArgonSlot(() => Bun.password.hash(password));
+}
+
+function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return withArgonSlot(() => Bun.password.verify(password, hash));
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,7 +411,12 @@ export function readCookie(req: Request, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
     const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
+    if (key !== name) continue;
+    try {
+      return decodeURIComponent(rest.join("="));
+    } catch {
+      return null; // malformed %-escape: no session, never a 500
+    }
   }
   return null;
 }
@@ -338,17 +425,30 @@ export function sessionUser(db: Database, token: string | null, now = Date.now()
   if (!token) return null;
   const hash = sha256(token);
   const row = db
-    .query<UserRow & { expires_at: number; last_seen_at: number }, [string]>(
-      `SELECT u.*, s.expires_at, s.last_seen_at FROM sessions s
+    .query<
+      UserRow & { expires_at: number; last_seen_at: number; session_created_at: string },
+      [string]
+    >(
+      `SELECT u.*, s.expires_at, s.last_seen_at, s.created_at AS session_created_at
+       FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ? AND u.active = 1`,
     )
     .get(hash);
   if (!row || row.expires_at < now) return null;
+  // Absolute lifetime: sliding renewals never keep a session past it.
+  const createdAt = Date.parse(`${row.session_created_at.replace(" ", "T")}Z`);
+  const deadline = Number.isNaN(createdAt)
+    ? Number.POSITIVE_INFINITY
+    : createdAt + SESSION_MAX_LIFETIME_MS;
+  if (now >= deadline) {
+    db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hash);
+    return null;
+  }
   if (now - row.last_seen_at > SESSION_TOUCH_MS) {
     db.prepare(
       "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?",
-    ).run(now, now + SESSION_TTL_MS, hash);
+    ).run(now, Math.min(now + SESSION_TTL_MS, deadline), hash);
   }
   const user = toUser(row);
   return {
@@ -387,21 +487,32 @@ export function sessionCookie(
    response time does not reveal which addresses exist. */
 let dummyHash: Promise<string> | null = null;
 
+/** The one normalisation of a sign-in e-mail — used for the lookup, the
+ *  rate-limit keys and the audit log alike: trimmed, lower-case, "" for
+ *  non-strings and for anything longer than an e-mail address can be. */
+export function normalizeLoginEmail(email: unknown): string {
+  if (typeof email !== "string") return "";
+  const normalized = email.trim().toLowerCase();
+  return normalized.length > MAX_EMAIL_LENGTH ? "" : normalized;
+}
+
 export async function verifyLogin(
   db: Database,
   email: unknown,
   password: unknown,
 ): Promise<UserRecord | null> {
-  if (typeof email !== "string" || typeof password !== "string") return null;
+  const normalized = normalizeLoginEmail(email);
+  if (!normalized || typeof password !== "string") return null;
+  if (password.length > MAX_LOGIN_PASSWORD_LENGTH) return null;
   const row = db
     .query<UserRow, [string]>("SELECT * FROM users WHERE email = ? AND active = 1")
-    .get(email.trim().toLowerCase());
+    .get(normalized);
   if (!row) {
     dummyHash ??= Bun.password.hash("openfs-timing-equalizer");
-    await Bun.password.verify(password, await dummyHash);
+    await verifyPassword(password, await dummyHash);
     return null;
   }
-  return (await Bun.password.verify(password, row.password_hash)) ? toUser(row) : null;
+  return (await verifyPassword(password, row.password_hash)) ? toUser(row) : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -436,30 +547,58 @@ const OWNER_ONLY = [
   /^\/api\/export\//,
 ];
 
-/* Money matters are out of bounds for the Fahrlehrer role — read and write. */
-const FINANCE = [
-  /^\/api\/accounting\//,
-  /^\/api\/student-balances/,
-  /^\/api\/invoices/,
-  /^\/api\/open-items/,
-  /^\/api\/sepa\//,
-  /^\/api\/instalment/,
-  /^\/api\/settings\/invoicing/,
-  /^\/api\/import\//,
-  /^\/api\/calendar-events\/[^/]+\/bill$/,
-  /^\/api\/campaigns/,
-  // Umsatz per month etc. — the Statistik page is an office/owner tool.
-  /^\/api\/statistics/,
-];
+/* Fahrlehrer/in: an explicit allow-list (deny by default) — what the
+   pages of the role need to teach: Kalender/Mein Tag/Prüfungsplaner
+   (incl. Absage, Serien, Prüfungsergebnis), Ausbildungsnachweise,
+   Fahrschüler (training data; balances/prices are stripped), Theorie
+   (groups read, Anwesenheit write), Chat, Fahrlehrer/Fahrzeuge (read —
+   they drive them), the school's Stammdaten for printed Nachweise (tax
+   and bank fields stripped), own password. Everything else — money,
+   Postausgang, Bewertungen, Standorte, Terminanfragen, Verträge,
+   Preispläne, Dokumente/Dateien, Portal-Links, Abwesenheiten verwalten,
+   Arbeitszeitberichte — is office work and answers 403. A new endpoint
+   is therefore closed to Fahrlehrer/innen until it is listed here. */
+const READ = ["GET", "HEAD"];
+const READ_WRITE = (...writes: string[]) => [...READ, ...writes];
 
-/* What a Fahrlehrer may change: Termine (incl. Absage), Ausbildungs-
-   nachweise, Theorie-Anwesenheit, Chat, own password. */
-const INSTRUCTOR_WRITES = [
-  /^\/api\/calendar-events(\/|$)/,
-  /^\/api\/attestations/,
-  /^\/api\/theory-groups\/[^/]+\/attendance$/,
-  /^\/api\/conversations/,
-  /^\/api\/auth\//,
+export const FAHRLEHRER_ALLOWED: { methods: string[]; pattern: RegExp }[] = [
+  // Kalender, Mein Tag, Prüfungsplaner
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/calendar-events$/ },
+  { methods: ["PATCH", "DELETE"], pattern: /^\/api\/calendar-events\/[^/]+$/ },
+  {
+    methods: ["POST"],
+    pattern: /^\/api\/calendar-events\/[^/]+\/(cancel|uncancel|exam-result)$/,
+  },
+  { methods: ["POST"], pattern: /^\/api\/calendar-events\/series$/ },
+  { methods: ["PATCH"], pattern: /^\/api\/calendar-events\/[^/]+\/series$/ },
+  { methods: ["DELETE"], pattern: /^\/api\/calendar-events\/series\/[^/]+$/ },
+  { methods: READ, pattern: /^\/api\/calendar-events\/conflicts$/ },
+  // The Absage dialog shows the policy (Frist, Gebühr laut Regelung).
+  { methods: READ, pattern: /^\/api\/settings\/cancellation-policy$/ },
+  { methods: READ, pattern: /^\/api\/absences$/ },
+  // Ausbildungsnachweise
+  { methods: READ, pattern: /^\/api\/attestations$/ },
+  {
+    methods: READ_WRITE("POST"),
+    pattern: /^\/api\/calendar-events\/[^/]+\/attestation$/,
+  },
+  // Fahrschüler (withoutMoney) — no edits, no files, no portal links
+  { methods: READ, pattern: /^\/api\/students$/ },
+  // Theorie
+  { methods: READ, pattern: /^\/api\/theory-groups$/ },
+  { methods: READ_WRITE("PUT"), pattern: /^\/api\/theory-groups\/[^/]+\/attendance$/ },
+  // Chat
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/conversations$/ },
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/conversations\/[^/]+\/messages$/ },
+  { methods: ["POST"], pattern: /^\/api\/conversations\/[^/]+\/read$/ },
+  { methods: ["DELETE"], pattern: /^\/api\/conversations\/[^/]+$/ },
+  // Stammdaten, read-only
+  { methods: READ, pattern: /^\/api\/instructors$/ },
+  { methods: READ, pattern: /^\/api\/vehicles$/ },
+  { methods: READ, pattern: /^\/api\/vehicle-options$/ },
+  { methods: READ, pattern: /^\/api\/profile$/ },
+  // Own account
+  { methods: ["POST"], pattern: /^\/api\/auth\/password$/ },
 ];
 
 export function isPublic(method: string, path: string): boolean {
@@ -472,14 +611,16 @@ export function isAllowed(role: Role, method: string, path: string): boolean {
   if (role === "inhaber") return true;
   if (OWNER_ONLY.some((p) => p.test(path))) return false;
   if (role === "buero") return true;
-  if (FINANCE.some((p) => p.test(path))) return false;
-  if (method === "GET" || method === "HEAD") return true;
-  return INSTRUCTOR_WRITES.some((p) => p.test(path));
+  return FAHRLEHRER_ALLOWED.some(
+    (rule) => rule.methods.includes(method) && rule.pattern.test(path),
+  );
 }
 
 /* Cross-site request guard on top of SameSite=Strict: a state-changing
-   request that carries an Origin must come from this host. */
-function sameOrigin(req: Request): boolean {
+   request that carries an Origin must come from this host. Requests
+   without Origin (curl, server-to-server) pass — browsers always send
+   it on cross-origin POSTs. */
+export function sameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
   if (!origin) return true;
   try {
@@ -536,18 +677,39 @@ function guard(
       ({ db, tenant } = resolved);
     }
     const store = requestContext.getStore() ?? {};
-    const run = (user?: SessionUser) =>
-      requestContext.run({ ...store, db, tenant, user }, () => handler(req, server));
+    const mutating = method !== "GET" && method !== "HEAD";
+    const publicRoute = isPublic(method, path);
 
-    if (isPublic(method, path)) return run();
+    // Shape checks for every write, public or not: JSON only (415), a
+    // foreign Origin is refused, bodies are capped (413).
+    let request = req;
+    let ipSource: RequestIPSource | undefined = server;
+    if (mutating) {
+      const badType = checkContentType(req, method, path);
+      if (badType) return badType;
+      if (!sameOrigin(req)) return err("Ungültige Herkunft der Anfrage.", 403);
+    }
+    const run = async (user?: SessionUser) => {
+      const limited = await limitBody(
+        request,
+        ipSource,
+        publicRoute ? PUBLIC_BODY_LIMIT_BYTES : MAX_REQUEST_BODY_BYTES,
+      );
+      if (limited instanceof Response) return limited;
+      request = limited.req;
+      ipSource = limited.server;
+      return requestContext.run({ ...store, db, tenant, user }, () =>
+        handler(request, ipSource as RequestIPSource),
+      );
+    };
+
+    if (publicRoute) return run();
 
     const user = sessionUser(db, readCookie(req, SESSION_COOKIE));
     if (!user) return err("Bitte melden Sie sich an.", 401);
     if (!isAllowed(user.role, method, path)) {
       return err("Für diese Aktion fehlt die Berechtigung.", 403);
     }
-    const mutating = method !== "GET" && method !== "HEAD";
-    if (mutating && !sameOrigin(req)) return err("Ungültige Herkunft der Anfrage.", 403);
 
     const response = await run(user);
     if (mutating) {
@@ -557,7 +719,7 @@ function guard(
           method,
           path,
           status: response.status,
-          ip: clientIp(req, server),
+          ip: clientIp(req, ipSource),
         });
       } catch (error) {
         console.error("Protokoll konnte nicht geschrieben werden:", error);
@@ -597,7 +759,12 @@ export function protectApiRoutes<T extends Record<string, RouteValue>>(
 export type AuthRouteOptions = {
   /** Demo mode shows the demo login on the sign-in page. */
   demo?: { email: string; password: string } | null;
+  /** Failed sign-ins per IP + e-mail (default 10 per 15 minutes). */
   loginRateLimit?: RateLimit | false;
+  /** Failed sign-ins per e-mail from any IP (default 20 per 15 minutes). */
+  accountRateLimit?: RateLimit | false;
+  /** Wrong current passwords on "Passwort ändern" per user (5 / 15 min). */
+  passwordRateLimit?: RateLimit | false;
   /** Called after the first Inhaber account was created by the setup. */
   onSetup?: (db: Database, body: Record<string, unknown>) => void;
 };
@@ -612,6 +779,17 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
   const failures = createFailureLimiter(
     options.loginRateLimit ?? { max: 10, windowMs: 15 * 60_000 },
   );
+  // Independent of the IP: a botnet guessing one account's password is
+  // throttled too (at the price that the account's owner waits as well).
+  const accountFailures = createFailureLimiter(
+    options.accountRateLimit ?? { max: 20, windowMs: 15 * 60_000 },
+  );
+  const passwordFailures = createFailureLimiter(
+    options.passwordRateLimit ?? { max: 5, windowMs: 15 * 60_000 },
+  );
+  // Limiter keys are per school in multi-tenant mode.
+  const tenantKey = () => requestContext.getStore()?.tenant ?? "";
+  const TOO_MANY = "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.";
 
   const startSession = (
     db: Database,
@@ -647,28 +825,29 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             email?: unknown;
             password?: unknown;
           };
-          const key = `${clientIp(req, server)}|${String(body.email ?? "").toLowerCase()}`;
-          if (failures.blocked(key)) {
-            return err(
-              "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.",
-              429,
-            );
+          // Same normalisation as verifyLogin, so " Chef@X.de" and
+          // "chef@x.de" share one counter.
+          const email = normalizeLoginEmail(body.email);
+          const accountKey = `${tenantKey()}|${email}`;
+          const key = `${clientIp(req, server)}|${accountKey}`;
+          if (failures.blocked(key) || accountFailures.blocked(accountKey)) {
+            return err(TOO_MANY, 429);
           }
-          const user = await verifyLogin(db, body.email, body.password);
+          const user = await verifyLogin(db, email, body.password);
           audit(db, {
             user: user ?? undefined,
             method: "LOGIN",
-            path: user
-              ? "/api/auth/login"
-              : `/api/auth/login (${String(body.email ?? "")})`,
+            path: user ? "/api/auth/login" : `/api/auth/login (${email})`,
             status: user ? 200 : 401,
             ip: clientIp(req, server),
           });
           if (!user) {
             failures.fail(key);
+            accountFailures.fail(accountKey);
             return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
           }
           failures.reset(key);
+          accountFailures.reset(accountKey);
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             headers: { "Content-Type": "application/json", "Set-Cookie": cookie },
@@ -695,16 +874,19 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
       POST: (req: BunRequest, server: RequestIPSource) =>
         handle(async () => {
           const db = dbOf(fallbackDb);
-          if (countUsers(db) > 0) {
-            return err("Die Einrichtung wurde bereits abgeschlossen.", 409);
-          }
+          const done = () => err("Die Einrichtung wurde bereits abgeschlossen.", 409);
+          if (countUsers(db) > 0) return done();
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          // Cheap account checks first, then the school data (idempotent,
-          // so a failed attempt can simply be repeated), then the account.
-          requireEmail(body.email);
-          requirePassword(body.password);
-          options.onSetup?.(db, body);
-          const user = await createUser(db, { ...body, role: "inhaber" });
+          // Validate and hash first (slow, async), then check-and-insert in
+          // ONE immediate transaction: two racing setups cannot both create
+          // an Inhaber, and a failed attempt leaves no school data behind.
+          const prepared = await prepareUser({ ...body, role: "inhaber" });
+          const user = immediateTransaction(db, () => {
+            if (countUsers(db) > 0) return null;
+            options.onSetup?.(db, body);
+            return insertUser(db, prepared);
+          });
+          if (!user) return done();
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             status: 201,
@@ -720,8 +902,20 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
           const current = requestContext.getStore()?.user;
           if (!current) return err("Bitte melden Sie sich an.", 401);
           const body = (await req.json()) as { current?: unknown; next?: unknown };
+          const limitKey = `${tenantKey()}|${current.id}`;
+          if (passwordFailures.blocked(limitKey)) {
+            return err(
+              "Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.",
+              429,
+            );
+          }
           const ok = await verifyLogin(db, current.email, body.current);
-          if (!ok) throw new ValidationError("Das aktuelle Passwort ist falsch.");
+          if (!ok) {
+            passwordFailures.fail(limitKey);
+            throw new ValidationError("Das aktuelle Passwort ist falsch.");
+          }
+          passwordFailures.reset(limitKey);
+
           await updateUser(db, current.id, { password: body.next });
           // Password change ended all sessions — start a fresh one here.
           const token = createSession(db, current.id);

@@ -34,6 +34,7 @@ async function seed() {
 async function login(email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/login`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password: "geheim-geheim" }),
   });
   return res.headers.get("set-cookie")!.split(";")[0]!;
@@ -99,7 +100,7 @@ describe("Einladungslinks", () => {
     const owner = await login("chefin@fs.de");
     const res = await fetch(`${base}/api/users/${user.id}/invite`, {
       method: "POST",
-      headers: { cookie: owner },
+      headers: { cookie: owner, "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(201);
@@ -111,6 +112,7 @@ describe("Einladungslinks", () => {
     expect(info.status).toBe(200);
     const accept = await fetch(`${base}/api/auth/invite/${token}`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password: "lehrer-passwort" }),
     });
     expect(accept.status).toBe(200);

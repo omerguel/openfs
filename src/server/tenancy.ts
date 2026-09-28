@@ -15,13 +15,13 @@
 /*  - Files and backups are namespaced by slug the same way.           */
 /* ------------------------------------------------------------------ */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { BunRequest } from "bun";
 
 import { buildApiRoutes } from "./app-routes";
-import { createUser } from "./auth";
+import { createUser, sameOrigin } from "./auth";
 import type { BackupConfig } from "./backups";
 import { type SchoolJobOptions, prepareSchoolDb, startSchoolJobs } from "./bootstrap";
 import { openDb } from "./db";
@@ -39,6 +39,7 @@ import {
   requestHost,
 } from "./http";
 import { requestContext } from "./request-context";
+import { checkContentType, limitBody, PUBLIC_BODY_LIMIT_BYTES } from "./request-guards";
 import { applySetup } from "./setup";
 import type { SmsConfig } from "./sms";
 import type { SmtpConfig } from "./smtp";
@@ -298,9 +299,16 @@ export class TenantManager {
         role: "inhaber",
       });
     } catch (error) {
-      // No half-provisioned school: drop the registry entry again.
+      // No half-provisioned school: drop the registry entry and the
+      // database file (with its WAL/SHM companions) again.
       this.close(slug);
       this.registry.remove(slug);
+      const path = this.path(slug);
+      if (path !== ":memory:") {
+        for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+          rmSync(`${path}${suffix}`, { force: true });
+        }
+      }
       throw error;
     }
     return this.registry.get(slug)!;
@@ -441,10 +449,21 @@ export type PlatformInfo =
 
 export function platformRoutes(
   manager: TenantManager | null,
-  options: { signup?: boolean; rateLimit?: RateLimit | false } = {},
+  options: {
+    signup?: boolean;
+    /** Signups per IP (default 5 per hour). */
+    rateLimit?: RateLimit | false;
+    /** Signups overall, all IPs together (default 30 per hour). */
+    globalRateLimit?: RateLimit | false;
+  } = {},
 ) {
   const limited = createRateLimiter(
     options.rateLimit ?? { max: 5, windowMs: 60 * 60_000 },
+  );
+  // A botnet rotating IPs must not be able to create schools en masse:
+  // every signup provisions a database and an argon2 hash.
+  const globallyLimited = createRateLimiter(
+    options.globalRateLimit ?? { max: 30, windowMs: 60 * 60_000 },
   );
   return {
     "/api/platform/info": {
@@ -469,19 +488,31 @@ export function platformRoutes(
         })(),
     },
 
+    /* Public and not behind the API guard (no school yet), so it applies
+       the guard's request checks itself: JSON only, same origin, small
+       body. E-mail addresses are NOT verified (no confirmation link) —
+       see README "Multi-tenant mode". */
     "/api/platform/signup": {
       POST: (req: BunRequest, server: RequestIPSource) =>
         handle(async () => {
           if (!manager || options.signup !== true) {
             return err("Die Registrierung ist nicht freigeschaltet.", 404);
           }
+          const badType = checkContentType(req, "POST", "/api/platform/signup");
+          if (badType) return badType;
+          if (!sameOrigin(req)) return err("Ungültige Herkunft der Anfrage.", 403);
           if (tenantSlugFromHost(requestHost(req), manager.config.baseDomain) !== null) {
             return err("Die Registrierung ist nur auf der Hauptadresse möglich.", 400);
           }
-          if (limited(clientIp(req, server))) {
+          if (limited(clientIp(req, server)) || globallyLimited("*")) {
             return err("Zu viele Registrierungen. Bitte später erneut versuchen.", 429);
           }
-          const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const sized = await limitBody(req, server, PUBLIC_BODY_LIMIT_BYTES);
+          if (sized instanceof Response) return sized;
+          const body = (await sized.req.json().catch(() => ({}))) as Record<
+            string,
+            unknown
+          >;
           const text = (key: string) =>
             typeof body[key] === "string" ? String(body[key]) : "";
           if (!text("schoolName").trim()) {
@@ -530,6 +561,7 @@ export type TenantApiOptions = {
   fileStore: FileStore;
   signup: boolean;
   signupRateLimit?: RateLimit | false;
+  signupGlobalRateLimit?: RateLimit | false;
   loginRateLimit?: RateLimit | false;
 };
 
@@ -557,6 +589,7 @@ export function buildTenantApiRoutes(manager: TenantManager, options: TenantApiO
     ...platformRoutes(manager, {
       signup: options.signup,
       rateLimit: options.signupRateLimit,
+      globalRateLimit: options.signupGlobalRateLimit,
     }),
   };
 }

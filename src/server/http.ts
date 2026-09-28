@@ -1,4 +1,4 @@
-import { ForbiddenError, ValidationError } from "./errors";
+import { BusyError, ForbiddenError, ValidationError } from "./errors";
 
 export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -20,6 +20,13 @@ export function handle<A extends unknown[]>(
       }
       if (error instanceof ForbiddenError) {
         return err(error.message, 403);
+      }
+      if (error instanceof BusyError) {
+        return err(error.message, 503);
+      }
+      // req.json() on a malformed body: a client error, not a crash.
+      if (error instanceof SyntaxError) {
+        return err("Ungültige Anfrage (kein gültiges JSON).", 400);
       }
       console.error(error);
       return err("Interner Fehler.", 500);
@@ -81,6 +88,22 @@ export function clientIp(req: Request, server?: RequestIPSource): string {
   );
 }
 
+/* Limiter maps are bounded without scanning: a Map iterates in insertion
+   order and every write re-inserts its key, so the first key is always
+   the least recently touched one — evicting it is O(1). Per key only the
+   newest `max` timestamps are kept. */
+export const LIMITER_MAX_KEYS = 10_000;
+
+function touch(map: Map<string, number[]>, key: string, times: number[]) {
+  map.delete(key);
+  map.set(key, times);
+  while (map.size > LIMITER_MAX_KEYS) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
 /** Counts only failures (e.g. wrong passwords): `blocked(key)` is true
  *  once `key` has `max` failures within `windowMs`; `fail(key)` records
  *  one, `reset(key)` forgets them (successful login). `false` disables. */
@@ -94,15 +117,14 @@ export function createFailureLimiter(limit: RateLimit | false) {
     },
     fail(key: string, now = Date.now()) {
       if (!limit) return;
-      if (failures.size > 10_000) {
-        for (const k of failures.keys()) {
-          if (recent(k, now).length === 0) failures.delete(k);
-        }
-      }
-      failures.set(key, [...recent(key, now), now]);
+      touch(failures, key, [...recent(key, now), now].slice(-limit.max));
     },
     reset(key: string) {
       failures.delete(key);
+    },
+    /** Number of tracked keys (tests). */
+    get size() {
+      return failures.size;
     },
   };
 }
@@ -114,16 +136,10 @@ export function createRateLimiter(limit: RateLimit | false) {
   return (key: string, now = Date.now()): boolean => {
     if (!limit) return false;
     const cutoff = now - limit.windowMs;
-    // Keep the map bounded under many distinct clients.
-    if (hits.size > 10_000) {
-      for (const [k, times] of hits) {
-        if (!times.some((t) => t > cutoff)) hits.delete(k);
-      }
-    }
     const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
     const limited = recent.length >= limit.max;
     if (!limited) recent.push(now);
-    hits.set(key, recent);
+    touch(hits, key, recent.slice(-limit.max));
     return limited;
   };
 }
