@@ -5,7 +5,8 @@
 /* plain Termin sharing a series_id, atomically: one conflict or        */
 /* absence rolls the whole series back. Deleting "from a date on"      */
 /* reuses the single-delete guards and skips billed/attested/charged   */
-/* occurrences instead of failing.                                     */
+/* occurrences instead of failing. Editing "this and all following"    */
+/* applies the same change to every later occurrence, atomically.      */
 /* ------------------------------------------------------------------ */
 
 import type { Database } from "./sqlite";
@@ -19,6 +20,7 @@ import {
   deleteBlockReason,
   deleteCalendarEvent,
   getCalendarEvent,
+  updateCalendarEvent,
 } from "./calendar-events";
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
@@ -176,6 +178,79 @@ export function deleteCalendarEventSeries(
   return { deleted, skipped };
 }
 
+const daysBetween = (from: string, to: string) =>
+  Math.round((parseUtc(to).getTime() - parseUtc(from).getTime()) / 86_400_000);
+
+export type SeriesUpdateResult = {
+  events: CalendarEvent[];
+  /** Later occurrences left untouched (cancelled, billed, attested, charged). */
+  skipped: number;
+  warnings?: string[];
+};
+
+/** Apply an edit to occurrence `eventId` and every later occurrence of its
+    series ("Diesen und alle folgenden"). Fields in `input` are copied to
+    each occurrence; a changed date shifts all of them by the same number
+    of days. Cancelled / billed / attested / charged later occurrences are
+    skipped. One conflict rolls everything back. */
+export function updateCalendarEventSeriesFrom(
+  db: Database,
+  eventId: number,
+  input: Partial<CalendarEventInput>,
+): SeriesUpdateResult {
+  if (!input || typeof input !== "object") {
+    throw new ValidationError("Ungültige Anfrage.");
+  }
+  const anchor = getCalendarEvent(db, eventId);
+  if (!anchor.seriesId) {
+    throw new ValidationError("Termin gehört zu keiner Serie.");
+  }
+  if (input.date !== undefined && !isValidIsoDate(input.date)) {
+    throw new ValidationError("Feld 'date' muss ein ISO-Datum sein.");
+  }
+  const shift = input.date ? daysBetween(anchor.date, input.date) : 0;
+  const { date: _date, ...rest } = input;
+
+  const members = db
+    .query<{ id: number; date: string }, [string, string]>(
+      `SELECT id, date FROM calendar_events
+       WHERE series_id = ? AND date >= ? ORDER BY date, start`,
+    )
+    .all(anchor.seriesId, anchor.date);
+
+  let skipped = 0;
+  const run = db.transaction(() => {
+    const updated: CalendarEvent[] = [];
+    for (const member of members) {
+      const isAnchor = member.id === eventId;
+      if (!isAnchor) {
+        const current = getCalendarEvent(db, member.id);
+        if (current.cancelledAt || deleteBlockReason(db, current)) {
+          skipped += 1;
+          continue;
+        }
+      }
+      const patch: Partial<CalendarEventInput> = shift
+        ? { ...rest, date: addDaysIso(member.date, shift) }
+        : rest;
+      try {
+        updated.push(updateCalendarEvent(db, member.id, patch));
+      } catch (error) {
+        if (error instanceof ValidationError && !isAnchor) {
+          throw new ValidationError(
+            `Termin am ${formatGermanDate(patch.date ?? member.date)}: ${error.message}`,
+          );
+        }
+        throw error;
+      }
+    }
+    return updated;
+  });
+  const events = run();
+  const warnings = [...new Set(events.flatMap((event) => event.warnings ?? []))];
+  return warnings.length ? { events, skipped, warnings } : { events, skipped };
+}
+
 export function calendarSeriesRoutes(db: Database) {
   return {
     "/api/calendar-events/series": {
@@ -183,6 +258,21 @@ export function calendarSeriesRoutes(db: Database) {
         handle(async () =>
           json(createCalendarEventSeries(db, (await req.json()) as SeriesInput), 201),
         )(),
+    },
+
+    "/api/calendar-events/:id/series": {
+      PATCH: (req: BunRequest<"/api/calendar-events/:id/series">) =>
+        handle(async () => {
+          const id = Number(req.params.id);
+          if (!Number.isInteger(id)) throw new ValidationError("Ungültige Termin-ID.");
+          return json(
+            updateCalendarEventSeriesFrom(
+              db,
+              id,
+              (await req.json()) as Partial<CalendarEventInput>,
+            ),
+          );
+        })(),
     },
 
     "/api/calendar-events/series/:seriesId": {

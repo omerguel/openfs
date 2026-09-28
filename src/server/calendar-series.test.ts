@@ -17,6 +17,7 @@ import {
   createCalendarEventSeries,
   deleteCalendarEventSeries,
   seriesDates,
+  updateCalendarEventSeriesFrom,
 } from "./calendar-series";
 import { openDb } from "./db";
 import { createTransaction, stornoTransaction } from "./engine";
@@ -229,6 +230,91 @@ describe("deleteCalendarEventSeries", () => {
     });
     expect(() => deleteCalendarEventSeries(db, seriesId, "13.07.2026")).toThrow(
       /ISO-Datum/,
+    );
+  });
+});
+
+describe("updateCalendarEventSeriesFrom (Diesen und alle folgenden)", () => {
+  const makeSeries = () =>
+    createCalendarEventSeries(db, {
+      ...LESSON,
+      repeat: { interval: "weekly", count: 4 },
+    });
+
+  test("changes this and all later occurrences, not the earlier ones", () => {
+    const { seriesId, events } = makeSeries();
+    const result = updateCalendarEventSeriesFrom(db, Number(events[1]!.id), {
+      start: "17:00",
+      end: "17:45",
+      title: "Fahrstunde · Autobahn",
+    });
+    expect(result.events).toHaveLength(3);
+    expect(result.skipped).toBe(0);
+    const after = seriesEvents(seriesId);
+    expect(after.map((event) => `${event.date} ${event.start} ${event.title}`)).toEqual([
+      "2026-07-06 16:00 Fahrstunde",
+      "2026-07-13 17:00 Fahrstunde · Autobahn",
+      "2026-07-20 17:00 Fahrstunde · Autobahn",
+      "2026-07-27 17:00 Fahrstunde · Autobahn",
+    ]);
+  });
+
+  test("a changed date shifts every following occurrence by the same days", () => {
+    const { seriesId, events } = makeSeries();
+    updateCalendarEventSeriesFrom(db, Number(events[2]!.id), { date: "2026-07-21" });
+    expect(seriesEvents(seriesId).map((event) => event.date)).toEqual([
+      "2026-07-06",
+      "2026-07-13",
+      "2026-07-21",
+      "2026-07-28",
+    ]);
+  });
+
+  test("a conflict on a later date rolls everything back and names the date", () => {
+    const { seriesId, events } = makeSeries();
+    createCalendarEvent(db, {
+      ...LESSON,
+      date: "2026-07-27",
+      start: "17:00",
+      end: "18:00",
+      title: "Blocker",
+    });
+    expect(() =>
+      updateCalendarEventSeriesFrom(db, Number(events[1]!.id), {
+        start: "17:00",
+        end: "17:45",
+      }),
+    ).toThrow(/^Termin am 27\.07\.2026: Überschneidung mit „Blocker“/);
+    expect(seriesEvents(seriesId).every((event) => event.start === "16:00")).toBe(true);
+  });
+
+  test("billed later occurrences are skipped and counted", () => {
+    const { seriesId, events } = makeSeries();
+    const tx = createTransaction(db, {
+      type: "guthaben_uebertragung",
+      habenKonto: "4400",
+      description: "Fahrstunde",
+      amountCents: 6500,
+      date: "2026-07-20",
+      student: { customerNo: "K", name: "X", address: "", contractNo: "V", classes: "B" },
+    });
+    markEventBilled(db, Number(events[2]!.id), tx.id);
+    const result = updateCalendarEventSeriesFrom(db, Number(events[0]!.id), {
+      location: "Bahnhof",
+    });
+    expect(result.skipped).toBe(1);
+    expect(seriesEvents(seriesId).map((event) => event.location ?? "")).toEqual([
+      "Bahnhof",
+      "Bahnhof",
+      "",
+      "Bahnhof",
+    ]);
+  });
+
+  test("an event without series → ValidationError", () => {
+    const single = createCalendarEvent(db, LESSON);
+    expect(() => updateCalendarEventSeriesFrom(db, Number(single.id), {})).toThrow(
+      /keiner Serie/,
     );
   });
 });
