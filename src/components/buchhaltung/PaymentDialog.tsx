@@ -1,5 +1,6 @@
 /* ------------------------------------------------------------------ */
-/* Zahlung erfassen — single dialog for all five booking types.        */
+/* Zahlung erfassen — single dialog for all booking types (incl. the   */
+/* one-off Saldovortrag for balances taken over from old software).   */
 /* The client only collects intent; Soll/Haben, VAT and numbering      */
 /* are derived server-side by the booking engine.                      */
 /* ------------------------------------------------------------------ */
@@ -29,10 +30,12 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   PAYMENT_METHOD_LABELS,
+  SALDOVORTRAG_DIRECTION_LABELS,
   TRANSACTION_TYPE_LABELS,
   type Account,
   type CreateTransactionInput,
   type PaymentMethod,
+  type SaldovortragDirection,
   type StudentRef,
   type TransactionType,
 } from "@/lib/accounting-types";
@@ -46,13 +49,18 @@ const TYPES: TransactionType[] = [
   "guthaben_uebertragung",
   "transfer",
   "ausgabe",
+  "saldovortrag",
 ];
 
 const NEEDS_STUDENT: TransactionType[] = [
   "zahlung_guthaben",
   "direktzahlung",
   "guthaben_uebertragung",
+  "saldovortrag",
 ];
+
+/** Types that never touch a Geldkonto. */
+const NO_GELDKONTO: TransactionType[] = ["guthaben_uebertragung", "saldovortrag"];
 
 const NEEDS_PAYMENT_METHOD: TransactionType[] = [
   "zahlung_guthaben",
@@ -181,6 +189,7 @@ export function PaymentDialog({
   const [aufwandKonto, setAufwandKonto] = useState("6530");
   const [toKonto, setToKonto] = useState("1800");
   const [description, setDescription] = useState(defaultDescription ?? "");
+  const [direction, setDirection] = useState<SaldovortragDirection>("guthaben");
   const [submitting, setSubmitting] = useState(false);
 
   const active = (kinds: Account["kind"][]) =>
@@ -277,6 +286,9 @@ export function PaymentDialog({
           description: description.trim(),
         };
         break;
+      case "saldovortrag":
+        input = { type, date, amountCents, direction, student: student! };
+        break;
     }
 
     setSubmitting(true);
@@ -324,7 +336,7 @@ export function PaymentDialog({
         <DialogHeader>
           <DialogTitle>Zahlung erfassen</DialogTitle>
           <DialogDescription>
-            Die Buchung wird automatisch nach SKR 03 kontiert.
+            Die Buchung wird automatisch nach SKR 04 kontiert.
           </DialogDescription>
         </DialogHeader>
 
@@ -388,7 +400,36 @@ export function PaymentDialog({
             </div>
           )}
 
-          {type !== "guthaben_uebertragung" && (
+          {type === "saldovortrag" && (
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <Label>Saldo aus dem bisherigen Programm</Label>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                value={direction}
+                onValueChange={(v) => v && setDirection(v as SaldovortragDirection)}
+                className="justify-start"
+              >
+                {(
+                  Object.keys(SALDOVORTRAG_DIRECTION_LABELS) as SaldovortragDirection[]
+                ).map((d) => (
+                  <ToggleGroupItem key={d} value={d} className="px-3">
+                    {SALDOVORTRAG_DIRECTION_LABELS[d]}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              <p className="text-xs text-pretty text-muted-foreground">
+                {direction === "guthaben"
+                  ? "Bucht 9000 Saldenvorträge an 3272 Erhaltene Anzahlungen."
+                  : "Bucht 3272 Erhaltene Anzahlungen an 9000 Saldenvorträge."}{" "}
+                Ohne Umsatzsteuer-Aufteilung, nur einmal je Fahrschüler (außer nach
+                Storno). Die Behandlung der Eröffnungssalden bitte mit der Steuerberatung
+                abstimmen.
+              </p>
+            </div>
+          )}
+
+          {!NO_GELDKONTO.includes(type) && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="tx-geldkonto">
                 {type === "transfer" ? "Von Konto" : "Geldkonto"}
