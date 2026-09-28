@@ -487,22 +487,34 @@ export function sessionCookie(
    response time does not reveal which addresses exist. */
 let dummyHash: Promise<string> | null = null;
 
+/** The one normalisation of a sign-in e-mail — used for the lookup, the
+ *  rate-limit keys and the audit log alike: trimmed, lower-case, "" for
+ *  non-strings and for anything longer than an e-mail address can be. */
+export function normalizeLoginEmail(email: unknown): string {
+  if (typeof email !== "string") return "";
+  const normalized = email.trim().toLowerCase();
+  return normalized.length > MAX_EMAIL_LENGTH ? "" : normalized;
+}
+
 export async function verifyLogin(
   db: Database,
   email: unknown,
   password: unknown,
 ): Promise<UserRecord | null> {
-  if (typeof email !== "string" || typeof password !== "string") return null;
+  const normalized = normalizeLoginEmail(email);
+  if (!normalized || typeof password !== "string") return null;
+  if (password.length > MAX_LOGIN_PASSWORD_LENGTH) return null;
   const row = db
     .query<UserRow, [string]>("SELECT * FROM users WHERE email = ? AND active = 1")
-    .get(email.trim().toLowerCase());
+    .get(normalized);
   if (!row) {
     dummyHash ??= Bun.password.hash("openfs-timing-equalizer");
-    await Bun.password.verify(password, await dummyHash);
+    await verifyPassword(password, await dummyHash);
     return null;
   }
-  return (await Bun.password.verify(password, row.password_hash)) ? toUser(row) : null;
+  return (await verifyPassword(password, row.password_hash)) ? toUser(row) : null;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* access policy                                                       */
@@ -696,7 +708,12 @@ export function protectApiRoutes<T extends Record<string, RouteValue>>(
 export type AuthRouteOptions = {
   /** Demo mode shows the demo login on the sign-in page. */
   demo?: { email: string; password: string } | null;
+  /** Failed sign-ins per IP + e-mail (default 10 per 15 minutes). */
   loginRateLimit?: RateLimit | false;
+  /** Failed sign-ins per e-mail from any IP (default 20 per 15 minutes). */
+  accountRateLimit?: RateLimit | false;
+  /** Wrong current passwords on "Passwort ändern" per user (5 / 15 min). */
+  passwordRateLimit?: RateLimit | false;
   /** Called after the first Inhaber account was created by the setup. */
   onSetup?: (db: Database, body: Record<string, unknown>) => void;
 };
@@ -711,6 +728,17 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
   const failures = createFailureLimiter(
     options.loginRateLimit ?? { max: 10, windowMs: 15 * 60_000 },
   );
+  // Independent of the IP: a botnet guessing one account's password is
+  // throttled too (at the price that the account's owner waits as well).
+  const accountFailures = createFailureLimiter(
+    options.accountRateLimit ?? { max: 20, windowMs: 15 * 60_000 },
+  );
+  const passwordFailures = createFailureLimiter(
+    options.passwordRateLimit ?? { max: 5, windowMs: 15 * 60_000 },
+  );
+  // Limiter keys are per school in multi-tenant mode.
+  const tenantKey = () => requestContext.getStore()?.tenant ?? "";
+  const TOO_MANY = "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.";
 
   const startSession = (
     db: Database,
@@ -746,28 +774,29 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
             email?: unknown;
             password?: unknown;
           };
-          const key = `${clientIp(req, server)}|${String(body.email ?? "").toLowerCase()}`;
-          if (failures.blocked(key)) {
-            return err(
-              "Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.",
-              429,
-            );
+          // Same normalisation as verifyLogin, so " Chef@X.de" and
+          // "chef@x.de" share one counter.
+          const email = normalizeLoginEmail(body.email);
+          const accountKey = `${tenantKey()}|${email}`;
+          const key = `${clientIp(req, server)}|${accountKey}`;
+          if (failures.blocked(key) || accountFailures.blocked(accountKey)) {
+            return err(TOO_MANY, 429);
           }
-          const user = await verifyLogin(db, body.email, body.password);
+          const user = await verifyLogin(db, email, body.password);
           audit(db, {
             user: user ?? undefined,
             method: "LOGIN",
-            path: user
-              ? "/api/auth/login"
-              : `/api/auth/login (${String(body.email ?? "")})`,
+            path: user ? "/api/auth/login" : `/api/auth/login (${email})`,
             status: user ? 200 : 401,
             ip: clientIp(req, server),
           });
           if (!user) {
             failures.fail(key);
+            accountFailures.fail(accountKey);
             return err("E-Mail-Adresse oder Passwort ist falsch.", 401);
           }
           failures.reset(key);
+          accountFailures.reset(accountKey);
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             headers: { "Content-Type": "application/json", "Set-Cookie": cookie },
@@ -822,8 +851,17 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
           const current = requestContext.getStore()?.user;
           if (!current) return err("Bitte melden Sie sich an.", 401);
           const body = (await req.json()) as { current?: unknown; next?: unknown };
+          const limitKey = `${tenantKey()}|${current.id}`;
+          if (passwordFailures.blocked(limitKey)) {
+            return err("Zu viele Fehlversuche. Bitte in 15 Minuten erneut versuchen.", 429);
+          }
           const ok = await verifyLogin(db, current.email, body.current);
-          if (!ok) throw new ValidationError("Das aktuelle Passwort ist falsch.");
+          if (!ok) {
+            passwordFailures.fail(limitKey);
+            throw new ValidationError("Das aktuelle Passwort ist falsch.");
+          }
+          passwordFailures.reset(limitKey);
+
           await updateUser(db, current.id, { password: body.next });
           // Password change ended all sessions — start a fresh one here.
           const token = createSession(db, current.id);
