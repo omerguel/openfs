@@ -265,3 +265,20 @@ export async function extractTar(
   }
   return files;
 }
+
+/** Writes a stream to a file chunk by chunk (Bun.write(path, Response)
+ *  can stall on a stream that itself reads files). Returns the size. */
+export async function saveStream(
+  stream: ReadableStream<Uint8Array>,
+  path: string,
+): Promise<number> {
+  await mkdir(dirname(path), { recursive: true });
+  const sink = Bun.file(path).writer();
+  let size = 0;
+  for await (const chunk of stream) {
+    sink.write(chunk);
+    size += chunk.length;
+  }
+  await sink.end();
+  return size;
+}
