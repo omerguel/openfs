@@ -580,7 +580,49 @@ export function openDb(
   // Calendar create/update checks absences, so the table must always exist.
   ensureAbsenceTables(db);
   repairSoftReferences(db);
+  migrateVehicleInstructorDetail(db);
   return db;
+}
+
+/* Vehicles used to keep their own free-text "Fahrlehrer/in" detail next
+   to the instructor's Stammfahrzeug (instructors.vehicle_id), so the two
+   views drifted apart. The instructor side is the source of truth now
+   (see vehicles.ts): a name only stored on the vehicle is carried over to
+   an instructor without a Stammfahrzeug, then the stored copy is cleared.
+   Idempotent — a cleared detail is skipped. */
+export function migrateVehicleInstructorDetail(db: Database) {
+  const rows = db
+    .query<{ id: number; details: string }, []>("SELECT id, details FROM vehicles")
+    .all();
+  for (const row of rows) {
+    let details: { label: string; value: string }[];
+    try {
+      const parsed = JSON.parse(row.details) as unknown;
+      if (!Array.isArray(parsed)) continue;
+      details = parsed as { label: string; value: string }[];
+    } catch {
+      continue;
+    }
+    const entry = details.find((d) => d?.label === "Fahrlehrer/in");
+    const name = typeof entry?.value === "string" ? entry.value.trim() : "";
+    if (!entry || !name) continue;
+    const instructorId = name === "Nicht zugeteilt" ? null : instructorIdByName(db, name);
+    const taken = db
+      .query<{ n: number }, [number]>(
+        "SELECT count(*) AS n FROM instructors WHERE vehicle_id = ?",
+      )
+      .get(row.id)!.n;
+    if (instructorId !== null && taken === 0) {
+      db.prepare(
+        "UPDATE instructors SET vehicle_id = ? WHERE id = ? AND vehicle_id IS NULL",
+      ).run(row.id, instructorId);
+    }
+    entry.value = "";
+    db.prepare("UPDATE vehicles SET details = ? WHERE id = ?").run(
+      JSON.stringify(details),
+      row.id,
+    );
+  }
 }
 
 /* Safety net for the remaining JSON/soft links (theory-group member
