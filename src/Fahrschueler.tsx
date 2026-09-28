@@ -12,6 +12,7 @@ import {
 
 import { PageHeader } from "./components/PageHeader.tsx";
 import { VertragDialog } from "./components/VertragDialog.tsx";
+import { useFinanceAccess } from "@/hooks/use-finance-access";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useStudents, type StudentRecord } from "@/hooks/use-students";
 import type { Student } from "@/lib/student-data";
@@ -57,7 +58,7 @@ const sortLabels: Record<SortKey, string> = {
   firstName: "Vorname",
   lastName: "Nachname",
   classes: "Klassen",
-  balance: "Bilanz",
+  balance: "Kontostand",
   phone: "Telefon",
   lastLesson: "Letzte Stunde",
   nextLesson: "Nächste Stunde",
@@ -134,6 +135,9 @@ function SortableHead({
 
 export function Fahrschueler() {
   const navigate = useNavigate();
+  // Fahrlehrer/innen see their students' training, not balances,
+  // contracts or the office's enrolment form.
+  const { canSeeMoney } = useFinanceAccess();
   const isMobile = useIsMobile();
   // DB-backed: the roster comes from /api/students, edits go back via PATCH.
   const { students: studentRows } = useStudents();
@@ -196,15 +200,17 @@ export function Fahrschueler() {
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => void navigate({ to: "/neue-schueler" })}
-          >
-            <UserPlus data-icon="inline-start" />
-            <span className="hidden sm:inline">Schüler anmelden</span>
-            <span className="sr-only sm:hidden">Schüler anmelden</span>
-          </Button>
+          canSeeMoney && (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void navigate({ to: "/neue-schueler" })}
+            >
+              <UserPlus data-icon="inline-start" />
+              <span className="hidden sm:inline">Schüler anmelden</span>
+              <span className="sr-only sm:hidden">Schüler anmelden</span>
+            </Button>
+          )
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -298,7 +304,8 @@ export function Fahrschueler() {
                   Suche zurücksetzen
                 </Button>
               ) : (
-                statusFilter === "aktiv" && (
+                statusFilter === "aktiv" &&
+                canSeeMoney && (
                   <Button
                     type="button"
                     size="sm"
@@ -306,7 +313,7 @@ export function Fahrschueler() {
                     onClick={() => void navigate({ to: "/neue-schueler" })}
                   >
                     <UserPlus data-icon="inline-start" />
-                    Schüler Anmeldung
+                    Schüler anmelden
                   </Button>
                 )
               )}
@@ -339,13 +346,15 @@ export function Fahrschueler() {
                       className="px-1"
                       onSort={handleSort}
                     />
-                    <SortableHead
-                      sortKey="balance"
-                      activeKey={sortKey}
-                      direction={sortDirection}
-                      className="px-1"
-                      onSort={handleSort}
-                    />
+                    {canSeeMoney && (
+                      <SortableHead
+                        sortKey="balance"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        className="px-1"
+                        onSort={handleSort}
+                      />
+                    )}
                     <SortableHead
                       sortKey="phone"
                       activeKey={sortKey}
@@ -388,9 +397,11 @@ export function Fahrschueler() {
                       className="px-1"
                       onSort={handleSort}
                     />
-                    <TableHead className="pl-1 pr-4 text-right">
-                      Vertrag drucken
-                    </TableHead>
+                    {canSeeMoney && (
+                      <TableHead className="pl-1 pr-4 text-right">
+                        Vertrag drucken
+                      </TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -417,18 +428,20 @@ export function Fahrschueler() {
                           {student.lastName}
                         </TableCell>
                         <TableCell className="px-1">{student.classes}</TableCell>
-                        <TableCell className="pl-1 pr-4">
-                          <Badge
-                            variant="outline"
-                            className={
-                              hasDebt
-                                ? "bg-red-50 text-red-700 ring-red-600/20"
-                                : "bg-green-50 text-green-700 ring-green-600/20"
-                            }
-                          >
-                            {student.balance}
-                          </Badge>
-                        </TableCell>
+                        {canSeeMoney && (
+                          <TableCell className="pl-1 pr-4">
+                            <Badge
+                              variant="outline"
+                              className={
+                                hasDebt
+                                  ? "bg-red-50 text-red-700 ring-red-600/20"
+                                  : "bg-green-50 text-green-700 ring-green-600/20"
+                              }
+                            >
+                              {student.balance}
+                            </Badge>
+                          </TableCell>
+                        )}
                         <TableCell className="px-1 text-muted-foreground">
                           {student.phone}
                         </TableCell>
@@ -437,22 +450,24 @@ export function Fahrschueler() {
                         <TableCell className="px-1">{student.drivingSchool}</TableCell>
                         <TableCell className="px-1">{student.registrationDate}</TableCell>
                         <TableCell className="px-1">{student.contractNumber}</TableCell>
-                        <TableCell className="px-1">
-                          <div className="flex justify-end">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`${student.contractNumber} drucken`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setVertragStudent(student);
-                              }}
-                            >
-                              <Printer data-icon="inline-start" />
-                            </Button>
-                          </div>
-                        </TableCell>
+                        {canSeeMoney && (
+                          <TableCell className="px-1">
+                            <div className="flex justify-end">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={`${student.contractNumber} drucken`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setVertragStudent(student);
+                                }}
+                              >
+                                <Printer data-icon="inline-start" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })}
