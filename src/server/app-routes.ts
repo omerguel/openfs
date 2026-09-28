@@ -10,12 +10,14 @@ import { attestationRoutes } from "./ausbildungsnachweis";
 import { branchRoutes } from "./branches";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
+import { instalmentRoutes } from "./instalments";
 import { invoiceRoutes } from "./invoices";
 import { mailRoutes, type MailRouteOptions } from "./mail";
 import { portalRoutes } from "./portal";
 import { theoryGroupRoutes } from "./theory-groups";
 import { reviewRoutes } from "./reviews";
 import { schoolProfileRoutes } from "./school-profile";
+import { sepaRoutes } from "./sepa";
 import { statisticsRoutes } from "./statistics";
 import { importRoutes } from "./student-import";
 import {
@@ -53,6 +55,8 @@ export function buildApiRoutes(db: Database, options: ApiRouteOptions = {}) {
     ...statisticsRoutes(db),
     ...attestationRoutes(db),
     ...invoiceRoutes(db),
+    ...instalmentRoutes(db),
+    ...sepaRoutes(db),
     ...importRoutes(db),
     ...mailRoutes(db, options.mail),
     // Second deliberate public surface besides /anfrage: token-gated,
