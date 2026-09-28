@@ -14,11 +14,14 @@ import {
   resolveVehicleId,
   vehicleNameSql,
 } from "./refs";
+import { deriveStudentFacts, type StudentFacts } from "./student-facts";
 
 export type StudentRecord = Student & {
   id: number;
   instructorId: number | null;
   vehicleId: number | null;
+  /** Derived from the ledger; `balance` is its display string. */
+  balanceCents: number;
 };
 
 /** Write payload: display names or ids for the instructor/vehicle links. */
@@ -45,18 +48,14 @@ type StudentRow = {
   vehicle: string;
   instructor_id: number | null;
   vehicle_id: number | null;
-  balance: string;
-  last_lesson: string;
-  next_lesson: string;
   progress: number;
-  lessons: string;
   documents: string;
   theory: string;
   price_plan_id: number | null;
   license_date: string | null;
 };
 
-const toStudent = (row: StudentRow): StudentRecord => {
+const toStudent = (row: StudentRow, facts: StudentFacts): StudentRecord => {
   const record: StudentRecord = {
     id: row.id,
     firstName: row.first_name,
@@ -75,11 +74,12 @@ const toStudent = (row: StudentRow): StudentRecord => {
     vehicle: row.vehicle,
     instructorId: row.instructor_id,
     vehicleId: row.vehicle_id,
-    balance: row.balance,
-    lastLesson: row.last_lesson,
-    nextLesson: row.next_lesson,
+    balance: facts.balance,
+    balanceCents: facts.balanceCents,
+    lastLesson: facts.lastLesson,
+    nextLesson: facts.nextLesson,
     progress: row.progress,
-    lessons: JSON.parse(row.lessons),
+    lessons: facts.lessons,
     documents: JSON.parse(row.documents),
     theory: JSON.parse(row.theory),
     pricePlanId: row.price_plan_id,
@@ -92,20 +92,27 @@ const SELECT = `SELECT s.id, s.first_name, s.last_name, s.birthday, s.phone, s.e
   s.address, s.classes, s.driving_school, s.registration_date, s.contract_number,
   s.customer_number, s.status, s.instructor_id, s.vehicle_id,
   ${instructorNameSql("s")} AS instructor, ${vehicleNameSql("s")} AS vehicle,
-  s.balance, s.last_lesson, s.next_lesson, s.progress, s.lessons, s.documents,
-  s.theory, s.price_plan_id, s.license_date FROM students s`;
+  s.progress, s.documents, s.theory, s.price_plan_id, s.license_date FROM students s`;
+
+function withFacts(db: Database, rows: StudentRow[]): StudentRecord[] {
+  const facts = deriveStudentFacts(
+    db,
+    rows.map((row) => ({ id: row.id, customerNumber: row.customer_number })),
+  );
+  return rows.map((row) => toStudent(row, facts.get(row.id)!));
+}
 
 export function listStudents(db: Database): StudentRecord[] {
-  return db
-    .query<StudentRow, []>(`${SELECT} ORDER BY s.last_name, s.first_name`)
-    .all()
-    .map(toStudent);
+  return withFacts(
+    db,
+    db.query<StudentRow, []>(`${SELECT} ORDER BY s.last_name, s.first_name`).all(),
+  );
 }
 
 export function getStudent(db: Database, id: number): StudentRecord {
   const row = db.query<StudentRow, [number]>(`${SELECT} WHERE s.id = ?`).get(id);
   if (!row) throw new ValidationError("Fahrschüler/in nicht gefunden.");
-  return toStudent(row);
+  return withFacts(db, [row])[0]!;
 }
 
 const STRING_KEYS = [
@@ -120,9 +127,6 @@ const STRING_KEYS = [
   "registrationDate",
   "contractNumber",
   "customerNumber",
-  "balance",
-  "lastLesson",
-  "nextLesson",
 ] as const;
 
 type StringKey = (typeof STRING_KEYS)[number];
@@ -169,12 +173,8 @@ function normalize(db: Database, input: StudentInput, current: StudentData): Stu
     next.progress = Math.round(progress);
   }
 
-  if (input.lessons !== undefined) {
-    if (!Array.isArray(input.lessons)) {
-      throw new ValidationError("Feld 'lessons' muss eine Liste sein.");
-    }
-    next.lessons = input.lessons;
-  }
+  // balance, lastLesson, nextLesson and lessons are derived on read
+  // (student-facts.ts) — values sent by older clients are ignored.
 
   if (input.documents !== undefined) {
     if (!Array.isArray(input.documents)) {
@@ -287,11 +287,7 @@ function writeParams(data: StudentData) {
     data.status,
     data.instructorId,
     data.vehicleId,
-    data.balance,
-    data.lastLesson,
-    data.nextLesson,
     data.progress,
-    JSON.stringify(data.lessons),
     JSON.stringify(data.documents),
     JSON.stringify(data.theory),
     data.pricePlanId ?? null,
@@ -307,9 +303,9 @@ export function createStudent(db: Database, input: StudentInput): StudentRecord 
         `INSERT INTO students (
            first_name, last_name, birthday, phone, email, address, classes,
            driving_school, registration_date, contract_number, customer_number,
-           status, instructor_id, vehicle_id, balance, last_lesson, next_lesson,
-           progress, lessons, documents, theory, price_plan_id, license_date
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           status, instructor_id, vehicle_id, progress, documents, theory,
+           price_plan_id, license_date
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
       )
       .get(...writeParams(data)),
@@ -330,8 +326,7 @@ export function updateStudent(
          first_name = ?, last_name = ?, birthday = ?, phone = ?, email = ?,
          address = ?, classes = ?, driving_school = ?, registration_date = ?,
          contract_number = ?, customer_number = ?, status = ?, instructor_id = ?,
-         vehicle_id = ?, balance = ?, last_lesson = ?, next_lesson = ?,
-         progress = ?, lessons = ?, documents = ?, theory = ?,
+         vehicle_id = ?, progress = ?, documents = ?, theory = ?,
          price_plan_id = ?, license_date = ?
        WHERE id = ?`,
     ).run(...writeParams(data), id);

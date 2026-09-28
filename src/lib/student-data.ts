@@ -52,14 +52,17 @@ export type Student = {
   status: StudentStatus;
   instructor: string;
   vehicle: string;
-  // Billing
+  // Derived by the server on read — never stored or edited:
+  // balance/balanceCents from the ledger, last/next lesson from the
+  // calendar, lessons (Sonderfahrten) from tagged practical lessons.
   balance: string;
+  balanceCents?: number;
   /** Assigned Preisplan (price_plans.id) — null/undefined = default plan. */
   pricePlanId?: number | null;
   // Milestone
   /** ISO date (YYYY-MM-DD) the license was issued; undefined = not yet issued. */
   licenseDate?: string;
-  // Practical training
+  // Practical training (lastLesson/nextLesson/lessons derived, see above)
   lastLesson: string;
   nextLesson: string;
   progress: number;

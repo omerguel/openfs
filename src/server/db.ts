@@ -95,11 +95,7 @@ CREATE TABLE IF NOT EXISTS students (
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
   instructor_id INTEGER REFERENCES instructors(id),
   vehicle_id INTEGER REFERENCES vehicles(id),
-  balance TEXT NOT NULL DEFAULT '0,00 EUR',
-  last_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
-  next_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
   progress INTEGER NOT NULL DEFAULT 0,
-  lessons TEXT NOT NULL DEFAULT '[]',
   documents TEXT NOT NULL DEFAULT '[]',
   theory TEXT NOT NULL DEFAULT '{}',
   price_plan_id INTEGER REFERENCES price_plans(id),
@@ -518,6 +514,7 @@ export function openDb(path = "data/fahrschule.db"): Database {
   );
   migrateExamResults(db);
   migrateCalendarEventScheduling(db);
+  migrateDerivedStudentFields(db);
   migrateNameColumn(db, "students", { from: "instructor" });
   migrateNameColumn(db, "students", { from: "vehicle" });
   migrateNameColumn(db, "instructors", { from: "vehicle" });
@@ -685,6 +682,45 @@ export function migrateCalendarEventScheduling(db: Database) {
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_calendar_events_series ON calendar_events(series_id);",
   );
+}
+
+/* Best-effort Fahrtart for practical lessons created before lesson_kind
+   existed, read from the title ("Fahrstunde · Autobahn"). Only fills
+   NULLs, so deliberate choices are never overwritten. */
+export function backfillLessonKinds(db: Database) {
+  db.exec(`
+    UPDATE calendar_events SET lesson_kind = CASE
+        WHEN title LIKE '%autobahn%' THEN 'Autobahnfahrt'
+        WHEN title LIKE '%nacht%' OR title LIKE '%dämmerung%' OR title LIKE '%Dämmerung%'
+          THEN 'Nachtfahrt'
+        WHEN title LIKE '%überland%' OR title LIKE '%Überland%' THEN 'Überlandfahrt'
+        WHEN title LIKE '%grundfahraufgabe%' THEN 'Grundfahraufgaben'
+      END
+    WHERE type = 'Praktisch' AND lesson_kind IS NULL
+      AND (title LIKE '%autobahn%' OR title LIKE '%nacht%' OR title LIKE '%dämmerung%'
+        OR title LIKE '%Dämmerung%' OR title LIKE '%überland%' OR title LIKE '%Überland%'
+        OR title LIKE '%grundfahraufgabe%');
+  `);
+}
+
+/* balance, last_lesson, next_lesson and lessons were hand-maintained
+   copies of ledger/calendar data and drifted (a student could show
+   "Bilanz -85,00 EUR" with 450 € Guthaben). They are derived on read now
+   (student-facts.ts); this one-time migration tags old lessons with their
+   Fahrtart so Sonderfahrten keep counting, then drops the columns. */
+export function migrateDerivedStudentFields(db: Database) {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(students)")
+    .all()
+    .map((c) => c.name);
+  if (!cols.includes("balance")) return;
+  const migrate = db.transaction(() => {
+    backfillLessonKinds(db);
+    for (const column of ["balance", "last_lesson", "next_lesson", "lessons"]) {
+      if (cols.includes(column)) db.exec(`ALTER TABLE students DROP COLUMN ${column}`);
+    }
+  });
+  migrate();
 }
 
 /* Seed price plans — the demo tariffs from src/lib/price-plan.ts. After
@@ -928,6 +964,20 @@ function initCalendarEvents(db: Database) {
       event.tentative ? 1 : 0,
     );
   }
+  // The demo titles carry the Fahrtart ("Fahrstunde · Autobahn") and the
+  // subtitle names the student — link both like a real booking would.
+  backfillLessonKinds(db);
+  db.exec(`
+    UPDATE calendar_events
+    SET student_id = (
+      SELECT id FROM students
+      WHERE trim(first_name || ' ' || last_name) = trim(calendar_events.subtitle)
+    )
+    WHERE student_id IS NULL AND type != 'Theorie' AND (
+      SELECT count(*) FROM students
+      WHERE trim(first_name || ' ' || last_name) = trim(calendar_events.subtitle)
+    ) = 1
+  `);
 }
 
 /* Seed students — the demo roster from src/lib/student-data.ts. After this
@@ -941,9 +991,8 @@ function initStudents(db: Database) {
     `INSERT INTO students (
        first_name, last_name, birthday, phone, email, address, classes,
        driving_school, registration_date, contract_number, customer_number,
-       status, instructor_id, vehicle_id, balance, last_lesson, next_lesson,
-       progress, lessons, documents, theory
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       status, instructor_id, vehicle_id, progress, documents, theory
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const s of STUDENT_SEED) {
     insert.run(
@@ -961,11 +1010,7 @@ function initStudents(db: Database) {
       s.status,
       instructorIdByName(db, s.instructor),
       vehicleIdByName(db, s.vehicle),
-      s.balance,
-      s.lastLesson,
-      s.nextLesson,
       s.progress,
-      JSON.stringify(s.lessons),
       JSON.stringify(s.documents),
       JSON.stringify(s.theory),
     );
