@@ -142,7 +142,7 @@ function AffectedLessons({
                       setSelected(next);
                     }}
                   />
-                  <span className="w-28 shrink-0 text-muted-foreground tabular-nums">
+                  <span className="w-32 shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
                     {parseISODate(lesson.date).toLocaleDateString("de-DE", {
                       weekday: "short",
                       day: "2-digit",
@@ -416,7 +416,7 @@ export function AbsencesDialog({
               Eintragen
             </Button>
           </div>
-          {preview.length > 0 && (
+          {preview.length > 0 && !impact && (
             <p className="text-xs text-amber-700 sm:col-span-3 dark:text-amber-400">
               Im gewählten Zeitraum {preview.length === 1 ? "ist" : "sind"}{" "}
               {preview.length} {preview.length === 1 ? "Termin" : "Termine"} gebucht —
