@@ -38,6 +38,10 @@ import {
 } from "@/lib/calendar-data";
 import { useCalendarEvents } from "@/hooks/use-calendar-events";
 import { useStudents } from "@/hooks/use-students";
+import { useAuthStatus } from "@/hooks/use-auth";
+import { useOpenItems } from "@/hooks/use-invoices";
+import { useStatistics } from "@/hooks/use-statistics";
+import { formatEuro } from "@/lib/money";
 
 /* Navigate without threading the router down — mirrors the "Schüler
    anmelden" button and the usePath() popstate listener in App.tsx. */
@@ -97,6 +101,30 @@ function HeaderStats({ events }: { events: CalEvent[] }) {
   const fahrstundenThisWeek = events.filter(isFahrstunde).length;
   const fahrstundenToday = eventsOn(events, TODAY).filter(isFahrstunde).length;
 
+  const role = useAuthStatus().data?.user?.role;
+  const canSeeFinance = role === "inhaber" || role === "buero";
+  const { statistics } = useStatistics();
+  const openItems = useOpenItems(canSeeFinance);
+  const monthKey = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  const month = monthKey(TODAY);
+  const previousMonth = monthKey(new Date(TODAY.getFullYear(), TODAY.getMonth() - 1, 1));
+  const revenueOf = (m: string) =>
+    statistics?.revenue.perMonth.find((row) => row.month === m)?.cents ?? 0;
+  const revenueThisMonth = revenueOf(month);
+  const revenueLastMonth = revenueOf(previousMonth);
+  const revenueTrend =
+    revenueLastMonth > 0
+      ? {
+          delta: `${revenueThisMonth >= revenueLastMonth ? "+" : "−"}${(
+            (Math.abs(revenueThisMonth - revenueLastMonth) / revenueLastMonth) * 100
+          ).toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`,
+          positive: revenueThisMonth >= revenueLastMonth,
+        }
+      : undefined;
+  const openInvoices = openItems.data?.invoices.length ?? 0;
+  const overdueInvoices = openItems.data?.totals.overdueCount ?? 0;
+
   const stats: Stat[] = [
     {
       label: "Schüler",
@@ -110,18 +138,26 @@ function HeaderStats({ events }: { events: CalEvent[] }) {
       href: "/kalendar",
       hint: `${fahrstundenToday} heute`,
     },
-    {
-      label: "Umsatz",
-      value: "€ 42.350",
-      href: "/buchhaltung",
-      trend: { delta: "+5,2 %", positive: true },
-    },
-    {
-      label: "Offene Rechnungen",
-      value: "14",
-      href: "/buchhaltung",
-      trend: { delta: "−3", positive: true },
-    },
+    // Finance readouts come from the ledger/invoices — hidden for roles
+    // without access to money matters (the API refuses them anyway).
+    ...(canSeeFinance
+      ? [
+          {
+            label: "Umsatz",
+            value: formatEuro(revenueThisMonth),
+            href: "/buchhaltung",
+            hint: "diesen Monat",
+            ...(revenueTrend ? { trend: revenueTrend } : {}),
+          },
+          {
+            label: "Offene Rechnungen",
+            value: String(openInvoices),
+            href: "/rechnungen",
+            hint:
+              overdueInvoices > 0 ? `${overdueInvoices} überfällig` : "keine überfällig",
+          },
+        ]
+      : []),
   ];
 
   return (

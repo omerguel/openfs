@@ -59,9 +59,10 @@ export function useUninvoicedCharges(studentId: number | null) {
   });
 }
 
-export function useOpenItems() {
+export function useOpenItems(enabled = true) {
   return useQuery({
     queryKey: ["invoices", "open-items"],
+    enabled,
     queryFn: async () => parseOrThrow<OpenItems>(await fetch("/api/open-items")),
   });
 }
