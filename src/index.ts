@@ -32,10 +32,11 @@ const seedDemo = process.env.SEED_DEMO === "1" || process.env.SEED_DEMO === "tru
 // MULTI_TENANT=1: one portal per school at <slug>.<BASE_DOMAIN>.
 const tenancy = demoMode ? null : tenancyConfigFromEnv();
 
-if (!demoMode) {
+if (!demoMode && !tenancy) {
   // SQLite needs the directory to exist before it can create the file.
-  mkdirSync("data", { recursive: true });
-  if (process.env.DB_PATH) mkdirSync(dirname(process.env.DB_PATH), { recursive: true });
+  // Only this one: the working directory may be read-only (systemd
+  // ProtectSystem=strict) when DB_PATH points elsewhere.
+  mkdirSync(dirname(process.env.DB_PATH || "data/fahrschule.db"), { recursive: true });
 }
 
 /* Uploaded documents: S3 when configured, else data/files (memory in
