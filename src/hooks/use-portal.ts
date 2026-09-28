@@ -7,9 +7,14 @@ import { useQuery } from "@tanstack/react-query";
 
 import { parseOrThrow } from "@/lib/api";
 import type { OutboxEntry } from "@/server/mail";
-import type { PortalLink, PortalMessage, PortalOverview } from "@/server/portal";
+import type {
+  PortalLink,
+  PortalLinkStatus,
+  PortalMessage,
+  PortalOverview,
+} from "@/server/portal";
 
-export type { PortalLink, PortalMessage, PortalOverview };
+export type { PortalLink, PortalLinkStatus, PortalMessage, PortalOverview };
 
 /* ------------------------------ staff ----------------------------- */
 
@@ -23,8 +28,12 @@ export function usePortalLink(studentId: number) {
   const query = useQuery({
     queryKey: ["portal-link", studentId],
     queryFn: async () =>
-      (await parseOrThrow<{ link: PortalLink | null }>(await fetch(linkPath(studentId))))
-        .link,
+      (
+        await parseOrThrow<{ link: PortalLinkStatus | null }>(
+          await fetch(linkPath(studentId)),
+        )
+      ).link,
+
   });
   return { link: query.data ?? null, loading: query.isPending, refresh: query.refetch };
 }

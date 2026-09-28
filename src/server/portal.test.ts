@@ -15,7 +15,7 @@ import {
 } from "./chat";
 import { createCalendarEvent } from "./calendar-events";
 import { openDb } from "./db";
-import { listOutbox } from "./mail";
+import { deliverPending, listOutbox, OUTBOX_SECRET_PLACEHOLDER } from "./mail";
 import {
   createPortalLink,
   ensurePortalTables,
@@ -80,7 +80,48 @@ describe("tokens", () => {
     const second = createPortalLink(db, student.id);
     expect(resolvePortalToken(db, first.token)).toBeNull();
     expect(resolvePortalToken(db, second.token)).toBe(student.id);
-    expect(getActivePortalLink(db, student.id)?.token).toBe(second.token);
+    expect(getActivePortalLink(db, student.id)).toEqual({
+      createdAt: second.createdAt,
+    });
+  });
+
+  test("only the SHA-256 of a token is stored", () => {
+    const student = newStudent(db);
+    const { token } = createPortalLink(db, student.id);
+    const stored = db
+      .query<{ token_hash: string }, [number]>(
+        "SELECT token_hash FROM portal_tokens WHERE student_id = ?",
+      )
+      .all(student.id)
+      .map((row) => row.token_hash);
+    expect(stored).toEqual([
+      new Bun.CryptoHasher("sha256").update(token).digest("hex"),
+    ]);
+    expect(Buffer.from(db.serialize()).toString("latin1")).not.toContain(token);
+  });
+
+  test("plaintext tokens of older databases are hashed in place and keep working", () => {
+    const old = openDb(":memory:");
+    old.exec(`CREATE TABLE portal_tokens (
+      token TEXT PRIMARY KEY,
+      student_id INTEGER NOT NULL REFERENCES students(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      revoked_at TEXT
+    )`);
+    const student = newStudent(old);
+    const token = generatePortalToken();
+    old.prepare("INSERT INTO portal_tokens (token, student_id) VALUES (?, ?)").run(
+      token,
+      student.id,
+    );
+    expect(resolvePortalToken(old, token)).toBe(student.id);
+    const rows = old
+      .query<{ token_hash: string }, []>("SELECT token_hash FROM portal_tokens")
+      .all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.token_hash).toMatch(/^[0-9a-f]{64}$/);
+    ensurePortalTables(old);
+    expect(resolvePortalToken(old, token)).toBe(student.id);
   });
 
   test("revoke disables the link", () => {
@@ -227,10 +268,34 @@ describe("sendPortalLinkMail", () => {
   test("queues the link to the student's e-mail", () => {
     const student = newStudent(db);
     const entry = sendPortalLinkMail(db, student.id, "https://fs.example/irgendwas");
-    const link = getActivePortalLink(db, student.id)!;
     expect(entry.kind).toBe("portal_link");
     expect(entry.recipient).toBe("paula@example.de");
-    expect(entry.bodyText).toContain(`https://fs.example/portal/${link.token}`);
+    // The outbox holds a placeholder, never a working token.
+    expect(entry.bodyText).toContain(
+      `https://fs.example/portal/${OUTBOX_SECRET_PLACEHOLDER}`,
+    );
+    expect(getActivePortalLink(db, student.id)).toBeNull();
+  });
+
+  test("delivery mints a working token for the mail; a failed send drops it", async () => {
+    const student = newStudent(db);
+    sendPortalLinkMail(db, student.id, "https://fs.example");
+    const failing = { send: async () => Promise.reject(new Error("SMTP down")) };
+    await deliverPending(db, failing);
+    expect(getActivePortalLink(db, student.id)).toBeNull();
+
+    const sent: string[] = [];
+    await deliverPending(db, {
+      send: async (mail) => {
+        sent.push(mail.text);
+      },
+    });
+    const token = sent[0]!.match(/\/portal\/([A-Za-z0-9_-]{43})/)![1]!;
+    expect(resolvePortalToken(db, token)).toBe(student.id);
+    // Still only the placeholder at rest.
+    const [row] = listOutbox(db);
+    expect(row!.bodyText).not.toContain(token);
+    expect(row!.status).toBe("gesendet");
   });
 
   test("requires an e-mail address and an http(s) base URL", () => {
@@ -287,10 +352,12 @@ describe("portal routes", () => {
     const { token } = (await created.json()) as { token: string };
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
+    // Afterwards only "active since" — the token is shown once.
     const current = (await (await fetch(url(path))).json()) as {
-      link: { token: string };
+      link: Record<string, unknown>;
     };
-    expect(current.link.token).toBe(token);
+    expect(Object.keys(current.link)).toEqual(["createdAt"]);
+
 
     const revoked = await fetch(url(path), { method: "DELETE" });
     expect(await revoked.json()).toEqual({ ok: true, revoked: 1 });
