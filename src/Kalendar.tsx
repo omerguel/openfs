@@ -158,7 +158,8 @@ const defaultStartTime = (date: Date) => {
 
 /* Non-blocking server hints (e.g. daily limit exceeded) after a write. */
 const showWarnings = (warnings?: string[]) => {
-  for (const warning of warnings ?? []) toast.warning(warning);
+  // A series repeats the same warning per occurrence — show it once.
+  for (const warning of new Set(warnings ?? [])) toast.warning(warning);
 };
 
 const errorMessage = (error: unknown, fallback: string) =>
@@ -608,8 +609,9 @@ export function Kalendar() {
   /* Scrolling                                                        */
   /* ---------------------------------------------------------------- */
 
-  // Open at the start of the working day (07:00) with today's column in
-  // view when the week overflows horizontally (phones).
+  // Open at the start of the working day (07:00) — or, later in the day,
+  // an hour before now — with today's column in view when the week
+  // overflows horizontally (phones).
   const initialScrollDone = useRef(false);
   useEffect(() => {
     const gridEl = gridRef.current;
@@ -618,7 +620,9 @@ export function Kalendar() {
     initialScrollDone.current = true;
     // The sticky day header covers exactly the space above the hour grid,
     // so scrolling by the hour's offset puts it right below the header.
-    gridEl.scrollTop = Math.max(topForMinutes(SCROLL_TO_HOUR * 60, grid) - 8, 0);
+    const hour = new Date().getHours();
+    const scrollHour = hour > SCROLL_TO_HOUR && hour < 20 ? hour - 1 : SCROLL_TO_HOUR;
+    gridEl.scrollTop = Math.max(topForMinutes(scrollHour * 60, grid) - 8, 0);
     if (view === "woche") {
       const dayIndex = (TODAY.getDay() + 6) % 7;
       const gutterWidth =
@@ -1487,7 +1491,10 @@ export function Kalendar() {
       </PageHeader>
 
       <div className="flex min-h-0 flex-1 gap-[3px] overflow-hidden bg-sidebar">
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background">
+        <section
+          aria-label="Kalender"
+          className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-t-sm rounded-b-lg border border-border/70 bg-background"
+        >
           {/* Toolbar: view, filters, search, legend, print */}
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-2 py-1.5">
             <ToggleGroup
@@ -1674,8 +1681,8 @@ export function Kalendar() {
                 </div>
               </div>
               <div className="flex min-h-8 border-b border-border/70 bg-muted/[0.18]">
-                <div className="flex w-14 shrink-0 items-center justify-end pr-2 text-[10px] text-muted-foreground">
-                  Ganztägig
+                <div className="flex w-14 shrink-0 items-center justify-end pr-1.5 text-right text-[10px] leading-tight text-muted-foreground">
+                  Ganz{"\u00AD"}tägig
                 </div>
                 <div
                   className="grid flex-1"
@@ -1823,7 +1830,7 @@ export function Kalendar() {
               </div>
             </div>
           </div>
-        </main>
+        </section>
 
         <section
           className={cn(
