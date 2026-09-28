@@ -270,6 +270,7 @@ function normalize(input: Partial<VehicleInput>, current: Vehicle): Vehicle {
     status: current.status,
     accent: str("accent"),
     details: current.details,
+    instructorIds: current.instructorIds,
   };
 
   if (input.status !== undefined) {

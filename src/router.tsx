@@ -4,6 +4,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  redirect,
 } from "@tanstack/react-router";
 
 import { Anfrage } from "./Anfrage";
@@ -28,11 +29,9 @@ import { Nachrichten } from "./Nachrichten";
 import { NeueSchueler } from "./NeueSchueler";
 import { Plaudern } from "./Plaudern";
 import { Preisangebot } from "./Preisangebot";
-import { Profil } from "./Profil";
 import { Rechnungen } from "./Rechnungen";
 import { Pruefungsplaner } from "./Pruefungsplaner";
 import { Schuelerportal } from "./Schuelerportal";
-import { Schulprofil } from "./Schulprofil";
 import { Statistik } from "./Statistik";
 import { Terminanfragen } from "./Terminanfragen";
 import { Theorie } from "./Theorie";
@@ -40,6 +39,7 @@ import { TheorieGruppen } from "./TheorieGruppen";
 import { Vertraege } from "./Vertraege";
 import { queryClient } from "@/lib/query-client";
 import { vehiclesQueryOptions } from "@/hooks/use-vehicles";
+import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings-tabs";
 
 type RouterContext = {
   queryClient: QueryClient;
@@ -71,10 +71,13 @@ const dashboardRoute = createRoute({
   component: Dashboard,
 });
 
+/* Profil + Schulprofil were merged into "Fahrschule & Einstellungen". */
 const profileRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/profil",
-  component: Profil,
+  beforeLoad: () => {
+    throw redirect({ to: "/fahrschule", search: { tab: "stammdaten" }, replace: true });
+  },
 });
 
 const theoryRoute = createRoute({
@@ -103,11 +106,20 @@ const accountingRoute = createRoute({
 
 const calendarRoute = createRoute({
   getParentRoute: () => portalRoute,
-  path: "/kalendar",
+  path: "/kalender",
   validateSearch: (search): { filter?: "non-fahrstunde" } => ({
     filter: search.filter === "non-fahrstunde" ? search.filter : undefined,
   }),
   component: Kalendar,
+});
+
+/* Old spelling — bookmarks and links keep working. */
+const legacyCalendarRoute = createRoute({
+  getParentRoute: () => portalRoute,
+  path: "/kalendar",
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: "/kalender", search, replace: true });
+  },
 });
 
 const vehiclesRoute = createRoute({
@@ -169,7 +181,9 @@ const examPlannerRoute = createRoute({
 const schoolProfileRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/schulprofil",
-  component: Schulprofil,
+  beforeLoad: () => {
+    throw redirect({ to: "/fahrschule", search: { tab: "profil" }, replace: true });
+  },
 });
 
 const appointmentRequestsRoute = createRoute({
@@ -181,6 +195,12 @@ const appointmentRequestsRoute = createRoute({
 const schoolRoute = createRoute({
   getParentRoute: () => portalRoute,
   path: "/fahrschule",
+  // ?tab=stammdaten|bank|profil|zeiten|standorte|recht|absagen
+  validateSearch: (search): { tab?: SettingsTab } => ({
+    tab: SETTINGS_TABS.includes(search.tab as SettingsTab)
+      ? (search.tab as SettingsTab)
+      : undefined,
+  }),
   component: Fahrschule,
 });
 
@@ -272,6 +292,7 @@ const portalRouteTree = portalRoute.addChildren([
   studentDetailRoute,
   accountingRoute,
   calendarRoute,
+  legacyCalendarRoute,
   vehiclesRoute,
   instructorsRoute,
   newStudentRoute,

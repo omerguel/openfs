@@ -9,6 +9,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { toInstagramUrl } from "../lib/instagram";
 import { demoDataEnabled, getCompany, setCompany } from "./db";
 
 export type OpeningHoursEntry = {
@@ -184,19 +185,13 @@ const LIST_FIELDS = [
 
 /** "@fahrschule", "fahrschule" or "instagram.com/fahrschule" → full URL. */
 export function normalizeInstagram(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  const handle = trimmed
-    .replace(/^(www\.)?instagram\.com\//i, "")
-    .replace(/^@/, "")
-    .replace(/\/+$/, "");
-  if (!/^[A-Za-z0-9._]{1,30}$/.test(handle)) {
+  const url = toInstagramUrl(value);
+  if (url === null) {
     throw new ValidationError(
       "Instagram bitte als Profil-Link oder @Name angeben (z. B. @fahrschule_nord).",
     );
   }
-  return `https://instagram.com/${handle}`;
+  return url;
 }
 
 function sanitizeStringList(value: unknown, label: string): string[] {

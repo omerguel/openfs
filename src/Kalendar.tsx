@@ -482,7 +482,7 @@ const DayColumn = memo(
 /* ------------------------------------------------------------------ */
 
 export function Kalendar() {
-  const { filter } = useSearch({ from: "/_portal/kalendar" });
+  const { filter } = useSearch({ from: "/_portal/kalender" });
   const initialTypeFilter = filter === "non-fahrstunde" ? nonFahrstundeTypes : undefined;
   const [anchor, setAnchor] = useState<Date>(TODAY);
   const [selected, setSelected] = useState<Date | undefined>(TODAY);
