@@ -28,6 +28,11 @@ export type StudentRecord = Student & {
   balanceCents: number;
 };
 
+/** The student as a Fahrlehrer/in may see it: no balance, no prices. */
+export function withoutMoney(student: StudentRecord): StudentRecord {
+  return { ...student, balance: "", balanceCents: 0, contractPrices: {} };
+}
+
 /** Write payload: display names or ids for the instructor/vehicle links. */
 export type StudentInput = Partial<Student> & {
   instructorId?: number | null;

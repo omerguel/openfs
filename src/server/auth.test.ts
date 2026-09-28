@@ -227,6 +227,19 @@ describe("roles", () => {
     expect(event.status).toBe(201);
   });
 
+  test("Fahrlehrer: the student list carries no balances", async () => {
+    await seedUsers();
+    start();
+    type List = { students: { balance: string; balanceCents: number }[] };
+    const read = async (cookie: string) =>
+      ((await (await fetch(`${base}/api/students`, as(cookie))).json()) as List).students;
+    const owner = await read(await login("chefin@fs.de", "geheim-geheim"));
+    const instructor = await read(await login("lehrer@fs.de", "geheim-geheim"));
+    expect(owner.length).toBeGreaterThan(0);
+    expect(owner.some((s) => s.balance !== "")).toBe(true);
+    expect(instructor.every((s) => s.balance === "" && s.balanceCents === 0)).toBe(true);
+  });
+
   test("Büro: everything but user admin and the protocol", async () => {
     await seedUsers();
     start();

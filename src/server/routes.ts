@@ -29,7 +29,13 @@ import {
   listPricePlans,
   updatePricePlan,
 } from "./price-plans";
-import { createStudent, deleteStudent, listStudents, updateStudent } from "./students";
+import {
+  createStudent,
+  deleteStudent,
+  listStudents,
+  updateStudent,
+  withoutMoney,
+} from "./students";
 import {
   createCalendarEvent,
   type CalendarEventInput,
@@ -113,7 +119,17 @@ export function instructorRoutes(db: Database) {
 export function studentRoutes(db: Database) {
   return {
     "/api/students": {
-      GET: (req: BunRequest) => handle(() => json({ students: listStudents(db) }))(),
+      GET: (req: BunRequest) =>
+        handle(() => {
+          // Fahrlehrer/innen have no finance access: no balances or prices.
+          const students = listStudents(db);
+          return json({
+            students:
+              currentUser()?.role === "fahrlehrer"
+                ? students.map(withoutMoney)
+                : students,
+          });
+        })(),
       POST: (req: BunRequest) =>
         handle(async () => json(createStudent(db, await req.json()), 201))(),
     },
