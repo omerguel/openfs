@@ -40,10 +40,6 @@
     "agentation": "^3.0.2",
     "bun-plugin-tailwind": "^0.1.2",
     "playwright": "1.56.1",
-    "shadcn": "^4.11.0",
     "tailwindcss": "^4.3.0"
-  },
-  "overrides": {
-    "hono": "4.12.31"
   }
 }

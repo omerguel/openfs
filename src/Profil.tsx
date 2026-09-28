@@ -347,6 +347,12 @@ const EMPTY_COMPANY: CompanyProfile = {
   iban: "",
   bic: "",
   glaeubigerId: "",
+  inhaber: "",
+  registergericht: "",
+  registernummer: "",
+  aufsichtsbehoerde: "",
+  datenschutzEmail: "",
+  impressumZusatz: "",
 };
 
 export function Profil() {
@@ -653,6 +659,120 @@ export function Profil() {
                     />
                   </div>
                 </Field>
+              </div>
+
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm font-medium">Impressum & Datenschutz</span>
+                    <span className="text-xs text-muted-foreground">
+                      Erscheinen auf den öffentlichen Seiten Impressum und
+                      Datenschutzerklärung, zusammen mit Name, Anschrift, Kontakt und
+                      Steuerangaben oben.
+                    </span>
+                  </div>
+                  <div className="flex gap-4 text-sm">
+                    <a
+                      href="/impressum"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      Impressum ansehen
+                    </a>
+                    <a
+                      href="/datenschutz"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      Datenschutz ansehen
+                    </a>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <Field
+                    label="Inhaber:in / vertretungsberechtigt"
+                    htmlFor="inhaber"
+                    hint="Pflichtangabe im Impressum (§ 5 DDG)."
+                  >
+                    <Input
+                      id="inhaber"
+                      placeholder="Vor- und Nachname"
+                      value={company.inhaber}
+                      onChange={(e) => updateCompany({ inhaber: e.target.value })}
+                    />
+                  </Field>
+                  <Field
+                    label="Aufsichtsbehörde"
+                    htmlFor="aufsichtsbehoerde"
+                    hint="Behörde, die die Fahrschulerlaubnis erteilt hat."
+                  >
+                    <Input
+                      id="aufsichtsbehoerde"
+                      placeholder="z. B. Stadt Darmstadt, Straßenverkehrsbehörde"
+                      value={company.aufsichtsbehoerde}
+                      onChange={(e) =>
+                        updateCompany({ aufsichtsbehoerde: e.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Registergericht"
+                    htmlFor="registergericht"
+                    hint="Optional — nur bei Eintragung im Handelsregister."
+                  >
+                    <Input
+                      id="registergericht"
+                      placeholder="z. B. Amtsgericht Darmstadt"
+                      value={company.registergericht}
+                      onChange={(e) => updateCompany({ registergericht: e.target.value })}
+                    />
+                  </Field>
+                  <Field
+                    label="Registernummer"
+                    htmlFor="registernummer"
+                    hint="Optional — z. B. HRB 12345."
+                  >
+                    <Input
+                      id="registernummer"
+                      className="font-mono text-[13px]"
+                      placeholder="z. B. HRB 12345"
+                      value={company.registernummer}
+                      onChange={(e) => updateCompany({ registernummer: e.target.value })}
+                    />
+                  </Field>
+                  <Field
+                    label="E-Mail für Datenschutzanfragen"
+                    htmlFor="datenschutzemail"
+                    hint="Optional — sonst gilt die E-Mail-Adresse oben."
+                  >
+                    <div className="relative">
+                      <Mail className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="datenschutzemail"
+                        type="email"
+                        className="pl-9"
+                        value={company.datenschutzEmail}
+                        onChange={(e) =>
+                          updateCompany({ datenschutzEmail: e.target.value })
+                        }
+                      />
+                    </div>
+                  </Field>
+                  <Field
+                    label="Zusatz zum Impressum"
+                    htmlFor="impressumzusatz"
+                    hint="Optional — erscheint am Ende des Impressums."
+                  >
+                    <Textarea
+                      id="impressumzusatz"
+                      rows={3}
+                      value={company.impressumZusatz}
+                      onChange={(e) => updateCompany({ impressumZusatz: e.target.value })}
+                    />
+                  </Field>
+                </div>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">

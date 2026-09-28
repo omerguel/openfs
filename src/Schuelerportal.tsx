@@ -32,6 +32,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { LegalLinks } from "@/components/legal/LegalPage";
 
 type Lesson = PortalOverview["upcomingLessons"][number];
 
@@ -378,7 +379,7 @@ function PortalContent({ token, data }: { token: string; data: PortalOverview })
         )}
       </Section>
 
-      <footer className="flex flex-col gap-2 px-1 pb-6 text-sm text-muted-foreground">
+      <footer className="flex flex-col gap-2 px-1 pb-2 text-sm text-muted-foreground">
         <span className="font-medium text-foreground">{data.school.name}</span>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           {data.school.phone && (
@@ -454,6 +455,9 @@ export function Schuelerportal() {
         ) : (
           <PortalContent token={token} data={overview.data} />
         )}
+        <footer className="px-1 pb-4">
+          <LegalLinks />
+        </footer>
       </main>
     </div>
   );
