@@ -497,6 +497,12 @@ export const DEFAULT_COMPANY: CompanyProfile = {
   iban: "",
   bic: "",
   glaeubigerId: "",
+  inhaber: "",
+  registergericht: "",
+  registernummer: "",
+  aufsichtsbehoerde: "",
+  datenschutzEmail: "",
+  impressumZusatz: "",
 };
 
 export function openDb(path = "data/fahrschule.db"): Database {

@@ -347,6 +347,12 @@ const EMPTY_COMPANY: CompanyProfile = {
   iban: "",
   bic: "",
   glaeubigerId: "",
+  inhaber: "",
+  registergericht: "",
+  registernummer: "",
+  aufsichtsbehoerde: "",
+  datenschutzEmail: "",
+  impressumZusatz: "",
 };
 
 export function Profil() {

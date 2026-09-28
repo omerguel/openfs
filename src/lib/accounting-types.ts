@@ -207,4 +207,17 @@ export type CompanyProfile = {
   bic: string;
   /** SEPA-Gläubiger-Identifikationsnummer (e.g. DE98ZZZ09999999999). */
   glaeubigerId: string;
+  /* Impressum / Datenschutz (public /impressum and /datenschutz pages). */
+  /** Inhaber:in bzw. vertretungsberechtigte Person. */
+  inhaber: string;
+  /** Registergericht — optional, only for registered companies. */
+  registergericht: string;
+  /** Handelsregisternummer — optional (e.g. "HRB 12345"). */
+  registernummer: string;
+  /** Behörde, die die Fahrschulerlaubnis erteilt hat (Aufsichtsbehörde). */
+  aufsichtsbehoerde: string;
+  /** Kontakt für Datenschutzanfragen — falls leer, gilt `email`. */
+  datenschutzEmail: string;
+  /** Freitext, der am Ende des Impressums erscheint. */
+  impressumZusatz: string;
 };
