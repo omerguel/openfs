@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "./sqlite";
 
-import { openDb, setCompany, getCompany, DEFAULT_COMPANY } from "./db";
+import { openDb, setCompany, getCompany, DEFAULT_COMPANY, DEMO_COMPANY } from "./db";
 import {
   createTransaction,
   getQuittung,
@@ -524,9 +524,9 @@ describe("seed", () => {
 
 describe("company settings", () => {
   test("defaults and round-trip", () => {
-    expect(getCompany(db)).toEqual(DEFAULT_COMPANY);
+    expect(getCompany(db)).toEqual(DEMO_COMPANY);
     const updated = {
-      ...DEFAULT_COMPANY,
+      ...DEMO_COMPANY,
       steuernummer: "012 345 67890",
       ustIdNr: "DE123456789",
     };

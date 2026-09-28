@@ -52,7 +52,7 @@ export async function prepareSchoolDb(
   ensureReviewTables(db);
   ensureStudentFileTables(db);
   if (options.demoLogin && countUsers(db) === 0) {
-    await createUser(db, { ...DEMO_LOGIN, name: "Demo Inhaber/in", role: "inhaber" });
+    await createUser(db, { ...DEMO_LOGIN, name: "Sabine Krämer", role: "inhaber" });
   }
   if (options.fileStore) {
     // Older databases kept uploads as base64 in students.documents.
