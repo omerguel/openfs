@@ -19,7 +19,7 @@
 import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
-import { ValidationError } from "./errors";
+import { BusyError, ValidationError } from "./errors";
 import {
   clientIp,
   createFailureLimiter,
@@ -188,27 +188,50 @@ function requireInstructorId(db: Database, value: unknown): number | null {
   return id;
 }
 
-export async function createUser(
-  db: Database,
-  input: {
-    email?: unknown;
-    name?: unknown;
-    password?: unknown;
-    role?: unknown;
-    instructorId?: unknown;
-    /** true: no password yet — the user sets it via an Einladungslink. */
-    invite?: unknown;
-  },
-): Promise<UserRecord> {
+export type NewUserInput = {
+  email?: unknown;
+  name?: unknown;
+  password?: unknown;
+  role?: unknown;
+  instructorId?: unknown;
+  /** true: no password yet — the user sets it via an Einladungslink. */
+  invite?: unknown;
+};
+
+export type PreparedUser = {
+  email: string;
+  name: string;
+  role: Role;
+  hash: string;
+  instructorId: unknown;
+};
+
+/** Validates a new account and hashes its password (the slow part), so
+ *  the insert itself can run synchronously inside a transaction. */
+export async function prepareUser(input: NewUserInput): Promise<PreparedUser> {
   const email = requireEmail(input.email);
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name) throw new ValidationError("Name ist erforderlich.");
   const invited = input.invite === true && !input.password;
   const password = invited ? null : requirePassword(input.password);
   const role = requireRole(input.role);
-  const instructorId = requireInstructorId(db, input.instructorId);
   // Invited users get an unguessable placeholder until they accept.
-  const hash = await Bun.password.hash(password ?? newToken());
+  const hash = await hashPassword(password ?? newToken());
+  return { email, name, role, hash, instructorId: input.instructorId };
+}
+
+export async function createUser(
+  db: Database,
+  input: NewUserInput,
+): Promise<UserRecord> {
+  requireInstructorId(db, input.instructorId);
+  return insertUser(db, await prepareUser(input));
+}
+
+/** Synchronous insert of a prepared account (see prepareUser). */
+export function insertUser(db: Database, prepared: PreparedUser): UserRecord {
+  const { email, name, role, hash } = prepared;
+  const instructorId = requireInstructorId(db, prepared.instructorId);
   try {
     const row = db
       .query<{ id: number }, [string, string, string, Role, number | null]>(
@@ -277,7 +300,7 @@ export async function updateUser(
   const hash =
     input.password === undefined
       ? current.password_hash
-      : await Bun.password.hash(requirePassword(input.password));
+      : await hashPassword(requirePassword(input.password));
   const write = db.transaction(() => {
     db.prepare(
       `UPDATE users SET name = ?, role = ?, active = ?, instructor_id = ?, password_hash = ?
@@ -290,6 +313,54 @@ export async function updateUser(
   });
   write();
   return toUser(getUserRow(db, id));
+}
+
+/** Sets an already hashed password and ends the user's sessions —
+ *  synchronous, for use inside a transaction (invites.ts). */
+export function setPasswordHash(db: Database, id: number, hash: string): UserRecord {
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, id);
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+  return toUser(getUserRow(db, id));
+}
+
+/* ------------------------------------------------------------------ */
+/* password hashing: argon2id with bounded concurrency                 */
+/* ------------------------------------------------------------------ */
+
+/* Every argon2id run costs ~64 MB and noticeable CPU. The public
+   endpoints (login, setup, invite) must not let a burst of requests run
+   hundreds at once: at most ARGON_CONCURRENCY run in parallel, up to
+   ARGON_QUEUE wait, everything beyond is answered with 503. */
+const ARGON_CONCURRENCY = 4;
+const ARGON_QUEUE = 64;
+let argonActive = 0;
+const argonWaiting: (() => void)[] = [];
+
+export async function withArgonSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (argonActive >= ARGON_CONCURRENCY) {
+    if (argonWaiting.length >= ARGON_QUEUE) {
+      throw new BusyError("Der Server ist ausgelastet. Bitte gleich erneut versuchen.");
+    }
+    // The finishing run hands its slot over (argonActive stays the same).
+    await new Promise<void>((resolve) => argonWaiting.push(resolve));
+  } else {
+    argonActive += 1;
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = argonWaiting.shift();
+    if (next) next();
+    else argonActive -= 1;
+  }
+}
+
+export function hashPassword(password: string): Promise<string> {
+  return withArgonSlot(() => Bun.password.hash(password));
+}
+
+function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return withArgonSlot(() => Bun.password.verify(password, hash));
 }
 
 /* ------------------------------------------------------------------ */
@@ -723,16 +794,19 @@ export function authRoutes(fallbackDb: Database, options: AuthRouteOptions = {})
       POST: (req: BunRequest, server: RequestIPSource) =>
         handle(async () => {
           const db = dbOf(fallbackDb);
-          if (countUsers(db) > 0) {
-            return err("Die Einrichtung wurde bereits abgeschlossen.", 409);
-          }
+          const done = () => err("Die Einrichtung wurde bereits abgeschlossen.", 409);
+          if (countUsers(db) > 0) return done();
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          // Cheap account checks first, then the school data (idempotent,
-          // so a failed attempt can simply be repeated), then the account.
-          requireEmail(body.email);
-          requirePassword(body.password);
-          options.onSetup?.(db, body);
-          const user = await createUser(db, { ...body, role: "inhaber" });
+          // Validate and hash first (slow, async), then check-and-insert in
+          // ONE immediate transaction: two racing setups cannot both create
+          // an Inhaber, and a failed attempt leaves no school data behind.
+          const prepared = await prepareUser({ ...body, role: "inhaber" });
+          const user = immediateTransaction(db, () => {
+            if (countUsers(db) > 0) return null;
+            options.onSetup?.(db, body);
+            return insertUser(db, prepared);
+          });
+          if (!user) return done();
           const cookie = startSession(db, req, server, user.id);
           return new Response(JSON.stringify({ user }), {
             status: 201,

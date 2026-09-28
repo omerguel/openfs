@@ -46,3 +46,19 @@ export interface Database {
 export function openSqlite(path: string): Database {
   return new BunDatabase(path, { create: true }) as unknown as Database;
 }
+
+/** Runs `fn` in a BEGIN IMMEDIATE transaction: the write lock is taken
+ *  up front, so a check-then-insert inside cannot interleave with another
+ *  connection doing the same (first-run setup). Nested db.transaction()
+ *  calls inside fall back to savepoints. */
+export function immediateTransaction<T>(db: Database, fn: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
