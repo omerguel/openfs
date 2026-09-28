@@ -103,13 +103,17 @@ export function CalendarEventCard({
           }}
           style={style}
           className={cn(
-            "group absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30",
-            "h-[var(--card-h)] border-[color-mix(in_oklab,var(--border)_80%,var(--ev))] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
+            "absolute touch-none select-none overflow-hidden rounded-md border text-left outline-hidden transition-[color,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
+            "h-[var(--card-h)] bg-[color-mix(in_oklab,var(--background)_90%,var(--ev))] hover:bg-[color-mix(in_oklab,var(--background)_85%,var(--ev))]",
+            isSelected
+              ? "border-primary/70 ring-1 ring-primary/70 ring-inset"
+              : hasConflict
+                ? "border-destructive/70 ring-1 ring-destructive/50 ring-inset"
+                : "border-[color-mix(in_oklab,var(--border)_80%,var(--ev))]",
             "cursor-grab active:cursor-grabbing hover:z-30 focus-visible:z-30 data-[state=open]:z-30",
             event.tentative && "border-dashed",
             cancelled && "opacity-60",
-            hasConflict && "ring-2 ring-destructive/60",
-            isSelected && "z-30 ring-2 ring-primary/40",
+            isSelected && "z-30",
             isDragging ? "z-40 opacity-90 transition-none" : "z-20",
           )}
         >
@@ -179,9 +183,7 @@ export function CalendarEventCard({
                 pointerEvent.stopPropagation();
                 onResizeStart(pointerEvent);
               }}
-            >
-              <span className="mt-px h-[3px] w-6 rounded-full bg-[var(--ev)] opacity-0 transition-opacity group-hover:opacity-60" />
-            </span>
+            />
           )}
         </button>
       </ContextMenuTrigger>

@@ -348,7 +348,7 @@ const DayColumn = memo(
           const start = toMinutes(event.start);
           const end = toMinutes(event.end);
           const height = Math.max(
-            ((end - start) / 60) * HOUR_HEIGHT - 2,
+            ((end - start) / 60) * HOUR_HEIGHT - 3,
             MIN_CARD_HEIGHT,
           );
           return (
@@ -372,7 +372,7 @@ const DayColumn = memo(
               onDelete={() => onDelete(event)}
               style={
                 {
-                  top: topForMinutes(start, grid),
+                  top: topForMinutes(start, grid) + 1,
                   left: `calc(${(column / columns) * 100}% + 2px)`,
                   width: `calc(${100 / columns}% - 4px)`,
                   "--card-h": `${height}px`,
