@@ -71,7 +71,7 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
       )}
 
       {hasTaxIds && (
-        <LegalSection title="Umsatzsteuer-ID">
+        <LegalSection title={info.steuernummer ? "Steuerangaben" : "Umsatzsteuer-ID"}>
           {info.ustIdNr && (
             <p>
               Umsatzsteuer-Identifikationsnummer gemäß § 27a Umsatzsteuergesetz:{" "}
