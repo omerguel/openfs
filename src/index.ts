@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import index from "./index.html";
 
 import { API_NOT_FOUND, buildApiRoutes } from "./server/app-routes";
@@ -34,6 +35,7 @@ const tenancy = demoMode ? null : tenancyConfigFromEnv();
 if (!demoMode) {
   // SQLite needs the directory to exist before it can create the file.
   mkdirSync("data", { recursive: true });
+  if (process.env.DB_PATH) mkdirSync(dirname(process.env.DB_PATH), { recursive: true });
 }
 
 /* Uploaded documents: S3 when configured, else data/files (memory in
