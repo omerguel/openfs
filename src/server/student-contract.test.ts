@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { listArchivedContracts, restoreArchived } from "./archive";
-import { openDb } from "./db";
+import { getCompany, openDb, setCompany } from "./db";
 import { ValidationError } from "./engine";
 import type { Database } from "./sqlite";
 import { createStudent, deleteStudent, getStudent, updateStudent } from "./students";
@@ -55,6 +55,21 @@ describe("contract prices", () => {
     expect(() =>
       updateStudent(db, mia.id, { contractPrices: { trinkgeld: 1 } as never }),
     ).toThrow(ValidationError);
+  });
+});
+
+describe("defaults", () => {
+  test("the Fahrschule defaults to the school's own name", () => {
+    setCompany(db, { ...getCompany(db), name: "Fahrschule Sonnenschein" });
+    expect(createStudent(db, base).drivingSchool).toBe("Fahrschule Sonnenschein");
+    expect(
+      createStudent(db, {
+        ...base,
+        drivingSchool: "Filiale Nord",
+        contractNumber: "V-2026-0002",
+        customerNumber: "1002",
+      }).drivingSchool,
+    ).toBe("Filiale Nord");
   });
 });
 

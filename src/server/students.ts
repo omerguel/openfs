@@ -7,6 +7,7 @@ import type { Database, SQLQueryBindings } from "./sqlite";
 
 import { parseContractPriceOverrides } from "../lib/contract-prices";
 import { defaultPlanForClasses } from "../lib/price-plan";
+import { getCompany } from "./db";
 import { listPricePlans } from "./price-plans";
 import type { Companion, Student, TheoryManual } from "../lib/student-data";
 import { archiveRow, tableExists } from "./archive";
@@ -413,6 +414,9 @@ export function createStudent(db: Database, input: StudentInput): StudentRecord 
   const data = normalize(db, input, EMPTY);
   // No plan chosen: pin the class default so the student's prices no
   // longer shift when plans are reordered or added later.
+  if (!data.drivingSchool && tableExists(db, "settings")) {
+    data.drivingSchool = getCompany(db).name;
+  }
   if (input.pricePlanId === undefined && tableExists(db, "price_plans")) {
     data.pricePlanId =
       defaultPlanForClasses(listPricePlans(db), data.classes)?.id ?? null;
