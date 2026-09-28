@@ -10,6 +10,7 @@
     "test": "bun test",
     "test:e2e": "bun scripts/e2e-smoke.ts",
     "restore": "bun scripts/restore.ts",
+    "drill": "bun scripts/restore-drill.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "biome check src scripts",
     "format": "biome format --write src scripts"
