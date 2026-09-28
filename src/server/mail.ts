@@ -7,6 +7,12 @@
 /* and /api/settings/notifications. Delivery runs out-of-band via       */
 /* startMailScheduler() (src/index.ts) — never in tests.                */
 /*                                                                     */
+/* Secrets never rest in the outbox: a mail that carries an access link */
+/* (Einladung, Schülerportal) is queued with OUTBOX_SECRET_PLACEHOLDER; */
+/* the token is minted by the kind's registered minter right before    */
+/* sending and dropped again if sending fails. The outbox (readable in */
+/* Nachrichten) therefore never contains a working link.               */
+/*                                                                     */
 /* Status lifecycle: wartend → gesendet | wartend (retry, attempts+1)   */
 /* → fehlgeschlagen after MAX_ATTEMPTS. Without SMTP configuration      */
 /* queued mails become 'nicht_konfiguriert' (visible/copyable in the   */
@@ -56,8 +62,25 @@ export type MailKind =
   | "lesson_reminder"
   | "lesson_cancelled"
   | "portal_link"
+  | "user_invite"
   | "lesson_reminder_sms"
   | "generic";
+
+/** Stands in for an access token in a queued mail body — see header. */
+export const OUTBOX_SECRET_PLACEHOLDER = "[Zugangscode wird beim Versand eingesetzt]";
+
+/** Mints the secret for one outbox entry at delivery time; `discard`
+ *  undoes it when the mail could not be sent. */
+export type OutboxSecretMinter = (
+  db: Database,
+  entry: { relatedType: string | null; relatedId: number | null },
+) => { value: string; discard: () => void };
+
+const secretMinters = new Map<MailKind, OutboxSecretMinter>();
+
+export function registerOutboxSecret(kind: MailKind, mint: OutboxSecretMinter): void {
+  secretMinters.set(kind, mint);
+}
 
 export type OutboxEntry = {
   id: number;
@@ -160,7 +183,29 @@ export function ensureMailTables(db: Database): void {
   if (!cols.includes("attachments")) {
     db.exec("ALTER TABLE outbox ADD COLUMN attachments TEXT");
   }
+  redactStoredSecrets(db);
   ensured.add(db);
+}
+
+/* Older versions stored the invite / portal link itself in the body.
+   Replace the token by the placeholder (idempotent): a pending mail gets
+   a fresh token at delivery, sent ones keep a harmless text. */
+const STORED_SECRET = /(\/(?:portal|einladung)\/)[A-Za-z0-9_-]{20,}/g;
+
+function redactStoredSecrets(db: Database): void {
+  const rows = db
+    .query<{ id: number; body_text: string; kind: string; related_type: string | null }, []>(
+      `SELECT id, body_text, kind, related_type FROM outbox
+       WHERE body_text LIKE '%/portal/%' OR body_text LIKE '%/einladung/%'`,
+    )
+    .all();
+  const update = db.prepare("UPDATE outbox SET body_text = ?, kind = ? WHERE id = ?");
+  for (const row of rows) {
+    const body = row.body_text.replace(STORED_SECRET, `$1${OUTBOX_SECRET_PLACEHOLDER}`);
+    if (body === row.body_text) continue;
+    const invite = row.related_type === "user" && body.includes("/einladung/");
+    update.run(body, invite ? "user_invite" : row.kind, row.id);
+  }
 }
 
 /* ------------------------------ reads ----------------------------- */
@@ -416,15 +461,29 @@ export async function deliverPending(
     for (const row of pending) {
       const send = senders[row.channel === "sms" ? "sms" : "email"];
       if (!send) continue;
+      let secret: ReturnType<OutboxSecretMinter> | null = null;
       try {
-        await send(row);
+        let bodyText = row.body_text;
+        if (bodyText.includes(OUTBOX_SECRET_PLACEHOLDER)) {
+          const mint = secretMinters.get(row.kind);
+          if (!mint) throw new Error("Zugangslink kann nicht erzeugt werden.");
+          secret = mint(db, { relatedType: row.related_type, relatedId: row.related_id });
+          bodyText = bodyText.replaceAll(OUTBOX_SECRET_PLACEHOLDER, secret.value);
+        }
+        await send({ ...row, body_text: bodyText });
         db.prepare(
           `UPDATE outbox SET status = 'gesendet', attempts = attempts + 1,
              last_error = NULL, sent_at = datetime('now') WHERE id = ?`,
         ).run(row.id);
         result.sent += 1;
       } catch (error) {
+        try {
+          secret?.discard();
+        } catch {
+          // the token dies with its expiry anyway
+        }
         const attempts = row.attempts + 1;
+
         const message = (error instanceof Error ? error.message : String(error)).slice(
           0,
           500,
