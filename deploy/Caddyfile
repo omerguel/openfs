@@ -1,0 +1,44 @@
+# OpenFS behind Caddy — one school (single-tenant).
+# Caddy gets and renews the Let's Encrypt certificate by itself; the DNS
+# A/AAAA record of the domain must point to this server and ports 80/443
+# must be open. Install to /etc/caddy/Caddyfile, then: systemctl reload caddy
+#
+# OpenFS itself listens on 127.0.0.1:3000 with TRUST_PROXY=1 (see
+# deploy/openfs.env.example): Caddy sets X-Forwarded-Proto/-Host/-For,
+# which OpenFS needs for the Secure cookie, the Origin check, rate limits
+# and the audit log.
+{
+	# Contact for Let's Encrypt (expiry warnings).
+	email betrieb@fahrschule-muster.de
+}
+
+fahrschule-muster.de {
+	encode zstd gzip
+
+	header {
+		# HSTS: browsers refuse plain HTTP for a year. Start with a short
+		# max-age (e.g. 300) until HTTPS works everywhere, then raise it.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Uploads are capped at 12 MB by OpenFS; leave room for the form.
+	request_body {
+		max_size 16MB
+	}
+
+	reverse_proxy 127.0.0.1:3000
+
+	log {
+		output file /var/log/caddy/openfs-access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}
+
+www.fahrschule-muster.de {
+	redir https://fahrschule-muster.de{uri} permanent
+}
