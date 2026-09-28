@@ -22,6 +22,7 @@ import { calendarSeriesRoutes } from "./calendar-series";
 import { cancellationRoutes } from "./cancellations";
 import { campaignRoutes } from "./campaigns";
 import { chatRoutes } from "./chat";
+import { dataExportRoutes } from "./data-export";
 import { instalmentRoutes } from "./instalments";
 import { inviteRoutes } from "./invites";
 import { reportRoutes } from "./instructor-hours";
@@ -92,6 +93,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
     ...studentRoutes(db),
     ...vehicleRoutes(db),
     ...exportRoutes(db),
+    ...dataExportRoutes(db, fileStore),
     ...appointmentRequestRoutes(db),
     ...branchRoutes(db),
     ...campaignRoutes(db),
