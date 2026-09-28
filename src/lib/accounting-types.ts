@@ -200,4 +200,10 @@ export type CompanyProfile = {
   beraterNr: string;
   /** DATEV-Mandantennummer (1–99999) — required for the export */
   mandantNr: string;
+  /** Bankverbindung — printed on Rechnungen, creditor account for SEPA. */
+  bankName: string;
+  iban: string;
+  bic: string;
+  /** SEPA-Gläubiger-Identifikationsnummer (e.g. DE98ZZZ09999999999). */
+  glaeubigerId: string;
 };

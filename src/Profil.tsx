@@ -335,6 +335,10 @@ const EMPTY_COMPANY: CompanyProfile = {
   ustIdNr: "",
   beraterNr: "",
   mandantNr: "",
+  bankName: "",
+  iban: "",
+  bic: "",
+  glaeubigerId: "",
 };
 
 export function Profil() {
@@ -613,6 +617,56 @@ export function Profil() {
                       onChange={(e) => updateCompany({ mandantNr: e.target.value })}
                     />
                   </div>
+                </Field>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Bank"
+                  htmlFor="bankname"
+                  hint="Bankverbindung für Rechnungen und Lastschriften."
+                >
+                  <Input
+                    id="bankname"
+                    placeholder="z. B. Sparkasse Darmstadt"
+                    value={company.bankName}
+                    onChange={(e) => updateCompany({ bankName: e.target.value })}
+                  />
+                </Field>
+                <Field label="IBAN" htmlFor="iban" hint="Erscheint auf Rechnungen.">
+                  <Input
+                    id="iban"
+                    className="font-mono text-[13px]"
+                    placeholder="DE00 0000 0000 0000 0000 00"
+                    value={company.iban}
+                    onChange={(e) => updateCompany({ iban: e.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="BIC"
+                  htmlFor="bic"
+                  hint="Optional bei SEPA-Inlandszahlungen."
+                >
+                  <Input
+                    id="bic"
+                    className="font-mono text-[13px]"
+                    placeholder="z. B. HELADEF1DAS"
+                    value={company.bic}
+                    onChange={(e) => updateCompany({ bic: e.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="Gläubiger-ID"
+                  htmlFor="glaeubigerid"
+                  hint="SEPA-Gläubiger-Identifikationsnummer der Bundesbank — für Lastschriften."
+                >
+                  <Input
+                    id="glaeubigerid"
+                    className="font-mono text-[13px]"
+                    placeholder="z. B. DE98ZZZ09999999999"
+                    value={company.glaeubigerId}
+                    onChange={(e) => updateCompany({ glaeubigerId: e.target.value })}
+                  />
                 </Field>
               </div>
 

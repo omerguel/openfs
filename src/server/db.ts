@@ -376,6 +376,10 @@ export const DEFAULT_COMPANY: CompanyProfile = {
   ustIdNr: "",
   beraterNr: "",
   mandantNr: "",
+  bankName: "",
+  iban: "",
+  bic: "",
+  glaeubigerId: "",
 };
 
 export function openDb(path = "data/fahrschule.db"): Database {
