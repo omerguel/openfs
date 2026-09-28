@@ -392,6 +392,7 @@ export function openDb(path = "data/fahrschule.db"): Database {
     "CREATE INDEX IF NOT EXISTS idx_calendar_events_student ON calendar_events(student_id);",
   );
   migrateExamResults(db);
+  migrateCalendarEventScheduling(db);
   migrateNameColumn(db, "students", { from: "instructor" });
   migrateNameColumn(db, "students", { from: "vehicle" });
   migrateNameColumn(db, "instructors", { from: "vehicle" });
@@ -528,6 +529,38 @@ export function migrateExamResults(db: Database) {
   if (!studentCols.includes("license_date")) {
     db.exec("ALTER TABLE students ADD COLUMN license_date TEXT");
   }
+}
+
+/* Scheduling features on calendar_events — lesson kind (Sonderfahrten),
+   recurring series, and cancellation / no-show with an optional fee
+   booking. Adds each column when absent. Idempotent. */
+export function migrateCalendarEventScheduling(db: Database) {
+  const cols = db
+    .query<{ name: string }, []>("PRAGMA table_info(calendar_events)")
+    .all()
+    .map((c) => c.name);
+  const add = (name: string, definition: string) => {
+    if (!cols.includes(name)) {
+      db.exec(`ALTER TABLE calendar_events ADD COLUMN ${name} ${definition}`);
+    }
+  };
+  add(
+    "lesson_kind",
+    "TEXT CHECK (lesson_kind IN ('Übungsfahrt','Überlandfahrt','Autobahnfahrt','Nachtfahrt','Grundfahraufgaben'))",
+  );
+  add("series_id", "TEXT");
+  add("cancelled_at", "TEXT");
+  add(
+    "cancellation_kind",
+    "TEXT CHECK (cancellation_kind IN ('abgesagt','nicht_erschienen'))",
+  );
+  add(
+    "cancellation_fee_transaction_id",
+    "INTEGER REFERENCES transactions(id)",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_calendar_events_series ON calendar_events(series_id);",
+  );
 }
 
 /* Seed price plans — the demo tariffs from src/lib/price-plan.ts. After

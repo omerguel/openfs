@@ -3,6 +3,7 @@ import type { Database } from "./sqlite";
 
 import {
   migrateCalendarEventBilling,
+  migrateCalendarEventScheduling,
   migrateExamResults,
   migrateSkr03ToSkr04,
   openDb,
@@ -382,5 +383,51 @@ describe("migrateExamResults", () => {
       .map((c) => c.name);
     expect(eventCols).toContain("exam_result");
     expect(studentCols).toContain("license_date");
+  });
+});
+
+describe("migrateCalendarEventScheduling", () => {
+  const SCHEDULING_COLS = [
+    "lesson_kind",
+    "series_id",
+    "cancelled_at",
+    "cancellation_kind",
+    "cancellation_fee_transaction_id",
+  ];
+  const eventCols = (db: Database) =>
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(calendar_events)")
+      .all()
+      .map((c) => c.name);
+
+  test("adds the scheduling columns to a legacy table, idempotently", () => {
+    const legacy = openLegacyDbNoExamCols();
+    for (const col of SCHEDULING_COLS) expect(eventCols(legacy)).not.toContain(col);
+    migrateCalendarEventScheduling(legacy);
+    expect(() => migrateCalendarEventScheduling(legacy)).not.toThrow();
+    const cols = eventCols(legacy);
+    for (const col of SCHEDULING_COLS) {
+      expect(cols.filter((c) => c === col)).toHaveLength(1);
+    }
+  });
+
+  test("CHECK constraints reject unknown lesson / cancellation kinds", () => {
+    const fresh = openDb(":memory:");
+    const id = fresh
+      .query<{ id: number }, []>("SELECT id FROM calendar_events LIMIT 1")
+      .get()!.id;
+    expect(() =>
+      fresh
+        .prepare("UPDATE calendar_events SET lesson_kind = 'Stadtfahrt' WHERE id = ?")
+        .run(id),
+    ).toThrow();
+    expect(() =>
+      fresh
+        .prepare("UPDATE calendar_events SET cancellation_kind = 'vergessen' WHERE id = ?")
+        .run(id),
+    ).toThrow();
+    fresh
+      .prepare("UPDATE calendar_events SET lesson_kind = 'Nachtfahrt' WHERE id = ?")
+      .run(id);
   });
 });
