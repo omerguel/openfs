@@ -264,6 +264,8 @@ const validEvent = {
   title: "Route-Test Termin",
   instructor: "Martin Weber",
   type: "Praktisch",
+  // Fixtures share one slot on purpose — overlap checks are tested separately.
+  allowConflicts: true,
 };
 
 describe("GET /api/calendar-events", () => {
@@ -507,6 +509,7 @@ async function createPraktischEvent(studentId: number): Promise<{ id: string }> 
       end: "09:45",
       title: "Fahrstunde",
       instructor: "Martin Weber",
+      allowConflicts: true,
       type: "Praktisch",
       studentId,
     }),
@@ -647,6 +650,7 @@ describe("POST /api/calendar-events/:id/bill", () => {
         end: "11:30",
         title: "Theorieunterricht",
         instructor: "Martin Weber",
+        allowConflicts: true,
         type: "Theorie",
       }),
     });
@@ -686,6 +690,7 @@ describe("POST /api/calendar-events/:id/bill", () => {
         end: "11:45",
         title: "Fahrstunde ohne Student",
         instructor: "Martin Weber",
+        allowConflicts: true,
         type: "Praktisch",
         // No studentId
       }),
@@ -840,6 +845,7 @@ async function createEventOfType(
       end: "10:45",
       title: type,
       instructor: "Martin Weber",
+      allowConflicts: true,
       type,
       studentId,
     }),

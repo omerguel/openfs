@@ -423,7 +423,9 @@ describe("migrateCalendarEventScheduling", () => {
     ).toThrow();
     expect(() =>
       fresh
-        .prepare("UPDATE calendar_events SET cancellation_kind = 'vergessen' WHERE id = ?")
+        .prepare(
+          "UPDATE calendar_events SET cancellation_kind = 'vergessen' WHERE id = ?",
+        )
         .run(id),
     ).toThrow();
     fresh

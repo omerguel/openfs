@@ -479,3 +479,163 @@ describe("listCalendarEvents range filter", () => {
     expect(listCalendarEvents(fresh, { to: "2026-02-01" })).toHaveLength(1);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Lesson kind (Sonderfahrten)                                        */
+/* ------------------------------------------------------------------ */
+
+describe("lessonKind", () => {
+  test("is stored on practical lessons and omitted when unset", () => {
+    const tagged = createCalendarEvent(db, { ...VALID, lessonKind: "Nachtfahrt" });
+    expect(tagged.lessonKind).toBe("Nachtfahrt");
+    const plain = createCalendarEvent(db, { ...VALID, date: "2026-06-11" });
+    expect(plain.lessonKind).toBeUndefined();
+  });
+
+  test("unknown kind → ValidationError", () => {
+    expect(() =>
+      createCalendarEvent(db, {
+        ...VALID,
+        lessonKind: "Stadtfahrt" as unknown as "Nachtfahrt",
+      }),
+    ).toThrow("Ungültige Fahrtart.");
+  });
+
+  test("explicit kind on a non-practical type → ValidationError", () => {
+    expect(() =>
+      createCalendarEvent(db, { ...VALID, type: "Theorie", lessonKind: "Nachtfahrt" }),
+    ).toThrow(/nur bei praktischen Fahrstunden/);
+  });
+
+  test("changing the type away from Praktisch drops the kind; null clears it", () => {
+    const event = createCalendarEvent(db, { ...VALID, lessonKind: "Autobahnfahrt" });
+    const theory = updateCalendarEvent(db, Number(event.id), { type: "Theorie" });
+    expect(theory.lessonKind).toBeUndefined();
+
+    const other = createCalendarEvent(db, {
+      ...VALID,
+      date: "2026-06-12",
+      lessonKind: "Überlandfahrt",
+    });
+    const kept = updateCalendarEvent(db, Number(other.id), { title: "Neu" });
+    expect(kept.lessonKind).toBe("Überlandfahrt");
+    const cleared = updateCalendarEvent(db, Number(other.id), { lessonKind: null });
+    expect(cleared.lessonKind).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Conflict checks (Überschneidungen)                                 */
+/* ------------------------------------------------------------------ */
+
+describe("overlap checks", () => {
+  test("same instructor, overlapping time → ValidationError naming the event", () => {
+    createCalendarEvent(db, { ...VALID, title: "Erste Stunde" });
+    expect(() =>
+      createCalendarEvent(db, { ...VALID, start: "09:30", end: "10:30" }),
+    ).toThrow(
+      "Überschneidung mit „Erste Stunde“ (09:00–10:00) für Fahrlehrer/in Martin Weber.",
+    );
+  });
+
+  test("same vehicle with different instructors → names the vehicle", () => {
+    createCalendarEvent(db, { ...VALID, vehicle: "VW Golf", title: "Golf-Stunde" });
+    expect(() =>
+      createCalendarEvent(db, {
+        ...VALID,
+        instructor: "Nadine Aksoy",
+        vehicle: "VW Golf",
+      }),
+    ).toThrow(/für Fahrzeug VW Golf/);
+  });
+
+  test("touching edges, other days and other resources do not conflict", () => {
+    createCalendarEvent(db, { ...VALID, vehicle: "VW Golf" });
+    createCalendarEvent(db, { ...VALID, start: "10:00", end: "10:45" });
+    createCalendarEvent(db, { ...VALID, date: "2026-06-11" });
+    createCalendarEvent(db, { ...VALID, instructor: "Nadine Aksoy", vehicle: "Audi A3" });
+  });
+
+  test("unassigned instructor and no vehicle never conflict", () => {
+    createCalendarEvent(db, { ...VALID, instructor: "Nicht zugeteilt" });
+    createCalendarEvent(db, { ...VALID, instructor: "Nicht zugeteilt" });
+  });
+
+  test("allowConflicts: true skips the check", () => {
+    createCalendarEvent(db, VALID);
+    const second = createCalendarEvent(db, { ...VALID, allowConflicts: true });
+    expect(second.id).toBeTruthy();
+  });
+
+  test("cancelled events are ignored", () => {
+    const first = createCalendarEvent(db, VALID);
+    db.prepare(
+      "UPDATE calendar_events SET cancelled_at = '2026-06-01T00:00:00Z', cancellation_kind = 'abgesagt' WHERE id = ?",
+    ).run(Number(first.id));
+    createCalendarEvent(db, VALID);
+  });
+
+  test("moving onto an occupied slot is rejected; the event itself is excluded", () => {
+    createCalendarEvent(db, VALID);
+    const later = createCalendarEvent(db, { ...VALID, start: "11:00", end: "12:00" });
+    // Resizing within its own slot never conflicts with itself.
+    updateCalendarEvent(db, Number(later.id), { end: "12:30" });
+    expect(() =>
+      updateCalendarEvent(db, Number(later.id), { start: "09:45", end: "10:45" }),
+    ).toThrow(/Überschneidung/);
+    const moved = updateCalendarEvent(db, Number(later.id), {
+      start: "09:45",
+      end: "10:45",
+      allowConflicts: true,
+    });
+    expect(moved.start).toBe("09:45");
+  });
+
+  test("editing only the title of an overlapping event is allowed", () => {
+    createCalendarEvent(db, VALID);
+    const dup = createCalendarEvent(db, { ...VALID, allowConflicts: true });
+    const renamed = updateCalendarEvent(db, Number(dup.id), { title: "Umbenannt" });
+    expect(renamed.title).toBe("Umbenannt");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Daily limit warning (495 Min. praktischer Unterricht)              */
+/* ------------------------------------------------------------------ */
+
+describe("daily practical limit warnings", () => {
+  test("no warning up to 495 minutes, warning above", () => {
+    // 8 × 60 = 480 min, then +15 = 495 (still fine), then +45 → 540.
+    for (let hour = 7; hour < 15; hour++) {
+      const start = `${String(hour).padStart(2, "0")}:00`;
+      const end = `${String(hour + 1).padStart(2, "0")}:00`;
+      const event = createCalendarEvent(db, { ...VALID, start, end });
+      expect(event.warnings).toBeUndefined();
+    }
+    const edge = createCalendarEvent(db, { ...VALID, start: "15:00", end: "15:15" });
+    expect(edge.warnings).toBeUndefined();
+
+    const over = createCalendarEvent(db, {
+      ...VALID,
+      type: "Vorstellung zur prakt. Prüfung",
+      start: "16:00",
+      end: "16:45",
+    });
+    expect(over.warnings).toEqual([
+      "Tageshöchstdauer praktischer Unterricht (495 Min.) für Martin Weber am 10.06.2026 überschritten: 540 Min.",
+    ]);
+    // Warnings are never stored.
+    expect(getCalendarEvent(db, Number(over.id)).warnings).toBeUndefined();
+  });
+
+  test("theory lessons do not count and get no warning", () => {
+    createCalendarEvent(db, { ...VALID, start: "06:00", end: "15:00" });
+    const theory = createCalendarEvent(db, {
+      ...VALID,
+      type: "Theorie",
+      start: "18:00",
+      end: "19:30",
+    });
+    expect(theory.warnings).toBeUndefined();
+  });
+});
