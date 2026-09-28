@@ -8,10 +8,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { notFound, useNavigate, useParams, useRouter } from "@tanstack/react-router";
-import { Archive, ArrowLeft, MoreHorizontal, TriangleAlert } from "lucide-react";
+import {
+  Archive,
+  ArrowLeft,
+  FileText,
+  Lock,
+  MoreHorizontal,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "./components/PageHeader.tsx";
+import { ErasureDialog, HoldDialog } from "./components/datenschutz/SubjectDialogs";
 import { OPEN_CONTRACT_EVENT } from "./components/VertragDialog.tsx";
 import { DokumenteTab } from "./components/fahrschueler/DokumenteTab";
 import { PreiseTab } from "./components/fahrschueler/PreiseTab";
@@ -22,7 +31,9 @@ import { ARCHIVE_REASONS } from "@/lib/archive-reasons";
 import type { Student } from "@/lib/student-data";
 import { BALANCE_DOT_CLASS, describeBalance } from "@/lib/student-balance";
 import { cn } from "@/lib/utils";
+import { useAuthStatus } from "@/hooks/use-auth";
 import { useFinanceAccess } from "@/hooks/use-finance-access";
+import { auskunftUrl } from "@/hooks/use-retention";
 import { useInstructors } from "@/hooks/use-instructors";
 import {
   deleteStudent,
@@ -48,6 +59,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -173,6 +185,8 @@ export function FahrschuelerDetail() {
   const { canSeeMoney, isInstructor } = useFinanceAccess();
   const [tab, setTab] = useState<TabKey>("uebersicht");
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [privacyDialog, setPrivacyDialog] = useState<"hold" | "erase" | null>(null);
+  const isOwner = useAuthStatus().data?.user?.role === "inhaber";
   const [contractSignal, setContractSignal] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -325,6 +339,34 @@ export function FahrschuelerDetail() {
                       <Archive />
                       Archivieren…
                     </DropdownMenuItem>
+                    {isOwner && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            window.open(
+                              auskunftUrl(student.id, "html"),
+                              "_blank",
+                              "noopener",
+                            )
+                          }
+                        >
+                          <FileText />
+                          Auskunft (Art. 15)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setPrivacyDialog("hold")}>
+                          <Lock />
+                          Aufbewahrung verlängern…
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => setPrivacyDialog("erase")}
+                        >
+                          <Trash2 />
+                          Löschen auf Antrag…
+                        </DropdownMenuItem>
+                      </>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
@@ -432,6 +474,25 @@ export function FahrschuelerDetail() {
           showBalance={canSeeMoney}
           onOpenChange={setArchiveOpen}
           onConfirm={handleArchive}
+        />
+      )}
+      {student && privacyDialog === "hold" && (
+        <HoldDialog
+          studentId={student.id}
+          name={`${student.firstName} ${student.lastName}`}
+          open
+          onOpenChange={(next) => !next && setPrivacyDialog(null)}
+        />
+      )}
+      {student && privacyDialog === "erase" && (
+        <ErasureDialog
+          studentId={student.id}
+          open
+          onOpenChange={(next) => !next && setPrivacyDialog(null)}
+          onDone={() => {
+            void refresh();
+            void navigate({ to: "/fahrschueler" });
+          }}
         />
       )}
     </div>
