@@ -1,19 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
-import { Car, Pencil, Plus, Trash2 } from "lucide-react";
+/* ------------------------------------------------------------------ */
+/* Fahrzeuge — fleet list + create/edit dialog.                         */
+/* Fahrlehrer/in on a vehicle = that instructor's Stammfahrzeug (one    */
+/* source of truth, see server/vehicles.ts). HU is a month with an      */
+/* overdue / due-soon badge (lib/vehicle-hu.ts).                        */
+/* ------------------------------------------------------------------ */
+
+import { useMemo, useState } from "react";
+import { AlertTriangle, Car, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { PageHeader } from "./components/PageHeader.tsx";
-import { useInstructors } from "@/hooks/use-instructors";
-import {
-  useVehicles,
-  useCreateVehicle,
-  useDeleteVehicle,
-  useUpdateVehicle,
-  type Vehicle as VehicleRecord,
-  type VehicleDetail,
-} from "@/hooks/use-vehicles";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { FormField, RequiredLegend } from "@/components/FormField";
+import { PageHeader } from "@/components/PageHeader";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,25 +22,26 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -52,128 +51,420 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { instructorName, useInstructors } from "@/hooks/use-instructors";
+import {
+  useCreateVehicle,
+  useDeleteVehicle,
+  useUpdateVehicle,
+  useVehicles,
+  type Vehicle,
+  type VehicleInput,
+} from "@/hooks/use-vehicles";
 import { cn } from "@/lib/utils";
+import {
+  formatHuMonth,
+  formatMileage,
+  HU_STATE_LABELS,
+  huState,
+  mileageDigits,
+  parseHuMonth,
+} from "@/lib/vehicle-hu";
 
-type Detail = { label: string; value: string };
-type Vehicle = Omit<VehicleRecord, "details"> & {
-  details: Detail[];
-};
-
-type VehicleDraft = Omit<VehicleRecord, "id" | "details" | "accent"> & {
-  gearbox: string;
-  fuel: string;
-  mileage: string;
-  instructor: string;
-  inspection: string;
-  insurance: string;
-};
-
-const detailLabels = {
+const LABEL = {
   gearbox: "Getriebe",
   fuel: "Kraftstoff",
   mileage: "Kilometerstand",
   instructor: "Fahrlehrer/in",
-  inspection: "Nächste HU",
+  hu: "Nächste HU",
   insurance: "Versicherung",
 } as const;
 
-const STATUS_DOTS: Record<VehicleRecord["status"], string> = {
+const CLASS_OPTIONS = [
+  "B",
+  "B197",
+  "B Automatik",
+  "BE",
+  "B96",
+  "AM",
+  "A1",
+  "A2",
+  "A",
+  "C1",
+  "C1E",
+  "C",
+  "CE",
+  "D1",
+  "D",
+  "DE",
+  "T",
+  "L",
+  "Mofa",
+];
+const GEARBOX_OPTIONS = ["Schaltgetriebe", "Automatik"];
+const FUEL_OPTIONS = [
+  "Benzin",
+  "Diesel",
+  "Elektro",
+  "Hybrid",
+  "Plug-in-Hybrid",
+  "Erdgas / LPG",
+];
+const MONTHS = [
+  "Januar",
+  "Februar",
+  "März",
+  "April",
+  "Mai",
+  "Juni",
+  "Juli",
+  "August",
+  "September",
+  "Oktober",
+  "November",
+  "Dezember",
+];
+
+const STATUS_DOTS: Record<Vehicle["status"], string> = {
   aktiv: "bg-green-500",
   wartung: "bg-amber-500",
 };
-
-const STATUS_LABELS: Record<VehicleRecord["status"], string> = {
+const STATUS_LABELS: Record<Vehicle["status"], string> = {
   aktiv: "Aktiv",
   wartung: "In Wartung",
 };
 
-function mapVehicleDetails(details: VehicleDetail[]): Detail[] {
-  const values = new Map(details.map((item) => [item.label, item.value]));
-  return Object.values(detailLabels).map((label) => ({
-    label,
-    value: values.get(label) ?? "",
-  }));
-}
+const detail = (vehicle: Vehicle | null, label: string) =>
+  vehicle?.details.find((d) => d.label === label)?.value ?? "";
 
-function toVehicle(record: VehicleRecord): Vehicle {
+/** Options with the current (legacy/free-text) value kept selectable. */
+const withCurrent = (options: string[], current: string) =>
+  current && !options.includes(current) ? [current, ...options] : options;
+
+type Draft = {
+  model: string;
+  plate: string;
+  klass: string;
+  status: Vehicle["status"];
+  gearbox: string;
+  fuel: string;
+  mileage: string;
+  /** "" = nicht zugeteilt, "multi" = unchanged (several instructors). */
+  instructor: string;
+  huMonth: string;
+  huYear: string;
+  insurance: string;
+};
+
+function toDraft(vehicle: Vehicle | null): Draft {
+  const hu = parseHuMonth(detail(vehicle, LABEL.hu));
+  const ids = vehicle?.instructorIds ?? [];
   return {
-    ...record,
-    details: mapVehicleDetails(record.details),
+    model: vehicle?.model ?? "",
+    plate: vehicle?.plate ?? "",
+    klass: vehicle?.klass ?? "B",
+    status: vehicle?.status ?? "aktiv",
+    gearbox: detail(vehicle, LABEL.gearbox),
+    fuel: detail(vehicle, LABEL.fuel),
+    mileage: mileageDigits(detail(vehicle, LABEL.mileage)),
+    instructor: ids.length > 1 ? "multi" : ids.length === 1 ? String(ids[0]) : "",
+    huMonth: hu ? String(hu.month) : "",
+    huYear: hu ? String(hu.year) : "",
+    insurance: detail(vehicle, LABEL.insurance),
   };
 }
 
-function createEmptyVehicle(): Vehicle {
+function draftErrors(draft: Draft) {
   return {
-    id: 0,
-    model: "",
-    plate: "",
-    klass: "",
-    status: "aktiv",
-    accent: "bg-slate-500/10 text-slate-600",
-    details: Object.values(detailLabels).map((label) => ({
-      label,
-      value: label === "Fahrlehrer/in" ? "Nicht zugeteilt" : "",
-    })),
+    model: draft.model.trim() ? null : "Bitte das Modell angeben, z. B. VW Golf.",
+    plate: draft.plate.trim() ? null : "Bitte das Kennzeichen angeben.",
+    klass: draft.klass.trim() ? null : "Bitte die Klasse wählen.",
+    hu:
+      Boolean(draft.huMonth) !== Boolean(draft.huYear)
+        ? "Bitte Monat und Jahr der HU wählen."
+        : null,
   };
 }
 
-function toApiPayload(vehicle: Vehicle) {
+function toPayload(draft: Draft, vehicle: Vehicle | null): Partial<VehicleInput> {
+  const initial = toDraft(vehicle);
+  const hu =
+    draft.huMonth && draft.huYear
+      ? formatHuMonth({ month: Number(draft.huMonth), year: Number(draft.huYear) })
+      : "";
   return {
-    model: vehicle.model,
-    plate: vehicle.plate,
-    klass: vehicle.klass,
-    status: vehicle.status,
-    accent: vehicle.accent,
-    details: vehicle.details.map((detail) => ({
-      label: detail.label,
-      value: detail.value,
-    })),
-  };
-}
-
-function vehicleToDraft(vehicle: Vehicle): VehicleDraft {
-  const detailValue = (label: string) =>
-    vehicle.details.find((detail) => detail.label === label)?.value ?? "";
-
-  return {
-    model: vehicle.model,
-    plate: vehicle.plate,
-    klass: vehicle.klass,
-    status: vehicle.status,
-    gearbox: detailValue(detailLabels.gearbox),
-    fuel: detailValue(detailLabels.fuel),
-    mileage: detailValue(detailLabels.mileage),
-    instructor: detailValue(detailLabels.instructor),
-    inspection: detailValue(detailLabels.inspection),
-    insurance: detailValue(detailLabels.insurance),
-  };
-}
-
-function applyDraft(vehicle: Vehicle, draft: VehicleDraft): Vehicle {
-  const detailValues = new Map<string, string>([
-    [detailLabels.gearbox, draft.gearbox],
-    [detailLabels.fuel, draft.fuel],
-    [detailLabels.mileage, draft.mileage],
-    [detailLabels.instructor, draft.instructor],
-    [detailLabels.inspection, draft.inspection],
-    [detailLabels.insurance, draft.insurance],
-  ]);
-
-  return {
-    ...vehicle,
-    model: draft.model,
-    plate: draft.plate,
+    model: draft.model.trim(),
+    plate: draft.plate.trim().toUpperCase(),
     klass: draft.klass,
     status: draft.status,
-    details: vehicle.details.map((detail) => ({
-      ...detail,
-      value: detailValues.get(detail.label) ?? detail.value,
-    })),
+    details: [
+      { label: LABEL.gearbox, value: draft.gearbox },
+      { label: LABEL.fuel, value: draft.fuel },
+      { label: LABEL.mileage, value: formatMileage(draft.mileage) },
+      { label: LABEL.hu, value: hu },
+      { label: LABEL.insurance, value: draft.insurance.trim() },
+    ],
+    // Only when changed — "multi" keeps several instructors as they are.
+    ...(draft.instructor !== initial.instructor && draft.instructor !== "multi"
+      ? { instructorId: draft.instructor ? Number(draft.instructor) : null }
+      : {}),
   };
 }
 
-/* Status as a colored dot + plain label in an outline badge (guideline §3). */
-function StatusBadge({ status }: { status: VehicleRecord["status"] }) {
+function VehicleDialog({
+  vehicle,
+  onClose,
+}: {
+  /** null = new vehicle */
+  vehicle: Vehicle | null;
+  onClose: () => void;
+}) {
+  const { instructors } = useInstructors();
+  const createVehicle = useCreateVehicle();
+  const updateVehicle = useUpdateVehicle();
+  const [draft, setDraft] = useState<Draft>(() => toDraft(vehicle));
+  const [submitted, setSubmitted] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const saving = createVehicle.isPending || updateVehicle.isPending;
+  const errors = draftErrors(draft);
+  const shown = submitted ? errors : { model: null, plate: null, klass: null, hu: null };
+  const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  const thisYear = new Date().getFullYear();
+  const years = Array.from({ length: 6 }, (_, i) => String(thisYear - 1 + i));
+  if (draft.huYear && !years.includes(draft.huYear)) years.unshift(draft.huYear);
+  const multiNames = detail(vehicle, LABEL.instructor);
+
+  const save = async () => {
+    setSubmitted(true);
+    setServerError(null);
+    if (Object.values(errors).some(Boolean)) return;
+    try {
+      const payload = toPayload(draft, vehicle);
+      if (vehicle) {
+        await updateVehicle.mutateAsync({ id: vehicle.id, input: payload });
+        toast.success("Fahrzeug gespeichert.");
+      } else {
+        await createVehicle.mutateAsync(payload);
+        toast.success(`Fahrzeug „${payload.model}“ angelegt.`);
+      }
+      onClose();
+    } catch (error) {
+      // Shown in the dialog, next to what needs fixing.
+      setServerError(
+        error instanceof Error
+          ? error.message
+          : "Fahrzeug konnte nicht gespeichert werden.",
+      );
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !saving && onClose()}>
+      <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
+            {vehicle ? "Fahrzeug bearbeiten" : "Fahrzeug hinzufügen"}
+          </DialogTitle>
+          <DialogDescription>
+            Stammdaten, Zuteilung und Termine wie HU und Versicherung.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          noValidate
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          {serverError && (
+            <Alert variant="destructive">
+              <AlertTriangle />
+              <AlertDescription>{serverError}</AlertDescription>
+            </Alert>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField id="vehicle-model" label="Modell" required error={shown.model}>
+              <Input
+                placeholder="z. B. VW Golf"
+                value={draft.model}
+                onChange={(e) => set("model", e.target.value)}
+              />
+            </FormField>
+            <FormField
+              id="vehicle-plate"
+              label="Kennzeichen"
+              required
+              error={shown.plate}
+            >
+              <Input
+                placeholder="z. B. DA-FS 1234"
+                className="uppercase"
+                value={draft.plate}
+                onChange={(e) => set("plate", e.target.value)}
+              />
+            </FormField>
+            <FormField id="vehicle-class" label="Klasse" required error={shown.klass}>
+              <NativeSelect
+                className="w-full"
+                value={draft.klass}
+                onChange={(e) => set("klass", e.target.value)}
+              >
+                {withCurrent(CLASS_OPTIONS, draft.klass).map((option) => (
+                  <NativeSelectOption key={option} value={option}>
+                    {option}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </FormField>
+            <FormField id="vehicle-status" label="Status">
+              <NativeSelect
+                className="w-full"
+                value={draft.status}
+                onChange={(e) => set("status", e.target.value as Vehicle["status"])}
+              >
+                <NativeSelectOption value="aktiv">Aktiv</NativeSelectOption>
+                <NativeSelectOption value="wartung">In Wartung</NativeSelectOption>
+              </NativeSelect>
+            </FormField>
+            <FormField id="vehicle-gearbox" label="Getriebe">
+              <NativeSelect
+                className="w-full"
+                value={draft.gearbox}
+                onChange={(e) => set("gearbox", e.target.value)}
+              >
+                <NativeSelectOption value="">Keine Angabe</NativeSelectOption>
+                {withCurrent(GEARBOX_OPTIONS, draft.gearbox).map((option) => (
+                  <NativeSelectOption key={option} value={option}>
+                    {option}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </FormField>
+            <FormField id="vehicle-fuel" label="Kraftstoff">
+              <NativeSelect
+                className="w-full"
+                value={draft.fuel}
+                onChange={(e) => set("fuel", e.target.value)}
+              >
+                <NativeSelectOption value="">Keine Angabe</NativeSelectOption>
+                {withCurrent(FUEL_OPTIONS, draft.fuel).map((option) => (
+                  <NativeSelectOption key={option} value={option}>
+                    {option}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </FormField>
+            <FormField
+              id="vehicle-mileage"
+              label="Kilometerstand"
+              hint="In km, nur Ziffern."
+            >
+              <Input
+                inputMode="numeric"
+                placeholder="z. B. 84320"
+                className="tabular-nums"
+                value={draft.mileage ? Number(draft.mileage).toLocaleString("de-DE") : ""}
+                onChange={(e) =>
+                  set("mileage", mileageDigits(e.target.value).slice(0, 7))
+                }
+              />
+            </FormField>
+            <FormField
+              id="vehicle-instructor"
+              label="Fahrlehrer/in"
+              hint="Wird als Stammfahrzeug bei der Fahrlehrerin bzw. dem Fahrlehrer eingetragen."
+            >
+              <NativeSelect
+                className="w-full"
+                value={draft.instructor}
+                onChange={(e) => set("instructor", e.target.value)}
+              >
+                <NativeSelectOption value="">Nicht zugeteilt</NativeSelectOption>
+                {draft.instructor === "multi" && (
+                  <NativeSelectOption value="multi">
+                    {multiNames} (unverändert)
+                  </NativeSelectOption>
+                )}
+                {instructors
+                  .filter(
+                    (i) => i.status === "aktiv" || String(i.id) === draft.instructor,
+                  )
+                  .map((i) => (
+                    <NativeSelectOption key={i.id} value={String(i.id)}>
+                      {instructorName(i)}
+                    </NativeSelectOption>
+                  ))}
+              </NativeSelect>
+            </FormField>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <span className="text-sm font-medium" id="vehicle-hu-label">
+                Nächste HU
+              </span>
+              <div className="flex gap-2" role="group" aria-labelledby="vehicle-hu-label">
+                <NativeSelect
+                  aria-label="HU Monat"
+                  className="flex-1"
+                  value={draft.huMonth}
+                  aria-invalid={shown.hu ? true : undefined}
+                  onChange={(e) => set("huMonth", e.target.value)}
+                >
+                  <NativeSelectOption value="">Monat</NativeSelectOption>
+                  {MONTHS.map((name, i) => (
+                    <NativeSelectOption key={name} value={String(i + 1)}>
+                      {name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <NativeSelect
+                  aria-label="HU Jahr"
+                  className="w-28"
+                  value={draft.huYear}
+                  aria-invalid={shown.hu ? true : undefined}
+                  onChange={(e) => set("huYear", e.target.value)}
+                >
+                  <NativeSelectOption value="">Jahr</NativeSelectOption>
+                  {years.map((year) => (
+                    <NativeSelectOption key={year} value={year}>
+                      {year}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </div>
+              {shown.hu ? (
+                <span role="alert" className="text-xs text-destructive">
+                  {shown.hu}
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  Laut Prüfplakette — wir erinnern 60 Tage vorher.
+                </span>
+              )}
+            </div>
+            <FormField id="vehicle-insurance" label="Versicherung">
+              <Input
+                placeholder="z. B. Allianz · gültig bis 12/2026"
+                value={draft.insurance}
+                onChange={(e) => set("insurance", e.target.value)}
+              />
+            </FormField>
+          </div>
+          <RequiredLegend />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+              Abbrechen
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Speichert …" : vehicle ? "Speichern" : "Fahrzeug anlegen"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function StatusBadge({ status }: { status: Vehicle["status"] }) {
   return (
     <Badge variant="outline" className="gap-1.5 font-normal">
       <span aria-hidden className={cn("size-1.5 rounded-full", STATUS_DOTS[status])} />
@@ -182,190 +473,23 @@ function StatusBadge({ status }: { status: VehicleRecord["status"] }) {
   );
 }
 
-function VehicleEditDialog({
-  vehicle,
-  open,
-  onOpenChange,
-  onSave,
-  instructorOptions,
-  mode,
-}: {
-  vehicle: Vehicle | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSave: (vehicle: Vehicle) => Promise<void> | void;
-  instructorOptions: string[];
-  mode: "create" | "edit";
-}) {
-  const [draft, setDraft] = useState<VehicleDraft | null>(null);
-
-  useEffect(() => {
-    setDraft(open && vehicle ? vehicleToDraft(vehicle) : null);
-  }, [open, vehicle?.id]);
-
-  function update<Key extends keyof VehicleDraft>(key: Key, value: VehicleDraft[Key]) {
-    setDraft((current) => (current ? { ...current, [key]: value } : current));
-  }
-
-  function handleOpenChange(nextOpen: boolean) {
-    onOpenChange(nextOpen);
-    if (!nextOpen) {
-      setDraft(null);
-    }
-  }
-
-  if (!vehicle || !draft) {
-    return null;
-  }
-
+export function HuBadge({ value }: { value: string }) {
+  const state = huState(value);
+  if (!state || state === "ok") return null;
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {mode === "create" ? "Fahrzeug hinzufügen" : "Fahrzeug bearbeiten"}
-          </DialogTitle>
-          <DialogDescription>
-            {mode === "create"
-              ? "Fahrzeugdaten anlegen."
-              : "Stammdaten, Status und Fahrzeugdetails aktualisieren."}
-          </DialogDescription>
-        </DialogHeader>
-
-        <FieldGroup className="grid gap-4 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="vehicle-model">Modell</FieldLabel>
-            <Input
-              id="vehicle-model"
-              value={draft.model}
-              onChange={(event) => update("model", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-plate">Kennzeichen</FieldLabel>
-            <Input
-              id="vehicle-plate"
-              value={draft.plate}
-              onChange={(event) => update("plate", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-class">Klasse</FieldLabel>
-            <Input
-              id="vehicle-class"
-              value={draft.klass}
-              onChange={(event) => update("klass", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-status">Status</FieldLabel>
-            <Select
-              value={draft.status}
-              onValueChange={(value) => update("status", value as Vehicle["status"])}
-            >
-              <SelectTrigger id="vehicle-status" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="aktiv">Aktiv</SelectItem>
-                  <SelectItem value="wartung">In Wartung</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-gearbox">Getriebe</FieldLabel>
-            <Input
-              id="vehicle-gearbox"
-              value={draft.gearbox}
-              onChange={(event) => update("gearbox", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-fuel">Kraftstoff</FieldLabel>
-            <Input
-              id="vehicle-fuel"
-              value={draft.fuel}
-              onChange={(event) => update("fuel", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-mileage">Kilometerstand</FieldLabel>
-            <Input
-              id="vehicle-mileage"
-              value={draft.mileage}
-              onChange={(event) => update("mileage", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-instructor">Fahrlehrer/in</FieldLabel>
-            <Select
-              value={draft.instructor}
-              onValueChange={(value) => update("instructor", value)}
-            >
-              <SelectTrigger id="vehicle-instructor" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {(instructorOptions.includes(draft.instructor)
-                    ? instructorOptions
-                    : [draft.instructor, ...instructorOptions]
-                  ).map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-inspection">Nächste HU</FieldLabel>
-            <Input
-              id="vehicle-inspection"
-              value={draft.inspection}
-              onChange={(event) => update("inspection", event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="vehicle-insurance">Versicherung</FieldLabel>
-            <Input
-              id="vehicle-insurance"
-              value={draft.insurance}
-              onChange={(event) => update("insurance", event.target.value)}
-            />
-          </Field>
-        </FieldGroup>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type="button" variant="outline">
-              Abbrechen
-            </Button>
-          </DialogClose>
-          <Button
-            type="button"
-            onClick={async () => {
-              try {
-                await onSave(applyDraft(vehicle, draft));
-                handleOpenChange(false);
-              } catch (error) {
-                console.error("Fahrzeug konnte nicht gespeichert werden:", error);
-              }
-            }}
-          >
-            Speichern
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <Badge
+      variant="outline"
+      className={cn(
+        "gap-1 font-normal",
+        state === "overdue"
+          ? "border-destructive/40 text-destructive"
+          : "border-amber-500/50 text-amber-700 dark:text-amber-400",
+      )}
+    >
+      <AlertTriangle className="size-3" />
+      {HU_STATE_LABELS[state]}
+    </Badge>
   );
-}
-
-function vehicleDetail(vehicle: Vehicle, label: string) {
-  return vehicle.details.find((detail) => detail.label === label)?.value || "—";
 }
 
 function VehicleRow({
@@ -377,6 +501,8 @@ function VehicleRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const hu = detail(vehicle, LABEL.hu);
+  const show = (label: string) => detail(vehicle, label) || "—";
   return (
     <TableRow
       tabIndex={0}
@@ -390,28 +516,32 @@ function VehicleRow({
       }}
     >
       <TableCell>
-        <div className="flex min-w-40 flex-col gap-0.5">
+        <div className="flex min-w-36 flex-col gap-0.5">
           <span className="font-medium">{vehicle.model}</span>
           <span className="font-mono text-xs tracking-tight text-muted-foreground">
             {vehicle.plate}
           </span>
+          <span className="md:hidden">
+            <HuBadge value={hu} />
+          </span>
         </div>
       </TableCell>
       <TableCell className="text-muted-foreground">{vehicle.klass || "—"}</TableCell>
-      <TableCell className="hidden text-muted-foreground md:table-cell">
-        {vehicleDetail(vehicle, detailLabels.gearbox)}
-      </TableCell>
       <TableCell className="hidden text-muted-foreground lg:table-cell">
-        {vehicleDetail(vehicle, detailLabels.fuel)}
+        {show(LABEL.gearbox)}
+      </TableCell>
+      <TableCell className="hidden text-muted-foreground xl:table-cell">
+        {show(LABEL.fuel)}
       </TableCell>
       <TableCell className="hidden tabular-nums xl:table-cell">
-        {vehicleDetail(vehicle, detailLabels.mileage)}
+        {show(LABEL.mileage)}
       </TableCell>
-      <TableCell className="hidden xl:table-cell">
-        {vehicleDetail(vehicle, detailLabels.instructor)}
-      </TableCell>
-      <TableCell className="hidden tabular-nums 2xl:table-cell">
-        {vehicleDetail(vehicle, detailLabels.inspection)}
+      <TableCell className="hidden lg:table-cell">{show(LABEL.instructor)}</TableCell>
+      <TableCell className="hidden md:table-cell">
+        <div className="flex flex-col items-start gap-1">
+          <span className="tabular-nums">{hu || "—"}</span>
+          <HuBadge value={hu} />
+        </div>
       </TableCell>
       <TableCell>
         <StatusBadge status={vehicle.status} />
@@ -450,66 +580,61 @@ function VehicleRow({
 }
 
 export function Fahrzeuge() {
-  const { assignableNames: instructorOptions } = useInstructors();
-  const { vehicles: storedVehicles, loading } = useVehicles();
-  const createVehicleMutation = useCreateVehicle();
-  const updateVehicleMutation = useUpdateVehicle();
-  const deleteVehicleMutation = useDeleteVehicle();
-  const [editingVehicleId, setEditingVehicleId] = useState<number | null>(null);
-  const [deletingVehicleId, setDeletingVehicleId] = useState<number | null>(null);
-  const [isCreateVehicleOpen, setIsCreateVehicleOpen] = useState(false);
-  const emptyVehicle = useMemo(() => createEmptyVehicle(), []);
-  const vehicleList = useMemo(() => storedVehicles.map(toVehicle), [storedVehicles]);
-  const editingMode: "create" | "edit" = isCreateVehicleOpen ? "create" : "edit";
-  const editingVehicle = isCreateVehicleOpen
-    ? emptyVehicle
-    : (vehicleList.find((vehicle) => vehicle.id === editingVehicleId) ?? null);
-  const isDialogOpen = editingMode === "create" || editingVehicleId !== null;
-  const deletingVehicle =
-    vehicleList.find((vehicle) => vehicle.id === deletingVehicleId) ?? null;
+  const { vehicles, loading } = useVehicles();
+  const deleteVehicle = useDeleteVehicle();
+  const [editing, setEditing] = useState<Vehicle | "new" | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const deleting = vehicles.find((v) => v.id === deletingId) ?? null;
+  const huDue = useMemo(
+    () =>
+      vehicles.filter((v) => {
+        const state = huState(detail(v, LABEL.hu));
+        return state === "due" || state === "overdue";
+      }),
+    [vehicles],
+  );
 
-  async function removeVehicle() {
-    if (!deletingVehicle) return;
+  const remove = async () => {
+    if (!deleting) return;
     try {
-      await deleteVehicleMutation.mutateAsync(deletingVehicle.id);
+      await deleteVehicle.mutateAsync(deleting.id);
       toast.success("Fahrzeug gelöscht.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Löschen fehlgeschlagen.");
     } finally {
-      if (editingVehicleId === deletingVehicle.id) {
-        setEditingVehicleId(null);
-      }
-      setDeletingVehicleId(null);
+      setDeletingId(null);
     }
-  }
+  };
 
-  // DB-backed roster — same source as /fahrlehrer and the calendar.
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col gap-[3px] overflow-hidden bg-sidebar">
       <PageHeader
         end={
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => {
-              setEditingVehicleId(null);
-              setIsCreateVehicleOpen(true);
-            }}
-          >
+          <Button type="button" size="sm" onClick={() => setEditing("new")}>
             <Plus data-icon="inline-start" />
-            Fahrzeug hinzufügen
+            <span className="hidden sm:inline">Fahrzeug hinzufügen</span>
+            <span className="sm:hidden">Neu</span>
           </Button>
         }
       >
         <div className="flex min-w-0 items-baseline gap-2">
           <h1 className="text-[15px] font-semibold tracking-[-0.01em]">Fahrzeuge</h1>
           <span className="text-xs tabular-nums text-muted-foreground">
-            {loading ? "—" : vehicleList.length}
+            {loading ? "—" : vehicles.length}
           </span>
         </div>
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto rounded-t-sm rounded-b-lg border border-border/70 bg-background p-4 2xl:p-6">
+        {huDue.length > 0 && (
+          <Alert>
+            <AlertTriangle />
+            <AlertDescription>
+              HU fällig oder bald fällig:{" "}
+              {huDue.map((v) => `${v.model} (${detail(v, LABEL.hu)})`).join(", ")}.
+            </AlertDescription>
+          </Alert>
+        )}
         {loading ? (
           <div className="overflow-hidden rounded-lg border">
             {Array.from({ length: 4 }, (_, index) => (
@@ -519,23 +644,37 @@ export function Fahrzeuge() {
               />
             ))}
           </div>
-        ) : vehicleList.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
-            <Car className="size-5" />
-            <span className="text-sm">Noch keine Fahrzeuge angelegt.</span>
-          </div>
+        ) : vehicles.length === 0 ? (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Car />
+              </EmptyMedia>
+              <EmptyTitle>Noch keine Fahrzeuge</EmptyTitle>
+              <EmptyDescription>
+                Legen Sie Ihre Schulungsfahrzeuge an — dann lassen sie sich Terminen und
+                Fahrlehrern zuordnen, und OpenFS erinnert an die HU.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button type="button" onClick={() => setEditing("new")}>
+                <Plus data-icon="inline-start" />
+                Fahrzeug hinzufügen
+              </Button>
+            </EmptyContent>
+          </Empty>
         ) : (
-          <div className="animate-enter overflow-hidden rounded-lg border bg-card">
+          <div className="animate-enter overflow-x-auto rounded-lg border bg-card">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
                   <TableHead>Fahrzeug</TableHead>
                   <TableHead>Klasse</TableHead>
-                  <TableHead className="hidden md:table-cell">Getriebe</TableHead>
-                  <TableHead className="hidden lg:table-cell">Kraftstoff</TableHead>
+                  <TableHead className="hidden lg:table-cell">Getriebe</TableHead>
+                  <TableHead className="hidden xl:table-cell">Kraftstoff</TableHead>
                   <TableHead className="hidden xl:table-cell">Kilometerstand</TableHead>
-                  <TableHead className="hidden xl:table-cell">Fahrlehrer/in</TableHead>
-                  <TableHead className="hidden 2xl:table-cell">Nächste HU</TableHead>
+                  <TableHead className="hidden lg:table-cell">Fahrlehrer/in</TableHead>
+                  <TableHead className="hidden md:table-cell">Nächste HU</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>
                     <span className="sr-only">Aktionen</span>
@@ -543,12 +682,12 @@ export function Fahrzeuge() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {vehicleList.map((vehicle) => (
+                {vehicles.map((vehicle) => (
                   <VehicleRow
                     key={vehicle.id}
                     vehicle={vehicle}
-                    onEdit={() => setEditingVehicleId(vehicle.id)}
-                    onDelete={() => setDeletingVehicleId(vehicle.id)}
+                    onEdit={() => setEditing(vehicle)}
+                    onDelete={() => setDeletingId(vehicle.id)}
                   />
                 ))}
               </TableBody>
@@ -557,49 +696,30 @@ export function Fahrzeuge() {
         )}
       </div>
 
-      <VehicleEditDialog
-        vehicle={editingVehicle}
-        instructorOptions={instructorOptions}
-        mode={editingMode}
-        open={isDialogOpen && editingVehicle !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditingVehicleId(null);
-            setIsCreateVehicleOpen(false);
-          }
-        }}
-        onSave={async (updatedVehicle) => {
-          if (editingMode === "create") {
-            await createVehicleMutation.mutateAsync(toApiPayload(updatedVehicle));
-          } else if (editingVehicleId !== null) {
-            await updateVehicleMutation.mutateAsync({
-              id: editingVehicleId,
-              input: toApiPayload(updatedVehicle),
-            });
-          } else {
-            return;
-          }
-          setEditingVehicleId(null);
-          setIsCreateVehicleOpen(false);
-        }}
-      />
+      {editing && (
+        <VehicleDialog
+          key={editing === "new" ? "new" : editing.id}
+          vehicle={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
 
       <AlertDialog
-        open={deletingVehicle !== null}
-        onOpenChange={(open) => !open && setDeletingVehicleId(null)}
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeletingId(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Fahrzeug löschen?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deletingVehicle
-                ? `„${deletingVehicle.model}" (${deletingVehicle.plate}) wird entfernt. Zugeordnete Schüler und Fahrlehrer werden auf „Nicht zugeteilt" gesetzt.`
+              {deleting
+                ? `„${deleting.model}“ (${deleting.plate}) wird ins Archiv verschoben. Zugeordnete Schüler und Fahrlehrer werden auf „Nicht zugeteilt“ gesetzt.`
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Abbrechen</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void removeVehicle()}>
+            <AlertDialogAction variant="destructive" onClick={() => void remove()}>
               Löschen
             </AlertDialogAction>
           </AlertDialogFooter>
