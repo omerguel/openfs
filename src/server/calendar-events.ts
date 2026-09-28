@@ -14,6 +14,8 @@ import {
 } from "../lib/working-time";
 import { findAbsence } from "./absences";
 import { archiveRow, tableExists } from "./archive";
+import { currentUser } from "./request-context";
+
 import { ValidationError } from "./engine";
 import {
   instructorNameSql,
@@ -218,8 +220,10 @@ const SELECT = `
 
 /* Booked amount of each Ausfallentschädigung (sum of its bookings).
    Separate from SELECT because minimal schemas (some unit tests) have
-   no bookings table. */
+   no bookings table. Fahrlehrer/innen see that a fee was charged, never
+   its amount (no money for the role). */
 function withFeeAmounts(db: Database, events: CalendarEvent[]): CalendarEvent[] {
+  if (currentUser()?.role === "fahrlehrer") return events;
   const ids = events
     .map((event) => event.cancellationFeeTransactionId)
     .filter((id): id is number => id != null);

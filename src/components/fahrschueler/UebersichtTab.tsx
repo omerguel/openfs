@@ -102,7 +102,8 @@ export function UebersichtTab({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<StudentEdit | null>(null);
   const [saving, setSaving] = useState(false);
-  const { files } = useStudentFiles(student.id);
+  // Documents are office-only (the API refuses them for Fahrlehrer/innen).
+  const { files } = useStudentFiles(student.id, canEdit);
   const { events } = useCalendarEvents();
   const practicalExam = examStatus(events, student.id, "Vorstellung zur prakt. Prüfung");
   const theoryExam = examStatus(events, student.id, "Theorieprüfung");
@@ -530,9 +531,11 @@ export function UebersichtTab({
 
           {canEdit && <PortalLinkCard student={student} />}
 
+          {canEdit && (
           <Card size="sm">
             <CardHeader>
               <CardTitle>Dokumente</CardTitle>
+
               <CardDescription>Verwaltung im Tab „Dokumente"</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
@@ -579,10 +582,12 @@ export function UebersichtTab({
               )}
             </CardContent>
           </Card>
+          )}
 
           <Card size="sm">
             <CardHeader>
               <CardTitle>Theorie</CardTitle>
+
               <CardAction>
                 <Badge variant="secondary">{student.theory.status}</Badge>
               </CardAction>

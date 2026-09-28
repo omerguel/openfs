@@ -553,30 +553,55 @@ const OWNER_ONLY = [
   /^\/api\/export\//,
 ];
 
-/* Money matters are out of bounds for the Fahrlehrer role — read and write. */
-const FINANCE = [
-  /^\/api\/accounting\//,
-  /^\/api\/student-balances/,
-  /^\/api\/invoices/,
-  /^\/api\/open-items/,
-  /^\/api\/sepa\//,
-  /^\/api\/instalment/,
-  /^\/api\/settings\/invoicing/,
-  /^\/api\/import\//,
-  /^\/api\/calendar-events\/[^/]+\/bill$/,
-  /^\/api\/campaigns/,
-  // Umsatz per month etc. — the Statistik page is an office/owner tool.
-  /^\/api\/statistics/,
-];
+/* Fahrlehrer/in: an explicit allow-list (deny by default) — what the
+   pages of the role need to teach: Kalender/Mein Tag/Prüfungsplaner
+   (incl. Absage, Serien, Prüfungsergebnis), Ausbildungsnachweise,
+   Fahrschüler (training data; balances/prices are stripped), Theorie
+   (groups read, Anwesenheit write), Chat, Fahrlehrer/Fahrzeuge (read —
+   they drive them), the school's Stammdaten for printed Nachweise (tax
+   and bank fields stripped), own password. Everything else — money,
+   Postausgang, Bewertungen, Standorte, Terminanfragen, Verträge,
+   Preispläne, Dokumente/Dateien, Portal-Links, Abwesenheiten verwalten,
+   Arbeitszeitberichte — is office work and answers 403. A new endpoint
+   is therefore closed to Fahrlehrer/innen until it is listed here. */
+const READ = ["GET", "HEAD"];
+const READ_WRITE = (...writes: string[]) => [...READ, ...writes];
 
-/* What a Fahrlehrer may change: Termine (incl. Absage), Ausbildungs-
-   nachweise, Theorie-Anwesenheit, Chat, own password. */
-const INSTRUCTOR_WRITES = [
-  /^\/api\/calendar-events(\/|$)/,
-  /^\/api\/attestations/,
-  /^\/api\/theory-groups\/[^/]+\/attendance$/,
-  /^\/api\/conversations/,
-  /^\/api\/auth\//,
+export const FAHRLEHRER_ALLOWED: { methods: string[]; pattern: RegExp }[] = [
+  // Kalender, Mein Tag, Prüfungsplaner
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/calendar-events$/ },
+  { methods: ["PATCH", "DELETE"], pattern: /^\/api\/calendar-events\/[^/]+$/ },
+  {
+    methods: ["POST"],
+    pattern: /^\/api\/calendar-events\/[^/]+\/(cancel|uncancel|exam-result)$/,
+  },
+  { methods: ["POST"], pattern: /^\/api\/calendar-events\/series$/ },
+  { methods: ["PATCH"], pattern: /^\/api\/calendar-events\/[^/]+\/series$/ },
+  { methods: ["DELETE"], pattern: /^\/api\/calendar-events\/series\/[^/]+$/ },
+  { methods: READ, pattern: /^\/api\/calendar-events\/conflicts$/ },
+  // The Absage dialog shows the policy (Frist, Gebühr laut Regelung).
+  { methods: READ, pattern: /^\/api\/settings\/cancellation-policy$/ },
+  { methods: READ, pattern: /^\/api\/absences$/ },
+  // Ausbildungsnachweise
+  { methods: READ, pattern: /^\/api\/attestations$/ },
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/calendar-events\/[^/]+\/attestation$/ },
+  // Fahrschüler (withoutMoney) — no edits, no files, no portal links
+  { methods: READ, pattern: /^\/api\/students$/ },
+  // Theorie
+  { methods: READ, pattern: /^\/api\/theory-groups$/ },
+  { methods: READ_WRITE("PUT"), pattern: /^\/api\/theory-groups\/[^/]+\/attendance$/ },
+  // Chat
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/conversations$/ },
+  { methods: READ_WRITE("POST"), pattern: /^\/api\/conversations\/[^/]+\/messages$/ },
+  { methods: ["POST"], pattern: /^\/api\/conversations\/[^/]+\/read$/ },
+  { methods: ["DELETE"], pattern: /^\/api\/conversations\/[^/]+$/ },
+  // Stammdaten, read-only
+  { methods: READ, pattern: /^\/api\/instructors$/ },
+  { methods: READ, pattern: /^\/api\/vehicles$/ },
+  { methods: READ, pattern: /^\/api\/vehicle-options$/ },
+  { methods: READ, pattern: /^\/api\/profile$/ },
+  // Own account
+  { methods: ["POST"], pattern: /^\/api\/auth\/password$/ },
 ];
 
 export function isPublic(method: string, path: string): boolean {
@@ -589,14 +614,16 @@ export function isAllowed(role: Role, method: string, path: string): boolean {
   if (role === "inhaber") return true;
   if (OWNER_ONLY.some((p) => p.test(path))) return false;
   if (role === "buero") return true;
-  if (FINANCE.some((p) => p.test(path))) return false;
-  if (method === "GET" || method === "HEAD") return true;
-  return INSTRUCTOR_WRITES.some((p) => p.test(path));
+  return FAHRLEHRER_ALLOWED.some(
+    (rule) => rule.methods.includes(method) && rule.pattern.test(path),
+  );
 }
 
 /* Cross-site request guard on top of SameSite=Strict: a state-changing
-   request that carries an Origin must come from this host. */
-function sameOrigin(req: Request): boolean {
+   request that carries an Origin must come from this host. Requests
+   without Origin (curl, server-to-server) pass — browsers always send
+   it on cross-origin POSTs. */
+export function sameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
   if (!origin) return true;
   try {
