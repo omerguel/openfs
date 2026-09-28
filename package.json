@@ -9,6 +9,7 @@
     "start": "NODE_ENV=production bun src/index.ts",
     "test": "bun test",
     "test:e2e": "bun scripts/e2e-smoke.ts",
+    "restore": "bun scripts/restore.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "biome check src scripts",
     "format": "biome format --write src scripts"
