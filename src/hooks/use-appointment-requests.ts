@@ -44,6 +44,8 @@ export type AppointmentRequest = {
   /** Student created from the request ("Als Fahrschüler anlegen"). */
   studentId: number | null;
   studentName: string | null;
+  /** Fahrlehrer/in of the confirmed appointment (null = none yet). */
+  appointmentInstructor: string | null;
   /* Present on list responses; create/update responses omit it. */
   conflicts?: AppointmentRequestConflict[];
   /** Ids of requests probably from the same person (list responses). */
@@ -60,6 +62,7 @@ export type AppointmentRequestInput = Omit<
   | "campaignName"
   | "studentId"
   | "studentName"
+  | "appointmentInstructor"
 >;
 
 /* Slot/assignment adjustments sent along when accepting a request. */

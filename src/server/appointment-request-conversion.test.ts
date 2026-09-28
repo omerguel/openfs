@@ -12,6 +12,7 @@ import {
   appointmentRequestRoutes,
   createAppointmentRequest,
   ensureAppointmentRequestTables,
+  getAppointmentRequest,
   linkAppointmentRequestStudent,
   schoolToday,
   validatePublicRequest,
@@ -59,6 +60,10 @@ describe("linking a confirmed request to a student", () => {
       instructor: "Martin Weber",
     });
     expect(getCalendarEvent(db, Number(event.id)).studentId).toBeUndefined();
+    // The new-student form prefills the instructor from this.
+    expect(getAppointmentRequest(db, request.id).appointmentInstructor).toBe(
+      "Martin Weber",
+    );
 
     const mia = newStudent();
     expect(mia.instructorId).toBeNull();

@@ -17,7 +17,7 @@ import {
 import { FormSection as Section, FormSectionIndex } from "./components/FormSection.tsx";
 import { PageHeader } from "./components/PageHeader.tsx";
 import { OPEN_CONTRACT_EVENT } from "./components/VertragDialog.tsx";
-import { useInstructors } from "@/hooks/use-instructors";
+import { instructorName, useInstructors } from "@/hooks/use-instructors";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import { createStudent, useStudents } from "@/hooks/use-students";
 import { uploadStudentFile } from "@/hooks/use-student-files";
@@ -233,7 +233,19 @@ export function NeueSchueler() {
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Assignable instructors come from the DB-backed roster (/fahrlehrer).
-  const { assignableNames: instructorOptions } = useInstructors();
+  const { assignableNames: instructorOptions, instructors } = useInstructors();
+
+  /* Picking an instructor brings their Stammfahrzeug along (still
+     changeable) — unless a vehicle was chosen by hand already. */
+  const withInstructor = (current: FormState, name: string): FormState => {
+    const instructor = instructors.find((i) => instructorName(i) === name);
+    const vehicle = instructor?.vehicle;
+    const takeVehicle =
+      vehicle &&
+      vehicleOptions.includes(vehicle) &&
+      current.vehicle === initialForm.vehicle;
+    return { ...current, instructor: name, ...(takeVehicle ? { vehicle } : {}) };
+  };
 
   // IDs are assigned by the system, not entered by hand: they continue the
   // numbering range of the students in the DB, which loads async.
@@ -268,6 +280,17 @@ export function NeueSchueler() {
     }));
     setDirty(true);
   }, [sourceRequest]);
+
+  // The confirmed appointment's instructor becomes the student's (once
+  // the roster has loaded).
+  const instructorFrom = useRef<number | null>(null);
+  useEffect(() => {
+    const booked = sourceRequest?.appointmentInstructor;
+    if (!sourceRequest || !booked || instructorFrom.current === sourceRequest.id) return;
+    if (!instructorOptions.includes(booked)) return;
+    instructorFrom.current = sourceRequest.id;
+    setForm((current) => withInstructor(current, booked));
+  });
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -528,7 +551,10 @@ export function NeueSchueler() {
                   <FieldLabel>Fahrlehrer/in</FieldLabel>
                   <Select
                     value={form.instructor}
-                    onValueChange={(value) => update("instructor", value)}
+                    onValueChange={(value) => {
+                      setForm((current) => withInstructor(current, value));
+                      setDirty(true);
+                    }}
                   >
                     <SelectTrigger>
                       <GraduationCap className="text-muted-foreground" />

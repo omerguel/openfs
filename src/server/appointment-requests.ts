@@ -56,11 +56,19 @@ export type AppointmentRequest = {
   /** Student created from this request ("Als Fahrschüler anlegen"). */
   studentId: number | null;
   studentName: string | null;
+  /** Fahrlehrer/in of the confirmed appointment (null = none yet). */
+  appointmentInstructor: string | null;
 };
 
 export type AppointmentRequestInput = Omit<
   AppointmentRequest,
-  "id" | "createdAt" | "campaignId" | "campaignName" | "studentId" | "studentName"
+  | "id"
+  | "createdAt"
+  | "campaignId"
+  | "campaignName"
+  | "studentId"
+  | "studentName"
+  | "appointmentInstructor"
 >;
 
 /* Calendar event overlapping a request's slot — shown as a warning on
@@ -108,6 +116,7 @@ type AppointmentRequestRow = {
   campaign_name: string | null;
   student_id: number | null;
   student_name: string | null;
+  appointment_instructor: string | null;
 };
 
 /* ----------------------------- schema ----------------------------- */
@@ -367,6 +376,7 @@ const toRequest = (row: AppointmentRequestRow): AppointmentRequest => ({
   campaignName: row.campaign_name,
   studentId: row.student_name === null ? null : row.student_id,
   studentName: row.student_name,
+  appointmentInstructor: row.appointment_instructor || null,
 });
 
 const tableExists = (db: Database, name: string) =>
@@ -385,9 +395,15 @@ function selectSql(db: Database): string {
   const student = tableExists(db, "students")
     ? "(SELECT trim(s.first_name || ' ' || s.last_name) FROM students s WHERE s.id = r.student_id)"
     : "NULL";
+  const instructor =
+    tableExists(db, "calendar_events") && tableExists(db, "instructors")
+      ? `(SELECT trim(i.first_name || ' ' || i.last_name) FROM calendar_events ce
+          JOIN instructors i ON i.id = ce.instructor_id WHERE ce.id = r.event_id)`
+      : "NULL";
   return `SELECT r.id, r.name, r.phone, r.email, r.message, r.requested_date,
     r.requested_time, r.type, r.status, r.created_at, r.campaign_id, r.student_id,
-    ${campaign} AS campaign_name, ${student} AS student_name
+    ${campaign} AS campaign_name, ${student} AS student_name,
+    ${instructor} AS appointment_instructor
     FROM appointment_requests r`;
 }
 
