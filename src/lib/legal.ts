@@ -40,7 +40,7 @@ export const LEGAL_FIELD_LABELS: Record<LegalField, string> = {
   website: "Webseite",
   ustIdNr: "USt-IdNr",
   steuernummer: "Steuernummer",
-  inhaber: "Inhaber:in / vertretungsberechtigte Person",
+  inhaber: "Inhaber/in / vertretungsberechtigte Person",
   registergericht: "Registergericht",
   registernummer: "Registernummer",
   aufsichtsbehoerde: "Aufsichtsbehörde (Fahrschulerlaubnis)",

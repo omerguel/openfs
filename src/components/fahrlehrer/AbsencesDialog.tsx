@@ -10,6 +10,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { CalendarSearch, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { confirmDialog } from "@/components/confirm";
+
 import {
   ABSENCE_KIND_OPTIONS,
   type AbsenceKind,
@@ -190,12 +192,15 @@ function AffectedLessons({
               type="button"
               variant="outline"
               disabled={busy || ids.length === 0}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `${ids.length} ${ids.length === 1 ? "Termin" : "Termine"} ohne Ausfallgebühr absagen?`,
-                  )
-                ) {
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: `${ids.length} ${ids.length === 1 ? "Termin" : "Termine"} absagen?`,
+                  description:
+                    "Die Termine werden ohne Ausfallgebühr abgesagt. Die Fahrschüler/innen sollten Sie darüber informieren.",
+                  confirmLabel: "Absagen",
+                  destructive: true,
+                });
+                if (ok) {
                   void run(() => cancelLessonsWithoutFee(ids), "abgesagt (ohne Gebühr)");
                 }
               }}

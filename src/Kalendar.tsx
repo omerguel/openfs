@@ -74,6 +74,8 @@ import { UNASSIGNED_VEHICLE } from "@/lib/vehicle-options";
 import { formatGermanDate } from "@/lib/working-time";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
+
+import { confirmDialog } from "@/components/confirm";
 import { Button } from "@/components/ui/button";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
 import {
@@ -1126,7 +1128,11 @@ export function Kalendar() {
         const message = errorMessage(error, "Absage konnte nicht zurückgenommen werden.");
         if (
           !isOverridableConflict(message) ||
-          !window.confirm(`${message}\n\nAbsage trotzdem zurücknehmen?`)
+          !(await confirmDialog({
+            title: "Absage trotzdem zurücknehmen?",
+            description: message,
+            confirmLabel: "Zurücknehmen",
+          }))
         ) {
           toast.error(message);
           return;
@@ -1151,9 +1157,12 @@ export function Kalendar() {
   const handleDeleteFollowing = useCallback(
     async (event: CalEvent) => {
       if (!event.seriesId) return;
-      const confirmed = window.confirm(
-        `Diesen und alle folgenden Termine der Serie ab ${formatGermanDate(event.date)} löschen?`,
-      );
+      const confirmed = await confirmDialog({
+        title: "Serientermine löschen?",
+        description: `Dieser und alle folgenden Termine der Serie ab ${formatGermanDate(event.date)} werden gelöscht. Abgerechnete Termine, Termine mit Nachweis oder Ausfallgebühr bleiben erhalten.`,
+        confirmLabel: "Termine löschen",
+        destructive: true,
+      });
       if (!confirmed) return;
       try {
         const result = await deleteCalendarEventSeries(event.seriesId, event.date);

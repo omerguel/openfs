@@ -70,7 +70,7 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
           <span className="block font-medium">
             <Value value={info.name} label="Name der Fahrschule" />
           </span>
-          <LabeledLine label="Inhaber:in" value={info.inhaber} />
+          <LabeledLine label="Inhaber/in" value={info.inhaber} />
           <Address address={info.address} />
           {info.phone && (
             <span className="block tabular-nums">Telefon: {info.phone}</span>

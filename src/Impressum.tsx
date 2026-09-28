@@ -30,9 +30,9 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
             <Value value={info.name} label="Name der Fahrschule" />
           </span>
           <LabeledLine
-            label="Inhaber:in bzw. vertretungsberechtigt"
+            label="Inhaber/in bzw. vertretungsberechtigt"
             value={info.inhaber}
-            placeholder="Inhaber:in"
+            placeholder="Inhaber/in"
           />
           <Address address={info.address} />
         </p>
@@ -110,7 +110,7 @@ function ImpressumContent({ info }: { info: LegalInfo }) {
       <LegalSection title="Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV">
         <p>
           <span className="block">
-            <Value value={info.inhaber || (staff ? "" : info.name)} label="Inhaber:in" />
+            <Value value={info.inhaber || (staff ? "" : info.name)} label="Inhaber/in" />
           </span>
           <Address address={info.address} />
         </p>

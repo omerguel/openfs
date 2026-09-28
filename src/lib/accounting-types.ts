@@ -239,7 +239,7 @@ export type CompanyProfile = {
   /** SEPA-Gläubiger-Identifikationsnummer (e.g. DE98ZZZ09999999999). */
   glaeubigerId: string;
   /* Impressum / Datenschutz (public /impressum and /datenschutz pages). */
-  /** Inhaber:in bzw. vertretungsberechtigte Person. */
+  /** Inhaber/in bzw. vertretungsberechtigte Person. */
   inhaber: string;
   /** Registergericht — optional, only for registered companies. */
   registergericht: string;

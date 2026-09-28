@@ -1,6 +1,7 @@
 import "./index.css";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
+import { ConfirmHost } from "@/components/confirm";
 import { Agentation } from "agentation";
 import {
   ChevronDown,
@@ -386,6 +387,7 @@ function AppShell() {
         <GlobalSearch />
       </SidebarProvider>
       <Toaster />
+      <ConfirmHost />
       {process.env.NODE_ENV === "development" && <DevAgentation />}
     </TooltipProvider>
   );
