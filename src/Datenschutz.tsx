@@ -173,9 +173,11 @@ function DatenschutzContent({ info }: { info: LegalInfo }) {
         <p>
           Fahrschülerinnen und Fahrschüler erhalten einen persönlichen Zugangslink zum
           Schülerportal. Dort werden angezeigt bzw. verarbeitet: Name und
-          Führerscheinklassen, anstehende und vergangene Termine, die Zahl der im
+          Führerscheinklassen, anstehende und vergangene Termine, der Ausbildungsstand
+          (absolvierte Fahrstunden, Sonderfahrten und Theorieunterricht), die Zahl der im
           Ausbildungsnachweis erfassten Stunden, der Kontostand (Guthaben oder offener
-          Betrag) sowie Nachrichten zwischen Ihnen und der Fahrschule.
+          Betrag) und offene Rechnungen, die Namen der bei der Fahrschule hinterlegten
+          Dokumente sowie Nachrichten zwischen Ihnen und der Fahrschule.
         </p>
         <p>
           Zweck ist die Durchführung des Ausbildungsvertrags. Rechtsgrundlage ist Art. 6
