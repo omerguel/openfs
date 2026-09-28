@@ -21,6 +21,7 @@ import {
 import {
   executeRetention,
   getRetentionPolicy,
+  housekeeping,
   planRetention,
   retentionRoutes,
   runRetentionJob,
@@ -483,5 +484,125 @@ describe("defaults", () => {
       .get()!;
     expect(row).toEqual({ name: "Gelöschte Anfrage", phone: "" });
     expect(planRetention(db, { today: "2025-08-01" }).counts.anfragen).toBe(0);
+  });
+});
+
+describe("edge cases", () => {
+  test("the audit log keeps deletion runs, only older entries go", async () => {
+    db.prepare(
+      "INSERT INTO audit_log (at, method, path, status, ip) VALUES ('2024-01-01 10:00:00', 'POST', '/api/students', 200, '1.2.3.4')",
+    ).run();
+    db.prepare(
+      "INSERT INTO audit_log (at, method, path, status, ip) VALUES ('2024-01-02 10:00:00', 'LOESCHLAUF', '/api/admin/retention/run?trigger=bestaetigt', 200, '')",
+    ).run();
+    db.prepare(
+      "INSERT INTO audit_log (at, method, path, status, ip) VALUES ('2026-09-01 10:00:00', 'PUT', '/api/students/1', 200, '1.2.3.4')",
+    ).run();
+    const plan = planRetention(db, { today: "2026-09-28" });
+    expect(plan.counts.protokoll).toBe(1);
+    await executeRetention(db, plan, { store, trigger: "bestaetigt" });
+    const rows = db
+      .query<{ method: string }, []>("SELECT method FROM audit_log ORDER BY id")
+      .all();
+    // The old run, the recent PUT and the new run's own entry.
+    expect(rows.map((r) => r.method)).toEqual(["LOESCHLAUF", "PUT", "LOESCHLAUF"]);
+  });
+
+  test("SEPA files are emptied only after the accounting period", async () => {
+    db.prepare(
+      `INSERT INTO sepa_collections (msg_id, collection_date, total_cents, xml)
+       VALUES ('MSG-1', '2015-03-01', 100, '<xml>IBAN</xml>'), ('MSG-2', '2025-03-01', 100, '<xml/>')`,
+    ).run();
+    const plan = planRetention(db, { today: "2026-09-28" });
+    expect(
+      plan.items.filter((i) => i.category === "buchhaltung").map((i) => i.id),
+    ).toEqual(["sepa-1"]);
+    await executeRetention(db, plan, { store, trigger: "bestaetigt" });
+    expect(
+      db.query<{ xml: string }, []>("SELECT xml FROM sepa_collections ORDER BY id").all(),
+    ).toEqual([{ xml: "" }, { xml: "<xml/>" }]);
+  });
+
+  test("bank details of a customer without bookings go with the master data", async () => {
+    const student = createStudent(db, {
+      firstName: "Ohne",
+      lastName: "Buchung",
+      contractNumber: "V-sepa",
+      customerNumber: "K-sepa",
+    });
+    db.prepare(
+      `INSERT INTO sepa_mandates (student_id, mandate_ref, account_holder, iban, signed_on)
+       VALUES (?, 'M-1', 'Ohne Buchung', 'DE02120300000000202051', '2026-01-01')`,
+    ).run(student.id);
+    await executeErasure(db, student.id, store, "2026-09-28");
+    expect(
+      db
+        .query<{ account_holder: string; iban: string }, []>(
+          "SELECT account_holder, iban FROM sepa_mandates",
+        )
+        .get(),
+    ).toEqual({ account_holder: `Gelöscht #${student.id}`, iban: "" });
+  });
+
+  test("Art. 17 with training records: the job finishes master data, then accounting", async () => {
+    const s = await archivedStudent(db, "2026-09-01", {
+      archive: false,
+      bookingDate: "2026-09-10",
+    });
+    await executeErasure(db, s.id, store, "2026-09-28");
+    const first = planRetention(db, { today: "2032-01-01" });
+    await executeRetention(db, first, { store, trigger: "bestaetigt" });
+    expect(archivePayload(db, s.id).row.first_name).toBe("Gelöscht");
+    expect(
+      db.query<{ n: number }, []>("SELECT count(*) AS n FROM lesson_attestations").get()!
+        .n,
+    ).toBe(0);
+    // Names in bookings stay until the accounting period of 2026 is over.
+    expect(planRetention(db, { today: "2036-12-31" }).counts.buchhaltung).toBe(0);
+    const last = planRetention(db, { today: "2037-01-01" });
+    expect(last.counts.buchhaltung).toBe(1);
+    await executeRetention(db, last, { store, trigger: "bestaetigt" });
+    const names = db
+      .query<{ student_name: string }, [string]>(
+        "SELECT student_name FROM transactions WHERE student_customer_no = ?",
+      )
+      .all(s.customer);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((row) => row.student_name === `Gelöscht #${s.id}`)).toBe(true);
+    expect(planRetention(db, { today: "2037-01-01" }).items).toEqual([]);
+  });
+
+  test("a document is kept when no file store is available", async () => {
+    await archivedStudent(db, "2025-01-01");
+    const plan = planRetention(db, { today: "2025-09-01" });
+    expect(plan.counts.dokumente).toBe(1);
+    const run = await executeRetention(db, plan, { store: null, trigger: "bestaetigt" });
+    expect(run.counts.dokumente).toBeUndefined();
+    expect(
+      db.query<{ n: number }, []>("SELECT count(*) AS n FROM student_files").get()!.n,
+    ).toBe(1);
+  });
+
+  test("housekeeping removes expired sessions and stale invites", () => {
+    const now = Date.parse("2026-09-28T10:00:00Z");
+    const day = 24 * 60 * 60 * 1000;
+    db.prepare(
+      "INSERT INTO users (email, name, password_hash, role) VALUES ('a@b.de', 'A', 'x', 'buero')",
+    ).run();
+    const userId = db.query<{ id: number }, []>("SELECT max(id) AS id FROM users").get()!.id;
+    db.prepare(
+      `INSERT INTO sessions (token_hash, user_id, expires_at, last_seen_at)
+       VALUES ('old', ?1, ?2, ?2), ('live', ?1, ?3, ?3)`,
+    ).run(userId, now - day, now + day);
+    db.prepare(
+      "INSERT INTO user_invites (token_hash, user_id, expires_at) VALUES ('stale', ?1, ?2), ('fresh', ?1, ?3)",
+    ).run(userId, now - 31 * day, now - day);
+    expect(housekeeping(db, now)).toBe(2);
+    expect(
+      db.query<{ token_hash: string }, []>("SELECT token_hash FROM sessions").all(),
+    ).toEqual([{ token_hash: "live" }]);
+    expect(
+      db.query<{ token_hash: string }, []>("SELECT token_hash FROM user_invites").all(),
+    ).toEqual([{ token_hash: "fresh" }]);
   });
 });

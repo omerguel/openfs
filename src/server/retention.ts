@@ -746,6 +746,15 @@ export function anonymiseArchivedStudent(
   return keys;
 }
 
+/** SEPA mandates carry the account holder and IBAN; they belong to the
+ *  accounting records and go with them (or at once when there are none). */
+function pseudonymiseMandates(db: Database, studentId: number): void {
+  if (!tableExists(db, "sepa_mandates")) return;
+  db.prepare(
+    "UPDATE sepa_mandates SET account_holder = ?, iban = '', bic = '' WHERE student_id = ?",
+  ).run(studentPseudonym(studentId), studentId);
+}
+
 export function recordErasure(
   db: Database,
   entry: ArchivedStudent,
@@ -753,6 +762,9 @@ export function recordErasure(
   retainedUntil: string | null,
   accountingDone: boolean,
 ): void {
+  // Master data gone and no bookings/invoices to keep: nothing is left
+  // that would need the bank details.
+  if (kind === "frist" && accountingDone) pseudonymiseMandates(db, entry.studentId);
   db.prepare(
     `INSERT INTO privacy_erasures (student_id, customer_no, kind, retained_until, accounting_done_at)
      VALUES (?1, ?2, ?3, ?4, CASE WHEN ?5 THEN datetime('now') END)
@@ -901,11 +913,7 @@ export async function executeRetention(
               months: plan.policy.months.buchhaltung,
             });
           }
-          if (tableExists(db, "sepa_mandates")) {
-            db.prepare(
-              "UPDATE sepa_mandates SET account_holder = ?, iban = '', bic = '' WHERE student_id = ?",
-            ).run(pseudonym, studentId);
-          }
+          pseudonymiseMandates(db, studentId);
           db.prepare(
             "UPDATE privacy_erasures SET accounting_done_at = datetime('now') WHERE student_id = ?",
           ).run(studentId);
