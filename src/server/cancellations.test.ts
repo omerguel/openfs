@@ -23,6 +23,7 @@ import {
 import { openDb } from "./db";
 import { createTransaction, stornoTransaction } from "./engine";
 import { computeSpecialDriveProgress } from "../lib/special-drives";
+import { createAttestation, ensureAttestationTables } from "./ausbildungsnachweis";
 
 let db: Database;
 let studentId: number;
@@ -244,5 +245,23 @@ describe("uncancelCalendarEvent", () => {
     expect(() => uncancelCalendarEvent(db, Number(event.id))).toThrow(
       "Termin ist nicht abgesagt.",
     );
+  });
+});
+
+describe("attestations", () => {
+  test("a cancelled lesson cannot be attested", () => {
+    ensureAttestationTables(db);
+    const event = lesson();
+    cancelCalendarEvent(db, Number(event.id), { kind: "nicht_erschienen" });
+    expect(() =>
+      createAttestation(db, {
+        eventId: Number(event.id),
+        studentId,
+        instructor: "Martin Weber",
+        content: "",
+        durationMin: 45,
+        signatureDataUrl: "data:image/png;base64,abc123",
+      }),
+    ).toThrow(/abgesagte Termine/);
   });
 });

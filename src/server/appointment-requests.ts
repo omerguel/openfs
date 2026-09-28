@@ -273,7 +273,9 @@ function findConflictingEvents(
   return listCalendarEvents(db, { from: date, to: date })
     .filter(
       (event) =>
-        toMinutes(event.start) < requestEnd && toMinutes(event.end) > requestStart,
+        !event.cancelledAt &&
+        toMinutes(event.start) < requestEnd &&
+        toMinutes(event.end) > requestStart,
     )
     .map((event) => ({
       id: event.id,
