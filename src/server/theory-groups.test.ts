@@ -47,6 +47,10 @@ function insertStudent(target: Database, firstName: string, lastName: string) {
 
 beforeEach(() => {
   db = freshDb();
+  db.prepare("INSERT INTO instructors (first_name, last_name) VALUES (?, ?)").run(
+    "Martin",
+    "Weber",
+  );
   ensureTheoryGroupTables(db);
   db.exec("DELETE FROM theory_groups"); // most tests start from an empty table
 });
@@ -97,13 +101,13 @@ describe("ensureTheoryGroupTables", () => {
     expect(groups.every((group) => group.instructor === "Maria Schmidt")).toBe(true);
   });
 
-  test("seed falls back to plain names when instructors table is empty", () => {
+  test("seed leaves groups unassigned when the instructors table is empty", () => {
     const fresh = freshDb();
     ensureTheoryGroupTables(fresh);
     const groups = listTheoryGroups(fresh);
     for (const group of groups) {
-      expect(group.instructor.length).toBeGreaterThan(0);
-      expect(group.instructor).not.toBe("Nicht zugeteilt");
+      expect(group.instructor).toBe("Nicht zugeteilt");
+      expect(group.instructorId).toBeNull();
     }
   });
 

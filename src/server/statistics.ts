@@ -10,6 +10,7 @@
 import type { Database } from "./sqlite";
 import type { BunRequest } from "bun";
 
+import { instructorNameSql } from "./refs";
 import { handle, json } from "./http";
 
 /* ------------------------------- types ----------------------------- */
@@ -214,15 +215,14 @@ export function instructorStatistics(db: Database): InstructorStatistics {
      duration arithmetic is safe inline. */
   const utilization = db
     .query<InstructorUtilization, []>(
-      `SELECT instructor,
+      `SELECT ${instructorNameSql("ce")} AS instructor,
               count(*) AS events,
               sum(
-                (CAST(substr("end", 1, 2) AS INTEGER) * 60 + CAST(substr("end", 4, 2) AS INTEGER))
-                - (CAST(substr(start, 1, 2) AS INTEGER) * 60 + CAST(substr(start, 4, 2) AS INTEGER))
+                (CAST(substr(ce."end", 1, 2) AS INTEGER) * 60 + CAST(substr(ce."end", 4, 2) AS INTEGER))
+                - (CAST(substr(ce.start, 1, 2) AS INTEGER) * 60 + CAST(substr(ce.start, 4, 2) AS INTEGER))
               ) AS minutes
-       FROM calendar_events
-       WHERE instructor <> ''
-       GROUP BY instructor
+       FROM calendar_events ce
+       GROUP BY ce.instructor_id
        ORDER BY minutes DESC, instructor`,
     )
     .all();

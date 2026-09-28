@@ -7,6 +7,12 @@ import type { Database } from "./sqlite";
 
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
+import {
+  instructorNameSql,
+  resolveInstructorId,
+  resolveVehicleId,
+  vehicleNameSql,
+} from "./refs";
 
 export type CalendarEventType =
   | "Praktisch"
@@ -34,7 +40,11 @@ export type CalendarEvent = {
   subtitle?: string;
   location?: string;
   instructor: string;
+  /** FK → instructors.id; null = unassigned. `instructor` is its display name. */
+  instructorId: number | null;
   vehicle?: string;
+  /** FK → vehicles.id; null = no vehicle. `vehicle` is its display name. */
+  vehicleId: number | null;
   type: CalendarEventType;
   tentative?: boolean;
   /** FK → students.id; set on creation or via the back-fill migration. */
@@ -55,8 +65,18 @@ const EXAM_TYPES: CalendarEventType[] = [
 
 export type CalendarEventInput = Omit<
   CalendarEvent,
-  "id" | "billedTransactionId" | "billedActive" | "examResult"
->;
+  | "id"
+  | "billedTransactionId"
+  | "billedActive"
+  | "examResult"
+  | "instructorId"
+  | "vehicleId"
+> & { instructorId?: number | null; vehicleId?: number | null };
+
+type CalendarEventData = Omit<CalendarEventInput, "instructor" | "vehicle"> & {
+  instructorId: number | null;
+  vehicleId: number | null;
+};
 
 type CalendarEventRow = {
   id: number;
@@ -68,6 +88,8 @@ type CalendarEventRow = {
   location: string;
   instructor: string;
   vehicle: string;
+  instructor_id: number | null;
+  vehicle_id: number | null;
   type: CalendarEventType;
   tentative: number;
   student_id: number | null;
@@ -84,6 +106,8 @@ const toEvent = (row: CalendarEventRow): CalendarEvent => {
     end: row.end,
     title: row.title,
     instructor: row.instructor,
+    instructorId: row.instructor_id,
+    vehicleId: row.vehicle_id,
     type: row.type,
   };
   if (row.subtitle) event.subtitle = row.subtitle;
@@ -104,7 +128,9 @@ const toEvent = (row: CalendarEventRow): CalendarEvent => {
 const SELECT = `
   SELECT
     ce.id, ce.date, ce.start, ce."end", ce.title, ce.subtitle,
-    ce.location, ce.instructor, ce.vehicle, ce.type, ce.tentative,
+    ce.location, ce.instructor_id, ce.vehicle_id,
+    ${instructorNameSql("ce")} AS instructor, ${vehicleNameSql("ce", "")} AS vehicle,
+    ce.type, ce.tentative,
     ce.student_id, ce.billed_transaction_id, ce.exam_result,
     CASE
       WHEN ce.billed_transaction_id IS NOT NULL THEN (
@@ -147,15 +173,15 @@ const toMinutes = (value: string): number => {
   return h * 60 + m;
 };
 
-const EMPTY: CalendarEventInput = {
+const EMPTY: CalendarEventData = {
   date: "",
   start: "",
   end: "",
   title: "",
   subtitle: "",
   location: "",
-  instructor: "Nicht zugeteilt",
-  vehicle: "",
+  instructorId: null,
+  vehicleId: null,
   type: "Praktisch",
   tentative: false,
   studentId: undefined,
@@ -166,10 +192,10 @@ const EMPTY: CalendarEventInput = {
 function normalize(
   db: Database,
   input: Partial<CalendarEventInput>,
-  current: CalendarEventInput,
-): CalendarEventInput {
+  current: CalendarEventData,
+): CalendarEventData {
   const str = (
-    key: keyof Omit<CalendarEventInput, "tentative" | "studentId">,
+    key: "date" | "start" | "end" | "title" | "subtitle" | "location",
     fallback: string,
   ): string => {
     const value = input[key];
@@ -212,7 +238,16 @@ function normalize(
     tentative = input.tentative;
   }
 
-  const instructor = str("instructor", current.instructor) || "Nicht zugeteilt";
+  const instructorId = resolveInstructorId(
+    db,
+    { id: input.instructorId, name: input.instructor },
+    current.instructorId,
+  );
+  const vehicleId = resolveVehicleId(
+    db,
+    { id: input.vehicleId, name: input.vehicle },
+    current.vehicleId,
+  );
 
   // studentId: validate that it references an existing student when provided.
   let studentId: number | undefined = current.studentId;
@@ -244,8 +279,8 @@ function normalize(
     title,
     subtitle: str("subtitle", current.subtitle ?? ""),
     location: str("location", current.location ?? ""),
-    instructor,
-    vehicle: str("vehicle", current.vehicle ?? ""),
+    instructorId,
+    vehicleId,
     type: type as CalendarEventType,
     tentative,
     studentId,
@@ -267,15 +302,15 @@ export function createCalendarEvent(
         string,
         string,
         string,
-        string,
-        string,
+        number | null,
+        number | null,
         string,
         number,
         number | null,
       ]
     >(
       `INSERT INTO calendar_events
-         (date, start, "end", title, subtitle, location, instructor, vehicle, type, tentative, student_id)
+         (date, start, "end", title, subtitle, location, instructor_id, vehicle_id, type, tentative, student_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
@@ -285,8 +320,8 @@ export function createCalendarEvent(
       data.title,
       data.subtitle ?? "",
       data.location ?? "",
-      data.instructor,
-      data.vehicle ?? "",
+      data.instructorId,
+      data.vehicleId,
       data.type,
       data.tentative ? 1 : 0,
       data.studentId ?? null,
@@ -304,7 +339,7 @@ export function updateCalendarEvent(
   db.prepare(
     `UPDATE calendar_events
      SET date = ?, start = ?, "end" = ?, title = ?, subtitle = ?, location = ?,
-         instructor = ?, vehicle = ?, type = ?, tentative = ?, student_id = ?
+         instructor_id = ?, vehicle_id = ?, type = ?, tentative = ?, student_id = ?
      WHERE id = ?`,
   ).run(
     data.date,
@@ -313,8 +348,8 @@ export function updateCalendarEvent(
     data.title,
     data.subtitle ?? "",
     data.location ?? "",
-    data.instructor,
-    data.vehicle ?? "",
+    data.instructorId,
+    data.vehicleId,
     data.type,
     data.tentative ? 1 : 0,
     data.studentId ?? null,

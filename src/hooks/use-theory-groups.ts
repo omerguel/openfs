@@ -23,6 +23,8 @@ export type TheoryGroup = {
   time: string;
   room: string;
   instructor: string;
+  /** FK → instructors.id (null = unassigned); `instructor` is its display name. */
+  instructorId?: number | null;
   capacity: number;
   /** Raw membership (student ids) as stored on the server. */
   studentIds: number[];

@@ -23,7 +23,11 @@ export type CalEvent = {
   subtitle?: string;
   location?: string;
   instructor: string;
+  /** FK → instructors.id (null = unassigned); `instructor` is its display name. */
+  instructorId?: number | null;
   vehicle?: string;
+  /** FK → vehicles.id (null = none); `vehicle` is its display label. */
+  vehicleId?: number | null;
   type: EventType;
   tentative?: boolean;
   /** FK → students.id; set when the event was created for a known student

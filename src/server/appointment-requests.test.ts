@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS students (
   first_name TEXT NOT NULL DEFAULT '',
   last_name TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS instructors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_name TEXT NOT NULL DEFAULT '',
+  last_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'aktiv'
+);
+CREATE TABLE IF NOT EXISTS vehicles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'aktiv'
+);
 CREATE TABLE IF NOT EXISTS calendar_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,            -- ISO "YYYY-MM-DD"
@@ -43,8 +55,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -60,6 +72,16 @@ let db: Database;
 beforeEach(() => {
   db = openSqlite(":memory:");
   db.exec(CALENDAR_EVENTS_DDL);
+  const addInstructor = db.prepare(
+    "INSERT INTO instructors (first_name, last_name) VALUES (?, ?)",
+  );
+  for (const name of ["Martin Weber", "Nadine Aksoy", "Emre Yilmaz", "Sven Kappel"]) {
+    const [first, last] = name.split(" ");
+    addInstructor.run(first!, last!);
+  }
+  const addVehicle = db.prepare("INSERT INTO vehicles (model, plate) VALUES (?, ?)");
+  addVehicle.run("VW Golf", "DA-FS 1");
+  addVehicle.run("Audi A3", "DA-FS 2");
   ensureAppointmentRequestTables(db);
 });
 

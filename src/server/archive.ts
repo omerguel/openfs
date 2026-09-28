@@ -10,6 +10,7 @@
 import type { Database } from "./sqlite";
 
 import { ValidationError } from "./engine";
+import { instructorIdByName, vehicleIdByName } from "./refs";
 
 export type ArchiveEntity =
   | "student"
@@ -28,13 +29,9 @@ const TABLES: Record<ArchiveEntity, string> = {
   price_plan: "price_plans",
 };
 
-/* Both students.instructor/vehicle and instructors.vehicle fall back to
-   this marker when their target is deleted (see the delete* functions). */
-const UNASSIGNED = "Nicht zugeteilt";
-
-/* Records that pointed at the deleted row and were reset to UNASSIGNED
-   (or NULL for price plans / conversations, removed from the member
-   list for theory groups). Restore re-links them — but only the ones
+/* Records that pointed at the deleted row and were reset to NULL
+   (instructor_id / vehicle_id / price_plan_id / conversations.student_id;
+   removed from the member list for theory groups). Restore re-links them — but only the ones
    still unassigned, so reassignments made in the meantime survive. */
 export type ArchiveLinks = {
   students?: number[];
@@ -129,7 +126,7 @@ function getArchiveRow(db: Database, id: number): ArchiveRow {
   return row;
 }
 
-/* Put records that were reset to UNASSIGNED when their target was
+/* Put records that were reset to NULL when their target was
    deleted back onto the restored target — skipping any that have been
    reassigned since. Runs inside the restore transaction. */
 function relink(
@@ -140,61 +137,31 @@ function relink(
 ): void {
   const idList = (ids: number[]) => ids.map(() => "?").join(", ");
 
-  if (links.students?.length) {
-    const ids = links.students;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE students SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "vehicle") {
-      db.prepare(
-        `UPDATE students SET vehicle = ?
-         WHERE vehicle = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(String(snapshot.model), ...ids);
-    } else if (entity === "price_plan") {
-      db.prepare(
-        `UPDATE students SET price_plan_id = ?
-         WHERE price_plan_id IS NULL AND id IN (${idList(ids)})`,
-      ).run(Number(snapshot.id), ...ids);
-    }
-  }
-
-  if (links.instructors?.length && entity === "vehicle") {
-    const ids = links.instructors;
+  const targetId = Number(snapshot.id);
+  // Re-point `column` at the restored row — only where it is still NULL.
+  const relinkColumn = (table: string, column: string, ids: number[] | undefined) => {
+    if (!ids?.length || !tableExists(db, table)) return;
     db.prepare(
-      `UPDATE instructors SET vehicle = ?
-       WHERE vehicle = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-    ).run(String(snapshot.model), ...ids);
-  }
+      `UPDATE ${table} SET ${column} = ?
+       WHERE ${column} IS NULL AND id IN (${idList(ids)})`,
+    ).run(targetId, ...ids);
+  };
 
-  if (links.calendarEvents?.length) {
-    const ids = links.calendarEvents;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE calendar_events SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "vehicle") {
-      // Events store the bare model; their "deleted" marker is ''.
-      db.prepare(
-        `UPDATE calendar_events SET vehicle = ?
-         WHERE vehicle = '' AND id IN (${idList(ids)})`,
-      ).run(String(snapshot.model), ...ids);
-    }
+  if (entity === "instructor") {
+    relinkColumn("students", "instructor_id", links.students);
+    relinkColumn("calendar_events", "instructor_id", links.calendarEvents);
+    relinkColumn("theory_groups", "instructor_id", links.theoryGroups);
+  } else if (entity === "vehicle") {
+    relinkColumn("students", "vehicle_id", links.students);
+    relinkColumn("instructors", "vehicle_id", links.instructors);
+    relinkColumn("calendar_events", "vehicle_id", links.calendarEvents);
+  } else if (entity === "price_plan") {
+    relinkColumn("students", "price_plan_id", links.students);
   }
 
   if (links.theoryGroups?.length && tableExists(db, "theory_groups")) {
     const ids = links.theoryGroups;
-    if (entity === "instructor") {
-      const name = `${snapshot.first_name} ${snapshot.last_name}`.trim();
-      db.prepare(
-        `UPDATE theory_groups SET instructor = ?
-         WHERE instructor = '${UNASSIGNED}' AND id IN (${idList(ids)})`,
-      ).run(name, ...ids);
-    } else if (entity === "student") {
+    if (entity === "student") {
       // Re-add the student to each group it was removed from — unless
       // the seat has been filled or the student re-added in the meantime.
       const studentId = Number(snapshot.id);
@@ -241,6 +208,44 @@ function parseIdList(raw: string): number[] {
   }
 }
 
+/* Adapt a snapshot to the table as it is today: snapshots taken before
+   the id migration carry name columns (instructor / vehicle) — resolve
+   them to ids; columns the table no longer has are dropped; links to an
+   instructor/vehicle that is itself gone become unassigned (NULL). */
+function normalizeSnapshot(
+  db: Database,
+  table: string,
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const existing = new Set(
+    db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c) => c.name),
+  );
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (existing.has(key)) next[key] = value;
+  }
+  if (existing.has("instructor_id") && next.instructor_id === undefined) {
+    const name = typeof snapshot.instructor === "string" ? snapshot.instructor : "";
+    next.instructor_id = name ? instructorIdByName(db, name) : null;
+  }
+  if (existing.has("vehicle_id") && next.vehicle_id === undefined) {
+    const name = typeof snapshot.vehicle === "string" ? snapshot.vehicle : "";
+    next.vehicle_id = name ? vehicleIdByName(db, name) : null;
+  }
+  const exists = (target: string, id: unknown) =>
+    typeof id === "number" && db.query(`SELECT 1 FROM ${target} WHERE id = ?`).get(id);
+  if (next.instructor_id != null && !exists("instructors", next.instructor_id)) {
+    next.instructor_id = null;
+  }
+  if (next.vehicle_id != null && !exists("vehicles", next.vehicle_id)) {
+    next.vehicle_id = null;
+  }
+  return next;
+}
+
 /* Re-insert the snapshot verbatim and drop the archive entry. UNIQUE /
    FK violations (e.g. the Vertragsnummer was reused, or a referenced
    price plan is itself still deleted) become readable errors. */
@@ -252,13 +257,15 @@ export function restoreArchived(db: Database, id: number): ArchiveRecord {
     "row" in parsed && typeof parsed.row === "object"
       ? (parsed as ArchivePayload)
       : { row: parsed as Record<string, unknown>, links: undefined };
-  const columns = Object.keys(snapshot);
+  const table = TABLES[row.entity];
+  const restorable = normalizeSnapshot(db, table, snapshot);
+  const columns = Object.keys(restorable);
 
   const restore = db.transaction(() => {
     db.prepare(
-      `INSERT INTO ${TABLES[row.entity]} (${columns.map((c) => `"${c}"`).join(", ")})
+      `INSERT INTO ${table} (${columns.map((c) => `"${c}"`).join(", ")})
        VALUES (${columns.map(() => "?").join(", ")})`,
-    ).run(...(columns.map((c) => snapshot[c]) as (string | number | null)[]));
+    ).run(...(columns.map((c) => restorable[c]) as (string | number | null)[]));
     if (links) relink(db, row.entity, snapshot, links);
     db.prepare("DELETE FROM archive WHERE id = ?").run(id);
   });

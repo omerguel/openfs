@@ -41,8 +41,8 @@ The accounting module enforces GoBD: immutable bookings, Storno-only corrections
 **The only permitted write paths are `createTransaction` and `stornoTransaction` in `src/server/engine.ts`.**
 Never add UPDATE or DELETE on the `transactions` or `bookings` tables.
 
-### Name-keyed soft references
-`students`, `calendar_events`, and `theory_groups` reference instructors and vehicles by **display name**, not by id. When an instructor or vehicle is renamed or deleted, every reference must be updated (see cascade in `src/server/instructors.ts` ~lines 174–186). New cross-references should use ids instead.
+### Instructor / vehicle references
+`students`, `calendar_events`, `theory_groups` and `instructors` link instructors and vehicles by id (`instructor_id` / `vehicle_id`, NULL = unassigned). Display names are derived on read (`src/server/refs.ts`), so renames need no cascade; deletes set the id to NULL and archive the links for restore. The API still accepts a display name as input and resolves it (vehicle labels are "Modell" or "Modell · Kennzeichen" when two vehicles share a model). `lesson_attestations.instructor` stays a name snapshot on purpose (compliance record).
 
 ### Tests
 - All tests use in-memory SQLite: `openSqlite(":memory:")`.

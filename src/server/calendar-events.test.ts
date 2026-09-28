@@ -67,12 +67,13 @@ describe("createCalendarEvent", () => {
       ...VALID,
       subtitle: "Lena Braun",
       location: "Innenstadt",
-      vehicle: "Golf",
+      vehicle: "VW Golf",
       tentative: true,
     });
     expect(event.subtitle).toBe("Lena Braun");
     expect(event.location).toBe("Innenstadt");
-    expect(event.vehicle).toBe("Golf");
+    expect(event.vehicle).toBe("VW Golf");
+    expect(event.vehicleId).toBeGreaterThan(0);
     expect(event.tentative).toBe(true);
   });
 

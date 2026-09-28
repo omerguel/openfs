@@ -25,8 +25,6 @@ export type Vehicle = {
   details: VehicleDetail[];
 };
 
-const UNASSIGNED_VEHICLE = "Nicht zugeteilt";
-
 export type VehicleInput = Omit<Vehicle, "id">;
 
 type VehicleRow = {
@@ -256,30 +254,8 @@ export function updateVehicle(
       toJson(data.details),
       id,
     );
-    // Students, instructors and Termine reference vehicles by model — a
-    // model rename must follow, but only when no fleet mate still
-    // carries the old model (their references stay valid).
-    if (data.model !== current.model && current.model) {
-      const sameModel = db
-        .query<{ n: number }, [string]>(
-          "SELECT count(*) AS n FROM vehicles WHERE model = ?",
-        )
-        .get(current.model)!.n;
-      if (sameModel === 0) {
-        db.prepare("UPDATE students SET vehicle = ? WHERE vehicle = ?").run(
-          data.model,
-          current.model,
-        );
-        db.prepare("UPDATE instructors SET vehicle = ? WHERE vehicle = ?").run(
-          data.model,
-          current.model,
-        );
-        db.prepare("UPDATE calendar_events SET vehicle = ? WHERE vehicle = ?").run(
-          data.model,
-          current.model,
-        );
-      }
-    }
+    // Students, instructors and Termine link by vehicle_id — a model
+    // rename needs no cascade; display names are derived on read.
   });
   guardUnique(write);
   return getVehicle(db, id);
@@ -287,39 +263,21 @@ export function updateVehicle(
 
 export function deleteVehicle(db: Database, id: number): void {
   const vehicle = getVehicle(db, id);
+  const tables = ["students", "instructors", "calendar_events"] as const;
   const remove = db.transaction(() => {
     // Remember who was assigned so a restore can re-link them.
-    const byModel = (table: string) =>
+    const linked = (table: string) =>
       db
-        .query<{ id: number }, [string]>(`SELECT id FROM ${table} WHERE vehicle = ?`)
-        .all(vehicle.model)
+        .query<{ id: number }, [number]>(`SELECT id FROM ${table} WHERE vehicle_id = ?`)
+        .all(id)
         .map((row) => row.id);
-    // Only sever references when this is the LAST vehicle of its model —
-    // fleet mates with the same model keep the assignments valid.
-    const lastOfModel =
-      db
-        .query<{ n: number }, [string, number]>(
-          "SELECT count(*) AS n FROM vehicles WHERE model = ? AND id != ?",
-        )
-        .get(vehicle.model, id)!.n === 0;
     archiveRow(db, "vehicle", id, `${vehicle.model} · ${vehicle.plate}`, {
-      students: lastOfModel ? byModel("students") : [],
-      instructors: lastOfModel ? byModel("instructors") : [],
-      calendarEvents: lastOfModel ? byModel("calendar_events") : [],
+      students: linked("students"),
+      instructors: linked("instructors"),
+      calendarEvents: linked("calendar_events"),
     });
-    if (lastOfModel) {
-      db.prepare("UPDATE students SET vehicle = ? WHERE vehicle = ?").run(
-        UNASSIGNED_VEHICLE,
-        vehicle.model,
-      );
-      db.prepare("UPDATE instructors SET vehicle = ? WHERE vehicle = ?").run(
-        UNASSIGNED_VEHICLE,
-        vehicle.model,
-      );
-      // Events treat '' as "no vehicle" (optional field).
-      db.prepare("UPDATE calendar_events SET vehicle = '' WHERE vehicle = ?").run(
-        vehicle.model,
-      );
+    for (const table of tables) {
+      db.prepare(`UPDATE ${table} SET vehicle_id = NULL WHERE vehicle_id = ?`).run(id);
     }
     db.prepare("DELETE FROM vehicles WHERE id = ?").run(id);
   });

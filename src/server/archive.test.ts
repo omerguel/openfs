@@ -53,7 +53,7 @@ const EVENT = {
   start: "10:00",
   end: "11:00",
   title: "Fahrstunde Archivtest",
-  instructor: "Anna Beispiel",
+  instructor: "Martin Weber",
   type: "Praktisch" as const,
 };
 
@@ -131,6 +131,7 @@ describe("archive", () => {
 
     // One student gets a new instructor while Anna sits in the archive —
     // that assignment must survive the restore.
+    createInstructor(db, { firstName: "Ben", lastName: "Anders", classes: "B" });
     updateStudent(db, reassigned.id, { instructor: "Ben Anders" });
 
     const entry = listArchive(db).find((item) => item.entity === "instructor")!;

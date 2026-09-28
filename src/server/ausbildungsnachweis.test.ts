@@ -48,8 +48,9 @@ function insertPraktischEvent(
   const row = target
     .query<{ id: number }, [string, number | null]>(
       `INSERT INTO calendar_events
-         (date, start, "end", title, instructor, type, student_id)
-       VALUES ('2026-06-10', '09:00', '10:30', 'Fahrstunde', 'Martin Weber', ?, ?)
+         (date, start, "end", title, instructor_id, type, student_id)
+       VALUES ('2026-06-10', '09:00', '10:30', 'Fahrstunde',
+               (SELECT id FROM instructors WHERE last_name = 'Weber'), ?, ?)
        RETURNING id`,
     )
     .get(type, studentId)!;

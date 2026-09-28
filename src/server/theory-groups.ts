@@ -10,6 +10,7 @@ import type { BunRequest } from "bun";
 
 import { ValidationError } from "./engine";
 import { handle, json } from "./http";
+import { instructorNameSql, migrateNameColumn, resolveInstructorId } from "./refs";
 
 export type TheoryGroupStatus = "aktiv" | "abgeschlossen";
 
@@ -26,6 +27,8 @@ export type TheoryGroup = {
   time: string;
   room: string;
   instructor: string;
+  /** FK → instructors.id; null = unassigned. `instructor` is its display name. */
+  instructorId: number | null;
   capacity: number;
   /** Raw membership as stored (JSON array of student ids). */
   studentIds: number[];
@@ -42,12 +45,15 @@ export type TheoryGroupInput = {
   time: string;
   room: string;
   instructor: string;
+  instructorId?: number | null;
   capacity: number;
   studentIds: number[];
   status: TheoryGroupStatus;
 };
 
-const UNASSIGNED_INSTRUCTOR = "Nicht zugeteilt";
+type TheoryGroupData = Omit<TheoryGroupInput, "instructor" | "instructorId"> & {
+  instructorId: number | null;
+};
 
 export const THEORY_GROUP_WEEKDAYS = [
   "Montag",
@@ -73,7 +79,7 @@ CREATE TABLE IF NOT EXISTS theory_groups (
   weekday TEXT NOT NULL,
   time TEXT NOT NULL,
   room TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
+  instructor_id INTEGER REFERENCES instructors(id),
   capacity INTEGER NOT NULL DEFAULT 20,
   student_ids TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'abgeschlossen')),
@@ -103,29 +109,19 @@ function tableExists(db: Database, name: string): boolean {
   );
 }
 
-const FALLBACK_INSTRUCTORS = [
-  "Martin Weber",
-  "Nadine Aksoy",
-  "Emre Yilmaz",
-  "Sven Kappel",
-];
-
-/* Seed groups — only on an empty table. Instructor names come from the
-   instructors table when it exists and has rows; member ids from the
-   students table when present (distributed round-robin). */
+/* Seed groups — only on an empty table. Instructors come from the
+   instructors table when it exists and has rows (else unassigned);
+   member ids from the students table when present (round-robin). */
 function seedTheoryGroups(db: Database) {
-  let instructorNames = FALLBACK_INSTRUCTORS;
-  if (tableExists(db, "instructors")) {
-    const rows = db
-      .query<{ name: string }, []>(
-        `SELECT trim(first_name || ' ' || last_name) AS name
-         FROM instructors WHERE status = 'aktiv' ORDER BY id`,
-      )
-      .all()
-      .map((row) => row.name)
-      .filter(Boolean);
-    if (rows.length > 0) instructorNames = rows;
-  }
+  const instructorIds: (number | null)[] = tableExists(db, "instructors")
+    ? db
+        .query<{ id: number }, []>(
+          "SELECT id FROM instructors WHERE status = 'aktiv' ORDER BY id",
+        )
+        .all()
+        .map((row) => row.id)
+    : [];
+  if (instructorIds.length === 0) instructorIds.push(null);
 
   const studentIds = tableExists(db, "students")
     ? db
@@ -184,7 +180,7 @@ function seedTheoryGroups(db: Database) {
 
   const insert = db.prepare(
     `INSERT INTO theory_groups
-       (name, klass, weekday, time, room, instructor, capacity, student_ids, status)
+       (name, klass, weekday, time, room, instructor_id, capacity, student_ids, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const seedAll = db.transaction(() => {
@@ -196,7 +192,7 @@ function seedTheoryGroups(db: Database) {
         seed.weekday,
         seed.time,
         seed.room,
-        instructorNames[index % instructorNames.length]!,
+        instructorIds[index % instructorIds.length] ?? null,
         seed.capacity,
         JSON.stringify(memberIds),
         seed.status,
@@ -209,6 +205,9 @@ function seedTheoryGroups(db: Database) {
 export function ensureTheoryGroupTables(db: Database) {
   db.exec(TABLE_DDL);
   db.exec(ATTENDANCE_DDL);
+  if (tableExists(db, "instructors")) {
+    migrateNameColumn(db, "theory_groups", { from: "instructor" });
+  }
   const count = db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM theory_groups")
     .get()!.n;
@@ -227,14 +226,23 @@ type TheoryGroupRow = {
   time: string;
   room: string;
   instructor: string;
+  instructor_id: number | null;
   capacity: number;
   student_ids: string;
   status: TheoryGroupStatus;
   created_at: string;
 };
 
-const SELECT = `SELECT id, name, klass, weekday, time, room, instructor,
-  capacity, student_ids, status, created_at FROM theory_groups`;
+/* The instructor display name needs the instructors table — bare test
+   databases without it fall back to the unassigned marker. */
+function selectSql(db: Database): string {
+  const instructor = tableExists(db, "instructors")
+    ? instructorNameSql("g")
+    : "'Nicht zugeteilt'";
+  return `SELECT g.id, g.name, g.klass, g.weekday, g.time, g.room, g.instructor_id,
+    ${instructor} AS instructor, g.capacity, g.student_ids, g.status, g.created_at
+    FROM theory_groups g`;
+}
 
 function parseStudentIds(raw: string): number[] {
   try {
@@ -273,6 +281,7 @@ function toGroup(db: Database, row: TheoryGroupRow): TheoryGroup {
     time: row.time,
     room: row.room,
     instructor: row.instructor,
+    instructorId: row.instructor_id,
     capacity: row.capacity,
     studentIds,
     members: resolveMembers(db, studentIds),
@@ -283,13 +292,15 @@ function toGroup(db: Database, row: TheoryGroupRow): TheoryGroup {
 
 export function listTheoryGroups(db: Database): TheoryGroup[] {
   return db
-    .query<TheoryGroupRow, []>(`${SELECT} ORDER BY name`)
+    .query<TheoryGroupRow, []>(`${selectSql(db)} ORDER BY g.name`)
     .all()
     .map((row) => toGroup(db, row));
 }
 
 export function getTheoryGroup(db: Database, id: number): TheoryGroup {
-  const row = db.query<TheoryGroupRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db
+    .query<TheoryGroupRow, [number]>(`${selectSql(db)} WHERE g.id = ?`)
+    .get(id);
   if (!row) throw new ValidationError("Theorie-Gruppe nicht gefunden.");
   return toGroup(db, row);
 }
@@ -324,15 +335,15 @@ function normalizeStudentIds(db: Database, value: unknown, current: number[]): n
   return ids;
 }
 
-type GroupTextKey = "name" | "klass" | "weekday" | "time" | "room" | "instructor";
+type GroupTextKey = "name" | "klass" | "weekday" | "time" | "room";
 
 /* Merge a partial payload over current values, trimming strings and
    rejecting anything that would leave the group unusable. */
 function normalize(
   db: Database,
   input: Partial<TheoryGroupInput>,
-  current: TheoryGroupInput,
-): TheoryGroupInput {
+  current: TheoryGroupData,
+): TheoryGroupData {
   const str = (key: GroupTextKey): string => {
     const value = input[key];
     if (value === undefined) return current[key];
@@ -342,13 +353,17 @@ function normalize(
     return value.trim();
   };
 
-  const next: TheoryGroupInput = {
+  const next: TheoryGroupData = {
     name: str("name"),
     klass: str("klass"),
     weekday: str("weekday"),
     time: str("time"),
     room: str("room"),
-    instructor: str("instructor") || UNASSIGNED_INSTRUCTOR,
+    instructorId: resolveInstructorId(
+      db,
+      { id: input.instructorId, name: input.instructor },
+      current.instructorId,
+    ),
     capacity: current.capacity,
     studentIds: current.studentIds,
     status: current.status,
@@ -392,13 +407,13 @@ function normalize(
   return next;
 }
 
-const EMPTY: TheoryGroupInput = {
+const EMPTY: TheoryGroupData = {
   name: "",
   klass: "",
   weekday: "Montag",
   time: "18:00",
   room: "",
-  instructor: UNASSIGNED_INSTRUCTOR,
+  instructorId: null,
   capacity: 20,
   studentIds: [],
   status: "aktiv",
@@ -416,10 +431,10 @@ export function createTheoryGroup(
   const row = db
     .query<
       { id: number },
-      [string, string, string, string, string, string, number, string, string]
+      [string, string, string, string, string, number | null, number, string, string]
     >(
       `INSERT INTO theory_groups
-         (name, klass, weekday, time, room, instructor, capacity, student_ids, status)
+         (name, klass, weekday, time, room, instructor_id, capacity, student_ids, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
@@ -428,7 +443,7 @@ export function createTheoryGroup(
       data.weekday,
       data.time,
       data.room,
-      data.instructor,
+      data.instructorId,
       data.capacity,
       JSON.stringify(data.studentIds),
       data.status,
@@ -445,7 +460,7 @@ export function updateTheoryGroup(
   const data = normalize(db, input, current);
   db.prepare(
     `UPDATE theory_groups
-     SET name = ?, klass = ?, weekday = ?, time = ?, room = ?, instructor = ?,
+     SET name = ?, klass = ?, weekday = ?, time = ?, room = ?, instructor_id = ?,
          capacity = ?, student_ids = ?, status = ?
      WHERE id = ?`,
   ).run(
@@ -454,7 +469,7 @@ export function updateTheoryGroup(
     data.weekday,
     data.time,
     data.room,
-    data.instructor,
+    data.instructorId,
     data.capacity,
     JSON.stringify(data.studentIds),
     data.status,

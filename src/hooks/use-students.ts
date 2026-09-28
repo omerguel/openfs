@@ -10,7 +10,13 @@
 import type { Student } from "@/lib/student-data";
 import { parseOrThrow, useFetchList } from "@/lib/api";
 
-export type StudentRecord = Student & { id: number };
+/* instructorId/vehicleId are the real links; the display names in
+   `instructor`/`vehicle` are derived by the server. */
+export type StudentRecord = Student & {
+  id: number;
+  instructorId?: number | null;
+  vehicleId?: number | null;
+};
 
 export async function fetchStudents(): Promise<StudentRecord[]> {
   const data = await parseOrThrow<{ students: StudentRecord[] }>(

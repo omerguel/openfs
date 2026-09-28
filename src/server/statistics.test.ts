@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS students (
   contract_number TEXT NOT NULL UNIQUE,
   customer_number TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   balance TEXT NOT NULL DEFAULT '0,00 EUR',
   last_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
   next_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS instructors (
   phone TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   classes TEXT NOT NULL DEFAULT '',
-  vehicle TEXT NOT NULL DEFAULT '',
+  vehicle_id INTEGER,
   since TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -124,8 +124,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER,
+  vehicle_id INTEGER,
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -161,10 +161,16 @@ function insertStudent(status: "aktiv" | "inaktiv", registrationDate: string) {
   );
 }
 
+const FIRST_NAMES: Record<string, string> = {
+  Weber: "Martin",
+  Aksoy: "Nadine",
+  Kappel: "Sven",
+};
+
 function insertInstructor(status: "aktiv" | "inaktiv", lastName: string) {
   db.prepare(
     "INSERT INTO instructors (first_name, last_name, status) VALUES (?, ?, ?)",
-  ).run("Test", lastName, status);
+  ).run(FIRST_NAMES[lastName] ?? "Test", lastName, status);
 }
 
 let vehicleSeq = 0;
@@ -182,10 +188,23 @@ function insertEvent(
   type: string,
   instructor = "Martin Weber",
 ) {
+  const [first = "", last = ""] = instructor.split(" ");
+  let row = db
+    .query<{ id: number }, [string, string]>(
+      "SELECT id FROM instructors WHERE first_name = ? AND last_name = ?",
+    )
+    .get(first, last);
+  if (!row) {
+    row = db
+      .query<{ id: number }, [string, string]>(
+        "INSERT INTO instructors (first_name, last_name) VALUES (?, ?) RETURNING id",
+      )
+      .get(first, last)!;
+  }
   db.prepare(
-    `INSERT INTO calendar_events (date, start, "end", title, instructor, type)
+    `INSERT INTO calendar_events (date, start, "end", title, instructor_id, type)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(date, start, end, "Termin", instructor, type);
+  ).run(date, start, end, "Termin", row.id, type);
 }
 
 function insertAccounts() {

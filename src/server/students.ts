@@ -8,8 +8,24 @@ import type { Database, SQLQueryBindings } from "./sqlite";
 import type { Student } from "../lib/student-data";
 import { archiveRow, tableExists } from "./archive";
 import { ValidationError } from "./engine";
+import {
+  instructorNameSql,
+  resolveInstructorId,
+  resolveVehicleId,
+  vehicleNameSql,
+} from "./refs";
 
-export type StudentRecord = Student & { id: number };
+export type StudentRecord = Student & {
+  id: number;
+  instructorId: number | null;
+  vehicleId: number | null;
+};
+
+/** Write payload: display names or ids for the instructor/vehicle links. */
+export type StudentInput = Partial<Student> & {
+  instructorId?: number | null;
+  vehicleId?: number | null;
+};
 
 type StudentRow = {
   id: number;
@@ -27,6 +43,8 @@ type StudentRow = {
   status: Student["status"];
   instructor: string;
   vehicle: string;
+  instructor_id: number | null;
+  vehicle_id: number | null;
   balance: string;
   last_lesson: string;
   next_lesson: string;
@@ -55,6 +73,8 @@ const toStudent = (row: StudentRow): StudentRecord => {
     status: row.status,
     instructor: row.instructor,
     vehicle: row.vehicle,
+    instructorId: row.instructor_id,
+    vehicleId: row.vehicle_id,
     balance: row.balance,
     lastLesson: row.last_lesson,
     nextLesson: row.next_lesson,
@@ -68,20 +88,22 @@ const toStudent = (row: StudentRow): StudentRecord => {
   return record;
 };
 
-const SELECT = `SELECT id, first_name, last_name, birthday, phone, email, address,
-  classes, driving_school, registration_date, contract_number, customer_number,
-  status, instructor, vehicle, balance, last_lesson, next_lesson, progress,
-  lessons, documents, theory, price_plan_id, license_date FROM students`;
+const SELECT = `SELECT s.id, s.first_name, s.last_name, s.birthday, s.phone, s.email,
+  s.address, s.classes, s.driving_school, s.registration_date, s.contract_number,
+  s.customer_number, s.status, s.instructor_id, s.vehicle_id,
+  ${instructorNameSql("s")} AS instructor, ${vehicleNameSql("s")} AS vehicle,
+  s.balance, s.last_lesson, s.next_lesson, s.progress, s.lessons, s.documents,
+  s.theory, s.price_plan_id, s.license_date FROM students s`;
 
 export function listStudents(db: Database): StudentRecord[] {
   return db
-    .query<StudentRow, []>(`${SELECT} ORDER BY last_name, first_name`)
+    .query<StudentRow, []>(`${SELECT} ORDER BY s.last_name, s.first_name`)
     .all()
     .map(toStudent);
 }
 
 export function getStudent(db: Database, id: number): StudentRecord {
-  const row = db.query<StudentRow, [number]>(`${SELECT} WHERE id = ?`).get(id);
+  const row = db.query<StudentRow, [number]>(`${SELECT} WHERE s.id = ?`).get(id);
   if (!row) throw new ValidationError("Fahrschüler/in nicht gefunden.");
   return toStudent(row);
 }
@@ -98,8 +120,6 @@ const STRING_KEYS = [
   "registrationDate",
   "contractNumber",
   "customerNumber",
-  "instructor",
-  "vehicle",
   "balance",
   "lastLesson",
   "nextLesson",
@@ -109,8 +129,21 @@ type StringKey = (typeof STRING_KEYS)[number];
 
 /* Merge a partial payload over current values, trimming strings and
    rejecting anything that would leave the record unusable. */
-function normalize(input: Partial<Student>, current: Student): Student {
-  const next: Student = { ...current };
+type StudentData = Student & { instructorId: number | null; vehicleId: number | null };
+
+function normalize(db: Database, input: StudentInput, current: StudentData): StudentData {
+  const next: StudentData = { ...current };
+
+  next.instructorId = resolveInstructorId(
+    db,
+    { id: input.instructorId, name: input.instructor },
+    current.instructorId,
+  );
+  next.vehicleId = resolveVehicleId(
+    db,
+    { id: input.vehicleId, name: input.vehicle },
+    current.vehicleId,
+  );
 
   for (const key of STRING_KEYS) {
     const value = input[key as StringKey];
@@ -193,7 +226,9 @@ function normalize(input: Partial<Student>, current: Student): Student {
   return next;
 }
 
-const EMPTY: Student = {
+const EMPTY: StudentData = {
+  instructorId: null,
+  vehicleId: null,
   firstName: "",
   lastName: "",
   birthday: "",
@@ -236,7 +271,7 @@ function guardUnique<T>(write: () => T): T {
   }
 }
 
-function writeParams(data: Student) {
+function writeParams(data: StudentData) {
   return [
     data.firstName,
     data.lastName,
@@ -250,8 +285,8 @@ function writeParams(data: Student) {
     data.contractNumber,
     data.customerNumber,
     data.status,
-    data.instructor,
-    data.vehicle,
+    data.instructorId,
+    data.vehicleId,
     data.balance,
     data.lastLesson,
     data.nextLesson,
@@ -264,15 +299,15 @@ function writeParams(data: Student) {
   ] as const;
 }
 
-export function createStudent(db: Database, input: Partial<Student>): StudentRecord {
-  const data = normalize(input, EMPTY);
+export function createStudent(db: Database, input: StudentInput): StudentRecord {
+  const data = normalize(db, input, EMPTY);
   const row = guardUnique(() =>
     db
       .query<{ id: number }, SQLQueryBindings[]>(
         `INSERT INTO students (
            first_name, last_name, birthday, phone, email, address, classes,
            driving_school, registration_date, contract_number, customer_number,
-           status, instructor, vehicle, balance, last_lesson, next_lesson,
+           status, instructor_id, vehicle_id, balance, last_lesson, next_lesson,
            progress, lessons, documents, theory, price_plan_id, license_date
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
@@ -285,17 +320,17 @@ export function createStudent(db: Database, input: Partial<Student>): StudentRec
 export function updateStudent(
   db: Database,
   id: number,
-  input: Partial<Student>,
+  input: StudentInput,
 ): StudentRecord {
   const current = getStudent(db, id);
-  const data = normalize(input, current);
+  const data = normalize(db, input, current);
   const write = db.transaction(() => {
     db.prepare(
       `UPDATE students SET
          first_name = ?, last_name = ?, birthday = ?, phone = ?, email = ?,
          address = ?, classes = ?, driving_school = ?, registration_date = ?,
-         contract_number = ?, customer_number = ?, status = ?, instructor = ?,
-         vehicle = ?, balance = ?, last_lesson = ?, next_lesson = ?,
+         contract_number = ?, customer_number = ?, status = ?, instructor_id = ?,
+         vehicle_id = ?, balance = ?, last_lesson = ?, next_lesson = ?,
          progress = ?, lessons = ?, documents = ?, theory = ?,
          price_plan_id = ?, license_date = ?
        WHERE id = ?`,

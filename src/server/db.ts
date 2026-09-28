@@ -9,6 +9,7 @@
 /* ------------------------------------------------------------------ */
 
 import { openSqlite, type Database } from "./sqlite";
+import { instructorIdByName, migrateNameColumn, vehicleIdByName } from "./refs";
 
 import type { AccountKind, CompanyProfile } from "../lib/accounting-types";
 import { PRICE_PLAN_SEED } from "../lib/price-plan";
@@ -91,8 +92,8 @@ CREATE TABLE IF NOT EXISTS students (
   contract_number TEXT NOT NULL UNIQUE,
   customer_number TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
+  instructor_id INTEGER REFERENCES instructors(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
   balance TEXT NOT NULL DEFAULT '0,00 EUR',
   last_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
   next_lesson TEXT NOT NULL DEFAULT 'Nicht geplant',
@@ -111,7 +112,7 @@ CREATE TABLE IF NOT EXISTS instructors (
   phone TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   classes TEXT NOT NULL DEFAULT '',
-  vehicle TEXT NOT NULL DEFAULT '',
+  vehicle_id INTEGER REFERENCES vehicles(id),
   since TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'aktiv' CHECK (status IN ('aktiv', 'inaktiv')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -142,8 +143,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   title TEXT NOT NULL,
   subtitle TEXT NOT NULL DEFAULT '',
   location TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT 'Nicht zugeteilt',
-  vehicle TEXT NOT NULL DEFAULT '',
+  instructor_id INTEGER REFERENCES instructors(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
   type TEXT NOT NULL CHECK (type IN ('Praktisch','Theorie','Vorstellung zur prakt. Prüfung','Theorieprüfung','Andere')),
   tentative INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -391,6 +392,11 @@ export function openDb(path = "data/fahrschule.db"): Database {
     "CREATE INDEX IF NOT EXISTS idx_calendar_events_student ON calendar_events(student_id);",
   );
   migrateExamResults(db);
+  migrateNameColumn(db, "students", { from: "instructor" });
+  migrateNameColumn(db, "students", { from: "vehicle" });
+  migrateNameColumn(db, "instructors", { from: "vehicle" });
+  migrateNameColumn(db, "calendar_events", { from: "instructor" });
+  migrateNameColumn(db, "calendar_events", { from: "vehicle" });
   initAccounts(db);
   initSequences(db);
   initSettings(db);
@@ -403,12 +409,10 @@ export function openDb(path = "data/fahrschule.db"): Database {
   return db;
 }
 
-/* Students, Termine and theory groups reference instructors/vehicles by
-   display name (no FK). Before the rename/delete code paths propagated
-   (instructors.ts/vehicles.ts), edits could leave references pointing
-   at names that no longer exist — invisible in pickers, phantom in
-   lists. Normalize any such orphan to the explicit "unassigned" marker.
-   Idempotent and cheap, so it runs on every open as a safety net. */
+/* Safety net for the remaining JSON/soft links (theory-group member
+   lists, chat threads). Instructor/vehicle links are real FKs
+   (instructor_id / vehicle_id) and need no repair. Idempotent and
+   cheap, so it runs on every open. */
 export function repairSoftReferences(db: Database) {
   const tableExists = (name: string) =>
     db
@@ -417,30 +421,7 @@ export function repairSoftReferences(db: Database) {
       )
       .get(name) !== null;
 
-  db.exec(`
-    UPDATE students SET instructor = 'Nicht zugeteilt'
-      WHERE instructor != 'Nicht zugeteilt'
-        AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    UPDATE students SET vehicle = 'Nicht zugeteilt'
-      WHERE vehicle != 'Nicht zugeteilt'
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-    UPDATE instructors SET vehicle = 'Nicht zugeteilt'
-      WHERE vehicle NOT IN ('Nicht zugeteilt', '')
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-    UPDATE calendar_events SET instructor = 'Nicht zugeteilt'
-      WHERE instructor NOT IN ('Nicht zugeteilt', '')
-        AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    UPDATE calendar_events SET vehicle = ''
-      WHERE vehicle != ''
-        AND vehicle NOT IN (SELECT model FROM vehicles);
-  `);
-
   if (tableExists("theory_groups")) {
-    db.exec(`
-      UPDATE theory_groups SET instructor = 'Nicht zugeteilt'
-        WHERE instructor != 'Nicht zugeteilt'
-          AND instructor NOT IN (SELECT first_name || ' ' || last_name FROM instructors);
-    `);
     // Drop member ids whose student is gone — ghosts block group capacity.
     const groups = db
       .query<{ id: number; student_ids: string }, []>(
@@ -771,7 +752,7 @@ function initCalendarEvents(db: Database) {
 
   const insert = db.prepare(
     `INSERT INTO calendar_events
-       (date, start, "end", title, subtitle, location, instructor, vehicle, type, tentative)
+       (date, start, "end", title, subtitle, location, instructor_id, vehicle_id, type, tentative)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const event of CALENDAR_EVENT_SEED) {
@@ -784,8 +765,8 @@ function initCalendarEvents(db: Database) {
       event.title,
       event.subtitle ?? "",
       event.location ?? "",
-      event.instructor,
-      event.vehicle ?? "",
+      instructorIdByName(db, event.instructor),
+      event.vehicle ? vehicleIdByName(db, event.vehicle) : null,
       event.type,
       event.tentative ? 1 : 0,
     );
@@ -803,7 +784,7 @@ function initStudents(db: Database) {
     `INSERT INTO students (
        first_name, last_name, birthday, phone, email, address, classes,
        driving_school, registration_date, contract_number, customer_number,
-       status, instructor, vehicle, balance, last_lesson, next_lesson,
+       status, instructor_id, vehicle_id, balance, last_lesson, next_lesson,
        progress, lessons, documents, theory
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
@@ -821,8 +802,8 @@ function initStudents(db: Database) {
       s.contractNumber,
       s.customerNumber,
       s.status,
-      s.instructor,
-      s.vehicle,
+      instructorIdByName(db, s.instructor),
+      vehicleIdByName(db, s.vehicle),
       s.balance,
       s.lastLesson,
       s.nextLesson,
@@ -884,7 +865,7 @@ function initInstructors(db: Database) {
     .get()!.n;
   if (count > 0) return;
   const insert = db.prepare(
-    `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle, since, status)
+    `INSERT INTO instructors (first_name, last_name, phone, email, classes, vehicle_id, since, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const i of INSTRUCTOR_SEED) {
@@ -894,7 +875,7 @@ function initInstructors(db: Database) {
       i.phone,
       i.email,
       i.classes,
-      i.vehicle,
+      vehicleIdByName(db, i.vehicle),
       i.since,
       i.status,
     );

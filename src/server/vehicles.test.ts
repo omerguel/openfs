@@ -19,6 +19,7 @@ import {
 import { listArchive } from "./archive";
 import { createStudent, getStudent } from "./students";
 import { createInstructor, getInstructor } from "./instructors";
+import { createCalendarEvent, getCalendarEvent } from "./calendar-events";
 import type { InstructorInput } from "./instructors";
 
 let db: Database;
@@ -146,61 +147,44 @@ describe("createVehicle validation", () => {
 /* rename / plate-change propagation                                    */
 /* ================================================================== */
 
-describe("model rename propagation", () => {
-  test("renaming the last vehicle of a model updates students and calendar_events", () => {
+describe("model rename (id-linked references)", () => {
+  test("renaming a vehicle shows the new model on students and Termine", () => {
     const vehicle = createVehicle(
       db,
       makeVehicle({ model: "OldModel", plate: uniq("OLD-") }),
     );
-
-    // Student assigned to old model
     const student = createStudent(db, makeStudent({ vehicle: "OldModel" }));
+    const event = createCalendarEvent(db, {
+      date: "2026-03-01",
+      start: "10:00",
+      end: "11:00",
+      title: "Fahrstunde",
+      type: "Praktisch",
+      vehicleId: vehicle.id,
+    });
 
-    // Calendar event assigned to old model
-    db.prepare(
-      "INSERT INTO calendar_events (date, start, end, title, instructor, vehicle, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "2026-03-01",
-      "10:00",
-      "11:00",
-      "Fahrstunde",
-      "Nicht zugeteilt",
-      "OldModel",
-      "Praktisch",
-    );
-
-    // Act: rename model
     updateVehicle(db, vehicle.id, { model: "NewModel" });
 
-    // Assert: student vehicle updated
-    const updatedStudent = getStudent(db, student.id);
-    expect(updatedStudent.vehicle).toBe("NewModel");
-
-    // Assert: calendar_event vehicle updated
-    const ev = db
-      .query<{ vehicle: string }, []>(
-        "SELECT vehicle FROM calendar_events WHERE date = '2026-03-01'",
-      )
-      .get();
-    expect(ev?.vehicle).toBe("NewModel");
+    expect(getStudent(db, student.id).vehicle).toBe("NewModel");
+    expect(getCalendarEvent(db, Number(event.id)).vehicle).toBe("NewModel");
   });
 
-  test("renaming model with a fleet mate leaves references untouched", () => {
-    // Two vehicles share the same model
+  test("renaming one of two same-model vehicles only moves its own references", () => {
     const v1 = createVehicle(
       db,
       makeVehicle({ model: "SharedModel", plate: uniq("S1-") }),
     );
-    createVehicle(db, makeVehicle({ model: "SharedModel", plate: uniq("S2-") }));
+    const v2 = createVehicle(
+      db,
+      makeVehicle({ model: "SharedModel", plate: uniq("S2-") }),
+    );
+    const onV1 = createStudent(db, makeStudent({ vehicleId: v1.id }));
+    const onV2 = createStudent(db, makeStudent({ vehicleId: v2.id }));
 
-    const student = createStudent(db, makeStudent({ vehicle: "SharedModel" }));
-
-    // Rename v1 only — v2 still has "SharedModel", so references stay
     updateVehicle(db, v1.id, { model: "RenamedModel" });
 
-    const updatedStudent = getStudent(db, student.id);
-    // References should NOT move because another vehicle still carries "SharedModel"
-    expect(updatedStudent.vehicle).toBe("SharedModel");
+    expect(getStudent(db, onV1.id).vehicle).toBe("RenamedModel");
+    expect(getStudent(db, onV2.id).vehicle).toBe("SharedModel");
   });
 
   test("plate change on same model (no model rename) does not touch student references", () => {
@@ -288,26 +272,20 @@ describe("deleteVehicle", () => {
       db,
       makeVehicle({ model: "CalModel", plate: uniq("C-") }),
     );
-    db.prepare(
-      "INSERT INTO calendar_events (date, start, end, title, instructor, vehicle, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "2026-04-01",
-      "10:00",
-      "11:00",
-      "Termin",
-      "Nicht zugeteilt",
-      "CalModel",
-      "Praktisch",
-    );
+    const event = createCalendarEvent(db, {
+      date: "2026-04-01",
+      start: "10:00",
+      end: "11:00",
+      title: "Termin",
+      type: "Praktisch",
+      vehicle: "CalModel",
+    });
 
     deleteVehicle(db, vehicle.id);
 
-    const ev = db
-      .query<{ vehicle: string }, []>(
-        "SELECT vehicle FROM calendar_events WHERE date = '2026-04-01'",
-      )
-      .get();
-    expect(ev?.vehicle).toBe("");
+    const ev = getCalendarEvent(db, Number(event.id));
+    expect(ev.vehicle).toBeUndefined();
+    expect(ev.vehicleId).toBeNull();
   });
 
   test("writes archive entry with correct entity", () => {
