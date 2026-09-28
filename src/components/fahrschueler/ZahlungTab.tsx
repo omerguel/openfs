@@ -28,6 +28,7 @@ import { accountingApi, formatIsoDate, useApi } from "@/components/buchhaltung/a
 import { PaymentDialog } from "@/components/buchhaltung/PaymentDialog";
 import { QuittungDialog } from "@/components/buchhaltung/QuittungDialog";
 import { StornoDialog, type StornoTarget } from "@/components/buchhaltung/StornoDialog";
+import { PaymentPlansSection } from "@/components/fahrschueler/PaymentPlansSection";
 import { CreateInvoiceDialog } from "@/components/rechnungen/CreateInvoiceDialog";
 import { InvoiceList } from "@/components/rechnungen/InvoiceList";
 import { invalidateInvoices, useInvoices } from "@/hooks/use-invoices";
@@ -293,6 +294,8 @@ export function ZahlungTab({ student }: { student: StudentRecord }) {
           </Table>
         </div>
       )}
+
+      <PaymentPlansSection student={student} />
 
       <section className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
