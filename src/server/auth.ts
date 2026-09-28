@@ -4,7 +4,8 @@
 /*  - users: per school (per tenant DB), password hashed with          */
 /*    Bun.password (argon2id). Roles: inhaber (everything), buero      */
 /*    (everything but user admin, backups, raw DB export), fahrlehrer  */
-/*    (calendar, Nachweise, Theorie-Anwesenheit, Chat; no finances).   */
+/*    (explicit allow-list FAHRLEHRER_ALLOWED: calendar, Nachweise,     */
+/*    students read, Theorie-Anwesenheit, Chat; no money, no office).  */
 /*  - sessions: random 32-byte token in an HttpOnly SameSite=Strict    */
 /*    cookie; only its SHA-256 is stored, so a leaked DB/backup does   */
 /*    not leak live sessions. Sliding expiry (7 days) capped by an     */

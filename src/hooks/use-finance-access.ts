@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ */
 /* Money visibility per role. Fahrlehrer/innen see no balances, prices */
 /* or billing actions — the server rejects the finance endpoints for   */
-/* them anyway (auth.ts FINANCE), so the UI must not even request them */
+/* them anyway (FAHRLEHRER_ALLOWED in auth.ts), so the UI must not ask */
 /* (a 403 in the console on every page view).                          */
 /* ------------------------------------------------------------------ */
 
