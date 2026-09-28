@@ -12,6 +12,7 @@ import {
   type ProtectOptions,
 } from "./auth";
 
+import { absenceImpactRoutes } from "./absence-impact";
 import { absenceRoutes } from "./absences";
 import { appointmentRequestRoutes } from "./appointment-requests";
 import { attestationRoutes } from "./ausbildungsnachweis";
@@ -77,6 +78,7 @@ function buildUnprotectedRoutes(db: Database, options: ApiRouteOptions) {
     ...cancellationRoutes(db),
     ...calendarConflictRoutes(db),
     ...absenceRoutes(db),
+    ...absenceImpactRoutes(db),
     ...reportRoutes(db),
     ...instructorRoutes(db),
     ...pricePlanRoutes(db),
