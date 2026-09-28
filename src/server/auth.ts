@@ -413,6 +413,8 @@ type Rule = { method: string | "*"; pattern: RegExp };
 /* Reachable without a session. Everything else requires one. */
 export const PUBLIC_ROUTES: Rule[] = [
   { method: "GET", pattern: /^\/api\/auth\/status$/ },
+  // Monitoring: liveness + version, no data (health.ts).
+  { method: "GET", pattern: /^\/api\/health$/ },
   { method: "POST", pattern: /^\/api\/auth\/(login|setup|logout)$/ },
   // Einladungslink: read who is invited, set the password (token-gated).
   { method: "*", pattern: /^\/api\/auth\/invite\/[^/]+$/ },

@@ -7,6 +7,7 @@ import { backupConfigFromEnv } from "./server/backups";
 import { DEMO_LOGIN, prepareSchoolDb, startSchoolJobs } from "./server/bootstrap";
 import { openDb } from "./server/db";
 import { createFileStoreFromEnv } from "./server/file-store";
+import { healthRoutes } from "./server/health";
 import { applySetup } from "./server/setup";
 import { smsConfigFromEnv } from "./server/sms";
 import { smtpConfigFromEnv } from "./server/smtp";
@@ -109,6 +110,9 @@ const server = serve({
     "/*": index,
     // ... except unknown API paths: JSON 404 (single- and multi-tenant).
     ...API_NOT_FOUND,
+
+    // Public liveness/version probe (answers on every host).
+    ...healthRoutes(),
 
     ...apiRoutes,
   },
