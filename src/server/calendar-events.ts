@@ -149,7 +149,6 @@ type CalendarEventRow = {
   cancellation_kind: string | null;
   cancellation_fee_transaction_id: number | null;
   fee_storniert_by: number | null;
-  fee_cents: number | null;
   notes: string | null;
 };
 
@@ -187,7 +186,6 @@ const toEvent = (row: CalendarEventRow): CalendarEvent => {
   if (row.cancellation_fee_transaction_id != null) {
     event.cancellationFeeTransactionId = row.cancellation_fee_transaction_id;
     event.cancellationFeeActive = row.fee_storniert_by == null;
-    if (row.fee_cents != null) event.cancellationFeeCents = row.fee_cents;
   }
   if (row.notes) event.notes = row.notes;
   return event;
@@ -214,16 +212,37 @@ const SELECT = `
         WHERE t.id = ce.cancellation_fee_transaction_id
       )
       ELSE NULL
-    END AS fee_storniert_by,
-    CASE
-      WHEN ce.cancellation_fee_transaction_id IS NOT NULL THEN (
-        SELECT sum(b.amount_cents) FROM bookings b
-        WHERE b.transaction_id = ce.cancellation_fee_transaction_id
-      )
-      ELSE NULL
-    END AS fee_cents
+    END AS fee_storniert_by
   FROM calendar_events ce
 `;
+
+/* Booked amount of each Ausfallentschädigung (sum of its bookings).
+   Separate from SELECT because minimal schemas (some unit tests) have
+   no bookings table. */
+function withFeeAmounts(db: Database, events: CalendarEvent[]): CalendarEvent[] {
+  const ids = events
+    .map((event) => event.cancellationFeeTransactionId)
+    .filter((id): id is number => id != null);
+  if (ids.length === 0 || !tableExists(db, "bookings")) return events;
+  const amounts = new Map(
+    db
+      .query<{ transaction_id: number; cents: number }, number[]>(
+        `SELECT transaction_id, sum(amount_cents) AS cents FROM bookings
+         WHERE transaction_id IN (${ids.map(() => "?").join(",")})
+         GROUP BY transaction_id`,
+      )
+      .all(...ids)
+      .map((row) => [row.transaction_id, row.cents]),
+  );
+  for (const event of events) {
+    const cents =
+      event.cancellationFeeTransactionId != null
+        ? amounts.get(event.cancellationFeeTransactionId)
+        : undefined;
+    if (cents != null) event.cancellationFeeCents = cents;
+  }
+  return events;
+}
 
 export function listCalendarEvents(
   db: Database,
@@ -240,16 +259,19 @@ export function listCalendarEvents(
     params.push(filter.to);
   }
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
-  return db
-    .query<CalendarEventRow, string[]>(`${SELECT}${where} ORDER BY ce.date, ce.start`)
-    .all(...params)
-    .map(toEvent);
+  return withFeeAmounts(
+    db,
+    db
+      .query<CalendarEventRow, string[]>(`${SELECT}${where} ORDER BY ce.date, ce.start`)
+      .all(...params)
+      .map(toEvent),
+  );
 }
 
 export function getCalendarEvent(db: Database, id: number): CalendarEvent {
   const row = db.query<CalendarEventRow, [number]>(`${SELECT} WHERE ce.id = ?`).get(id);
   if (!row) throw new ValidationError("Termin nicht gefunden.");
-  return toEvent(row);
+  return withFeeAmounts(db, [toEvent(row)])[0]!;
 }
 
 const toMinutes = (value: string): number => {
