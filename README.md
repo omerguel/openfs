@@ -66,6 +66,40 @@ Mails (appointment confirmations/declines, lesson reminders the day before, port
 
 Without `SMTP_HOST`/`SMTP_FROM` nothing is sent: mails show up as "Nicht versendet" in Nachrichten and can be copied by hand. Demo mode never sends mail.
 
+### Uploaded documents (file storage)
+
+Files uploaded on a student's **Dokumente** tab (PDF, PNG, JPEG, WebP, HEIC; max 12 MB; the type is checked from the file content) are not stored in SQLite. The database keeps metadata in `student_files`; the bytes go to a file store:
+
+| Variable | Meaning |
+|----------|---------|
+| `S3_ENDPOINT` | S3-compatible endpoint, e.g. `https://fsn1.your-objectstorage.com` (Hetzner Object Storage) |
+| `S3_BUCKET` | Bucket name |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | Credentials |
+| `S3_REGION` | Optional region |
+| `S3_PREFIX` | Optional key prefix, e.g. `fahrschule-muster/` — files go to `<prefix>files/…`, backups to `<prefix>backups/…` |
+| `FILE_STORE_DIR` | Local directory when S3 is not configured (default `data/files`) |
+
+With all four required `S3_*` variables set, files go to the bucket; otherwise they go to `data/files`. Demo mode keeps them in memory. Older versions stored uploads as base64 inside `students.documents`; on startup they are moved to the file store once (idempotent). Files of a deleted student stay until the student is removed from the Archiv for good.
+
+### Datensicherung (backups)
+
+Outside demo mode the server backs up the database with SQLite's `VACUUM INTO` (a consistent copy while the app keeps running), checks the copy with `PRAGMA integrity_check` and keeps it as `openfs-YYYY-MM-DD-HHMMSS.db`. It checks at startup and then hourly, and creates a backup whenever the newest one is older than the interval. When S3 is configured (see above), every backup is also uploaded to `<S3_PREFIX>backups/`. The page **Verwaltung → Datensicherung** (`/datensicherung`) lists backups, creates one on demand and offers downloads plus the whole-database export.
+
+| Variable | Meaning |
+|----------|---------|
+| `BACKUP_DIR` | Local backup directory (default `data/backups`) |
+| `BACKUP_KEEP` | Number of most recent backups kept, locally and in S3 (default `14`) |
+| `BACKUP_INTERVAL_HOURS` | Backup interval (default `24`) |
+
+Backups contain the database only; uploaded documents live in the file store (`data/files` or S3) and need their own backup (S3 versioning, or copy `data/files`).
+
+**Restore:**
+
+1. Stop the server.
+2. Move the current `data/fahrschule.db` and its `data/fahrschule.db-wal` / `-shm` files aside.
+3. Copy the backup (from `data/backups`, S3 or the download on `/datensicherung`) to `data/fahrschule.db`.
+4. Start the server.
+
 ## Architecture
 
 ```
