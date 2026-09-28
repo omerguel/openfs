@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
+  DatabaseBackup,
   FileText,
   FileUp,
   GraduationCap,
@@ -104,6 +105,7 @@ const navGroups: {
       { label: "Verträge", Icon: FileText, route: "/vertraege" },
       { label: "Prüfungsplaner", Icon: CalendarCheck, route: "/pruefungsplaner" },
       { label: "Datenimport", Icon: FileUp, route: "/import" },
+      { label: "Datensicherung", Icon: DatabaseBackup, route: "/datensicherung" },
     ],
   },
 ];
