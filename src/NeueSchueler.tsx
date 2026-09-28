@@ -15,7 +15,7 @@ import { FormSection as Section, FormSectionIndex } from "./components/FormSecti
 import { PageHeader } from "./components/PageHeader.tsx";
 import { useInstructors } from "@/hooks/use-instructors";
 import { useVehicleOptions } from "@/hooks/use-vehicle-options";
-import { createStudent, useStudents, type StudentRecord } from "@/hooks/use-students";
+import { createStudent, useStudents } from "@/hooks/use-students";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -41,18 +41,15 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  initialLessons,
+  nextStudentNumbers,
+  REQUIRED_LESSONS,
+} from "@/lib/student-numbers";
 import { cn } from "@/lib/utils";
 
 const classOptions = ["A", "B", "B197", "BE"];
 const documentOptions = ["Personalausweis", "Passbild", "Sehtest", "Vertrag"];
-
-/* Pflichtstunden (Sonderfahrten) — feste Vorgaben, Stand bei Anmeldung 0. */
-const requiredLessons = [
-  { label: "Nachtfahrt", target: "0/135 min" },
-  { label: "Autobahnfahrt", target: "0/180 min" },
-  { label: "Überlandfahrt", target: "0/225 min" },
-  { label: "Theorieunterricht", target: "0/14 Einheiten" },
-];
 
 const now = new Date();
 const TODAY = `${String(now.getDate()).padStart(2, "0")}.${String(
@@ -71,23 +68,6 @@ const parseDate = (value: string): Date | undefined => {
   if (!day || !month || !year) return undefined;
   return new Date(year, month - 1, day);
 };
-
-/* IDs are assigned by the system, not entered by hand. Continue the
-   numbering range of the students already in the database. */
-function nextIds(students: StudentRecord[]) {
-  const maxCustomer = students.reduce(
-    (max, s) => Math.max(max, Number(s.customerNumber) || 0),
-    10058,
-  );
-  const maxContract = students.reduce(
-    (max, s) => Math.max(max, Number(s.contractNumber.split("-").pop()) || 0),
-    1042,
-  );
-  return {
-    customerNumber: String(maxCustomer + 1),
-    contractNumber: `V-2026-${maxContract + 1}`,
-  };
-}
 
 type Status = "aktiv" | "inaktiv";
 
@@ -156,16 +136,17 @@ export function NeueSchueler() {
   const { vehicleOptions } = useVehicleOptions();
   const [form, setForm] = useState<FormState>(() => ({
     ...initialForm,
-    ...nextIds([]),
+    ...nextStudentNumbers([]),
   }));
   const [dirty, setDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // Assignable instructors come from the DB-backed roster (/fahrlehrer).
   const { assignableNames: instructorOptions } = useInstructors();
 
-  // The system-assigned numbers continue the DB range, which loads async.
+  // IDs are assigned by the system, not entered by hand: they continue the
+  // numbering range of the students in the DB, which loads async.
   useEffect(() => {
-    setForm((current) => ({ ...current, ...nextIds(students) }));
+    setForm((current) => ({ ...current, ...nextStudentNumbers(students) }));
   }, [students]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
@@ -184,7 +165,7 @@ export function NeueSchueler() {
   };
 
   const reset = () => {
-    setForm({ ...initialForm, ...nextIds(students) });
+    setForm({ ...initialForm, ...nextStudentNumbers(students) });
     setDirty(false);
   };
 
@@ -198,10 +179,7 @@ export function NeueSchueler() {
       await createStudent({
         ...form,
         progress: 0,
-        lessons: requiredLessons.map((lesson) => ({
-          label: lesson.label,
-          done: lesson.target,
-        })),
+        lessons: initialLessons(),
       });
       toast.success("Schüler/in angelegt", {
         description: `${form.firstName} ${form.lastName} wurde zur Fahrschule hinzugefügt.`,
@@ -447,7 +425,7 @@ export function NeueSchueler() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {requiredLessons.map((lesson) => (
+                    {REQUIRED_LESSONS.map((lesson) => (
                       <TableRow key={lesson.label}>
                         <TableCell>{lesson.label}</TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">
